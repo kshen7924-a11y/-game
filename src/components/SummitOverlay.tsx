@@ -1,16 +1,20 @@
 import { useState } from 'react';
-import { Mountain } from 'lucide-react';
+import { Mountain, Play, Square } from 'lucide-react';
 import { BADGES, ROUTES } from '../game/mountain';
-import { ClimbStats, GamePhase, RouteConfig } from '../game/types';
+import { ClimbStats, ClimbStyle, GamePhase, RouteConfig } from '../game/types';
 import { ClimbBadge } from './ClimbBadge';
 
 interface SummitOverlayProps {
   phase: GamePhase;
   route: RouteConfig;
   stats: ClimbStats;
+  climbStyle: ClimbStyle;
   summitProgress: number;
   hasCheckpoint: boolean;
   newlyUnlockedBadge: boolean;
+  isPlayingTrail: boolean;
+  fallDiagnosis?: string | null;
+  onToggleTrailPlayback: () => void;
   onRespawnCheckpoint: () => void;
   onRestart: () => void;
   onNextRoute: (next: RouteConfig) => void;
@@ -27,9 +31,13 @@ export function SummitOverlay({
   phase,
   route,
   stats,
+  climbStyle,
   summitProgress,
   hasCheckpoint,
   newlyUnlockedBadge,
+  isPlayingTrail,
+  fallDiagnosis,
+  onToggleTrailPlayback,
   onRespawnCheckpoint,
   onRestart,
   onNextRoute,
@@ -42,12 +50,19 @@ export function SummitOverlay({
   const nextRoute = curIdx >= 0 && curIdx < ROUTES.length - 1 ? ROUTES[curIdx + 1] : null;
   const badge = BADGES.find((b) => b.id === route.id) ?? BADGES[0];
 
+  const styleTitle =
+    climbStyle === 'onsight'
+      ? '盲攀零坠落 ★'
+      : climbStyle === 'redpoint'
+        ? '红点零坠落 ◆'
+        : '完攀登顶';
+
   if (phase === 'SUMMIT') {
     if (summitProgress < 0.7) {
       return (
         <div className="pointer-events-none fixed inset-x-0 bottom-8 z-20 flex justify-center px-4">
-          <div className="border border-white/20 bg-[#141820]/80 px-4 py-2 text-xs tracking-wide text-slate-200 backdrop-blur-sm">
-            已登顶 {route.tierLabel}（{route.grade}）· 正在拉远全景视角...
+          <div className="border border-white/20 bg-[#141820]/82 px-4 py-2 text-xs tracking-wide text-slate-200 backdrop-blur-sm">
+            已登顶 {route.isDailyChallenge ? '今日神山' : route.tierLabel}（{route.grade}）· 正在拉远全景视角
           </div>
         </div>
       );
@@ -55,13 +70,21 @@ export function SummitOverlay({
 
     if (hideForView) {
       return (
-        <div className="fixed bottom-6 right-5 z-20">
+        <div className="fixed bottom-5 right-5 z-20 flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onToggleTrailPlayback}
+            className="flex min-h-[44px] items-center gap-1.5 border-2 border-[#141820] bg-[#EA580C] px-4 py-2 text-xs font-bold text-white shadow-[3px_3px_0px_#141820] whitespace-nowrap shrink-0"
+          >
+            {isPlayingTrail ? <Square className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
+            <span>{isPlayingTrail ? '停止回放' : '轨迹回放'}</span>
+          </button>
           <button
             type="button"
             onClick={() => setHideForView(false)}
-            className="min-h-[44px] border-2 border-[#141820] bg-[#F4F1EA] px-4 py-2.5 text-xs font-bold text-[#141820] shadow-[4px_4px_0px_#141820] whitespace-nowrap shrink-0"
+            className="min-h-[44px] border-2 border-[#141820] bg-[#F4F1EA] px-4 py-2 text-xs font-bold text-[#141820] shadow-[3px_3px_0px_#141820] whitespace-nowrap shrink-0"
           >
-            显示登顶插画与战绩
+            显示战绩
           </button>
         </div>
       );
@@ -69,7 +92,7 @@ export function SummitOverlay({
 
     return (
       <div className="pointer-events-none fixed inset-0 z-20 flex items-end justify-center p-3 sm:items-center sm:justify-start sm:p-8">
-        <div className="pointer-events-auto flex max-h-[92dvh] w-full max-w-md flex-col overflow-y-auto border-2 border-[#141820] bg-[#F4F1EA]/96 p-4 text-[#141820] shadow-[8px_8px_0px_#141820] sm:p-5">
+        <div className="pointer-events-auto flex max-h-[92dvh] w-full max-w-md flex-col overflow-y-auto border-2 border-[#141820] bg-[#F4F1EA] p-4 text-[#141820] shadow-[6px_6px_0px_#141820] sm:p-5">
           {/* Summit Graphic-Novel Illustration */}
           <div className="relative aspect-video w-full overflow-hidden border-2 border-[#141820] bg-gradient-to-br from-slate-700 via-slate-800 to-amber-900">
             {!imgFailed ? (
@@ -88,24 +111,30 @@ export function SummitOverlay({
             )}
           </div>
 
-          <div className="mt-3.5 flex items-center gap-2 text-xs font-semibold text-orange-700">
-            <span>完攀登顶 · {route.tierLabel}</span>
+          <div className="mt-3.5 flex flex-wrap items-center gap-1.5 text-xs font-semibold text-[#EA580C]">
+            <span>{styleTitle}</span>
+            <span aria-hidden="true">·</span>
+            <span>{route.isDailyChallenge ? `今日神山 (${route.dailyDateKey})` : route.tierLabel}</span>
             <span aria-hidden="true">·</span>
             <span className="font-mono-tabular">
               {route.grade} / {route.heightM}m
             </span>
           </div>
 
-          <h2 className="font-display mt-0.5 text-3xl font-bold tracking-tight text-[#141820]">
+          <h2 className="font-display mt-0.5 text-2xl font-bold tracking-tight text-[#141820] sm:text-3xl">
             {route.name}
           </h2>
 
-          {/* Lit Badge Unlock Card */}
           <div className="mt-3">
-            <ClimbBadge badge={badge} unlocked highlightNew={newlyUnlockedBadge} />
+            <ClimbBadge
+              badge={badge}
+              unlocked
+              bestStyle={climbStyle}
+              highlightNew={newlyUnlockedBadge}
+            />
           </div>
 
-          {/* Climb Stats */}
+          {/* Tabular Telemetry */}
           <div className="mt-3.5 grid grid-cols-4 gap-2 border-t border-slate-300 pt-3 text-xs">
             <div>
               <div className="text-[11px] text-slate-500">耗时</div>
@@ -127,38 +156,43 @@ export function SummitOverlay({
             </div>
           </div>
 
-          {/* Actions */}
-          <div className="mt-4 flex flex-wrap items-center gap-2">
-            {nextRoute && (
+          {/* Clean Two-Tier Action Hierarchy */}
+          <div className="mt-4 space-y-2 border-t border-slate-300 pt-3">
+            {nextRoute && !route.isDailyChallenge && (
               <button
                 type="button"
                 onClick={() => onNextRoute(nextRoute)}
-                className="min-h-[44px] flex-1 border-2 border-[#141820] bg-[#EA580C] px-4 py-2 text-xs font-bold text-white shadow-[3px_3px_0px_#141820] whitespace-nowrap shrink-0 hover:bg-[#DC4C06]"
+                className="min-h-[44px] w-full border-2 border-[#141820] bg-[#EA580C] px-4 py-2 text-sm font-bold text-white shadow-[3px_3px_0px_#141820] whitespace-nowrap hover:bg-[#DC4C06]"
               >
-                挑战 {nextRoute.tierLabel}（{nextRoute.grade}）
+                挑战下一线 · {nextRoute.tierLabel}（{nextRoute.grade}）
               </button>
             )}
-            <button
-              type="button"
-              onClick={() => setHideForView(true)}
-              className="min-h-[44px] border-2 border-[#141820] bg-white px-3.5 py-2 text-xs font-semibold text-[#141820] whitespace-nowrap shrink-0 hover:bg-slate-100"
-            >
-              看全景轨迹
-            </button>
-            <button
-              type="button"
-              onClick={onRestart}
-              className="min-h-[44px] border-2 border-[#141820] bg-white px-3.5 py-2 text-xs font-semibold text-[#141820] whitespace-nowrap shrink-0 hover:bg-slate-100"
-            >
-              重攀
-            </button>
-            <button
-              type="button"
-              onClick={onBackToMenu}
-              className="min-h-[44px] border-2 border-[#141820] bg-[#ECE8DF] px-3.5 py-2 text-xs font-semibold text-[#141820] whitespace-nowrap shrink-0 hover:bg-slate-200"
-            >
-              选线
-            </button>
+            <div className="grid grid-cols-3 gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setHideForView(true);
+                  if (!isPlayingTrail) onToggleTrailPlayback();
+                }}
+                className="min-h-[42px] border-2 border-[#141820] bg-white px-2.5 py-2 text-xs font-semibold text-[#141820] whitespace-nowrap hover:bg-slate-100"
+              >
+                轨迹回放
+              </button>
+              <button
+                type="button"
+                onClick={onRestart}
+                className="min-h-[42px] border-2 border-[#141820] bg-white px-2.5 py-2 text-xs font-semibold text-[#141820] whitespace-nowrap hover:bg-slate-100"
+              >
+                重攀
+              </button>
+              <button
+                type="button"
+                onClick={onBackToMenu}
+                className="min-h-[42px] border-2 border-[#141820] bg-[#EAE6DC] px-2.5 py-2 text-xs font-semibold text-[#141820] whitespace-nowrap hover:bg-slate-200"
+              >
+                选线
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -168,7 +202,7 @@ export function SummitOverlay({
   if (phase === 'FALLEN') {
     return (
       <div className="fixed inset-0 z-20 flex items-center justify-center bg-[#141820]/70 p-4 backdrop-blur-xs">
-        <div className="w-full max-w-md border-2 border-[#141820] bg-[#F4F1EA] p-6 text-[#141820] shadow-[8px_8px_0px_#141820]">
+        <div className="w-full max-w-md border-2 border-[#141820] bg-[#F4F1EA] p-5 text-[#141820] shadow-[6px_6px_0px_#141820] sm:p-6">
           <div className="flex items-center gap-2 text-xs font-semibold text-red-700">
             <span>坠落重伤</span>
             <span aria-hidden="true">·</span>
@@ -177,34 +211,41 @@ export function SummitOverlay({
             </span>
           </div>
           <h2 className="font-display mt-1 text-3xl font-bold tracking-tight">失足脱手</h2>
+          {fallDiagnosis && (
+            <div className="mt-2.5 border border-red-300 bg-red-50 px-3 py-2 text-xs font-semibold leading-relaxed text-red-900">
+              复盘原因：{fallDiagnosis}
+            </div>
+          )}
           <p className="mt-2 text-xs leading-relaxed text-slate-700 sm:text-sm">
-            在艰难路段前先打入岩钉挂绳，或稳住双脚后再向上伸手，能大幅减轻臂力负担。
+            在艰难路段前打入岩钉挂绳，配合「左倾/右倾」顺应岩点发力方向，可大幅减轻臂力负担。
           </p>
 
-          <div className="mt-5 flex flex-wrap items-center gap-2.5">
+          <div className="mt-5 space-y-2">
             {hasCheckpoint && (
               <button
                 type="button"
                 onClick={onRespawnCheckpoint}
-                className="min-h-[44px] border-2 border-[#141820] bg-[#EA580C] px-4 py-2.5 text-xs font-bold text-white shadow-[3px_3px_0px_#141820] whitespace-nowrap shrink-0"
+                className="min-h-[44px] w-full border-2 border-[#141820] bg-[#EA580C] px-4 py-2.5 text-xs font-bold text-white shadow-[3px_3px_0px_#141820] whitespace-nowrap hover:bg-[#DC4C06]"
               >
                 从最近休息台恢复
               </button>
             )}
-            <button
-              type="button"
-              onClick={onRestart}
-              className="min-h-[44px] border-2 border-[#141820] bg-white px-4 py-2.5 text-xs font-bold text-[#141820] whitespace-nowrap shrink-0"
-            >
-              从起点重攀
-            </button>
-            <button
-              type="button"
-              onClick={onBackToMenu}
-              className="min-h-[44px] border-2 border-[#141820] bg-[#ECE8DF] px-4 py-2.5 text-xs font-semibold text-[#141820] whitespace-nowrap shrink-0"
-            >
-              换一条线
-            </button>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={onRestart}
+                className="min-h-[42px] border-2 border-[#141820] bg-white px-4 py-2 text-xs font-bold text-[#141820] whitespace-nowrap hover:bg-slate-100"
+              >
+                从起点重攀
+              </button>
+              <button
+                type="button"
+                onClick={onBackToMenu}
+                className="min-h-[42px] border-2 border-[#141820] bg-[#EAE6DC] px-4 py-2 text-xs font-semibold text-[#141820] whitespace-nowrap hover:bg-slate-200"
+              >
+                返回选线
+              </button>
+            </div>
           </div>
         </div>
       </div>

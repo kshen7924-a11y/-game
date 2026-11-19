@@ -1,10 +1,11 @@
-import { BadgeInfo } from '../game/types';
+import { BadgeInfo, ClimbStyle } from '../game/types';
 
 interface ClimbBadgeProps {
   badge: BadgeInfo;
   unlocked: boolean;
   compact?: boolean;
   highlightNew?: boolean;
+  bestStyle?: ClimbStyle;
 }
 
 export function ClimbBadge({
@@ -12,6 +13,7 @@ export function ClimbBadge({
   unlocked,
   compact = false,
   highlightNew = false,
+  bestStyle,
 }: ClimbBadgeProps) {
   const renderEmblem = () => {
     const stroke = unlocked ? '#141820' : '#64748B';
@@ -19,7 +21,7 @@ export function ClimbBadge({
     const fillLight = unlocked ? '#FEF3C7' : '#475569';
 
     switch (badge.tier) {
-      case 1: // 儿童线: 阳光小坡
+      case 1:
         return (
           <svg viewBox="0 0 48 48" className="h-full w-full" aria-hidden="true">
             <circle cx="24" cy="24" r="20" fill={fillLight} stroke={stroke} strokeWidth="2.5" />
@@ -27,7 +29,7 @@ export function ClimbBadge({
             <circle cx="31" cy="15" r="4" fill={unlocked ? '#FBBF24' : '#475569'} stroke={stroke} strokeWidth="1.5" />
           </svg>
         );
-      case 2: // 入门线: 晨雾初登
+      case 2:
         return (
           <svg viewBox="0 0 48 48" className="h-full w-full" aria-hidden="true">
             <circle cx="24" cy="24" r="20" fill={fillLight} stroke={stroke} strokeWidth="2.5" />
@@ -35,14 +37,14 @@ export function ClimbBadge({
             <path d="M12 28 H36" stroke={stroke} strokeWidth="1.5" strokeDasharray="3 2" />
           </svg>
         );
-      case 3: // 初级线: 青石稳步
+      case 3:
         return (
           <svg viewBox="0 0 48 48" className="h-full w-full" aria-hidden="true">
             <rect x="6" y="6" width="36" height="36" rx="10" fill={fillLight} stroke={stroke} strokeWidth="2.5" />
             <path d="M11 34 L18 26 L25 26 L30 18 L37 18 L37 34 Z" fill={fillPrimary} stroke={stroke} strokeWidth="2" strokeLinejoin="round" />
           </svg>
         );
-      case 4: // 初级进阶: 岩脉寻踪
+      case 4:
         return (
           <svg viewBox="0 0 48 48" className="h-full w-full" aria-hidden="true">
             <polygon points="24,4 42,14 42,34 24,44 6,34 6,14" fill={fillLight} stroke={stroke} strokeWidth="2.5" strokeLinejoin="round" />
@@ -50,7 +52,7 @@ export function ClimbBadge({
             <circle cx="33" cy="14" r="3" fill={fillPrimary} stroke={stroke} strokeWidth="1.5" />
           </svg>
         );
-      case 5: // 中级线: 裂隙行者
+      case 5:
         return (
           <svg viewBox="0 0 48 48" className="h-full w-full" aria-hidden="true">
             <polygon points="24,4 42,14 42,34 24,44 6,34 6,14" fill={fillLight} stroke={stroke} strokeWidth="2.5" strokeLinejoin="round" />
@@ -58,7 +60,7 @@ export function ClimbBadge({
             <circle cx="24" cy="22" r="4.5" fill={fillPrimary} stroke={stroke} strokeWidth="2" />
           </svg>
         );
-      case 6: // 中级进阶: 风蚀破壁
+      case 6:
         return (
           <svg viewBox="0 0 48 48" className="h-full w-full" aria-hidden="true">
             <rect x="6" y="6" width="36" height="36" rx="8" fill={fillLight} stroke={stroke} strokeWidth="2.5" />
@@ -66,35 +68,35 @@ export function ClimbBadge({
             <path d="M14 10 L12 15 M23 9 L21 14 M32 10 L30 15" stroke={stroke} strokeWidth="2" strokeLinecap="round" />
           </svg>
         );
-      case 7: // 高级线: 绝壁悬心
+      case 7:
         return (
           <svg viewBox="0 0 48 48" className="h-full w-full" aria-hidden="true">
             <path d="M8 8 H40 V26 L24 42 L8 26 Z" fill={fillLight} stroke={stroke} strokeWidth="2.5" strokeLinejoin="round" />
             <path d="M14 31 L22 14 L30 22 L35 16 V31 Z" fill={fillPrimary} stroke={stroke} strokeWidth="2" strokeLinejoin="round" />
           </svg>
         );
-      case 8: // 高级难点线: 孤壁破关
+      case 8:
         return (
           <svg viewBox="0 0 48 48" className="h-full w-full" aria-hidden="true">
             <path d="M8 8 H40 V26 L24 42 L8 26 Z" fill={fillLight} stroke={stroke} strokeWidth="2.5" strokeLinejoin="round" />
             <path d="M26 11 L17 24 H24 L21 36 L32 21 H25 Z" fill={fillPrimary} stroke={stroke} strokeWidth="2" strokeLinejoin="round" />
           </svg>
         );
-      case 9: // 大师线 1: 雪峰孤影
+      case 9:
         return (
           <svg viewBox="0 0 48 48" className="h-full w-full" aria-hidden="true">
             <polygon points="24,4 43,24 24,44 5,24" fill={fillLight} stroke={stroke} strokeWidth="2.5" strokeLinejoin="round" />
             <path d="M14 30 L24 12 L34 30 Z" fill={fillPrimary} stroke={stroke} strokeWidth="2" strokeLinejoin="round" />
           </svg>
         );
-      case 10: // 大师线 2: 极寒刃脊
+      case 10:
         return (
           <svg viewBox="0 0 48 48" className="h-full w-full" aria-hidden="true">
             <polygon points="24,4 43,24 24,44 5,24" fill={fillLight} stroke={stroke} strokeWidth="2.5" strokeLinejoin="round" />
             <path d="M12 31 L20 15 L25 22 L31 13 L37 31 Z" fill={fillPrimary} stroke={stroke} strokeWidth="2" strokeLinejoin="round" />
           </svg>
         );
-      default: // 大师线 3: 神山之巅
+      default:
         return (
           <svg viewBox="0 0 48 48" className="h-full w-full" aria-hidden="true">
             <polygon points="24,3 31,15 44,18 35,28 37,42 24,36 11,42 13,28 4,18 17,15" fill={fillLight} stroke={stroke} strokeWidth="2.5" strokeLinejoin="round" />
@@ -105,22 +107,39 @@ export function ClimbBadge({
     }
   };
 
+  const styleLabel =
+    unlocked && bestStyle === 'onsight'
+      ? '盲攀 ★'
+      : unlocked && bestStyle === 'redpoint'
+        ? '红点 ◆'
+        : unlocked
+          ? '已完攀'
+          : '未解锁';
+
   if (compact) {
     return (
       <div
-        className={`flex min-w-[136px] shrink-0 items-center gap-2 border px-2.5 py-2 transition-opacity ${
+        className={`flex min-w-[144px] shrink-0 items-center gap-2 border px-2.5 py-2 ${
           unlocked
-            ? 'border-[#141820] bg-white shadow-[2px_2px_0px_#141820]'
-            : 'border-slate-300 bg-[#E5E0D5] opacity-65'
+            ? bestStyle === 'onsight'
+              ? 'border-[#B45309] bg-[#FFFBEB]'
+              : 'border-[#141820] bg-white'
+            : 'border-slate-300 bg-[#ECE8DF] opacity-65'
         }`}
       >
         <div className="h-8 w-8 shrink-0">{renderEmblem()}</div>
         <div className="min-w-0 leading-tight">
-          <div className="flex items-center gap-1">
-            <span className="truncate text-xs font-bold text-[#141820]">{badge.title}</span>
-          </div>
-          <div className="mt-0.5 truncate text-[10px] text-slate-600 font-mono-tabular">
-            {badge.tierLabel} · {unlocked ? '已点亮' : badge.grade}
+          <div className="truncate text-xs font-bold text-[#141820]">{badge.title}</div>
+          <div
+            className={`mt-0.5 truncate text-[10px] font-mono-tabular ${
+              bestStyle === 'onsight'
+                ? 'font-bold text-amber-700'
+                : bestStyle === 'redpoint'
+                  ? 'font-bold text-orange-700'
+                  : 'text-slate-600'
+            }`}
+          >
+            {badge.tierLabel} · {styleLabel}
           </div>
         </div>
       </div>
@@ -129,24 +148,39 @@ export function ClimbBadge({
 
   return (
     <div
-      className={`flex items-center gap-3 border-2 p-3 ${
+      className={`flex items-center gap-3 border-2 p-3 transition-colors ${
         unlocked
-          ? 'border-[#141820] bg-[#FEF9EC] shadow-[3px_3px_0px_#141820]'
-          : 'border-slate-300 bg-slate-100 opacity-70'
+          ? bestStyle === 'onsight'
+            ? 'border-[#141820] bg-[#FFFBEB] shadow-[3px_3px_0px_#141820]'
+            : 'border-[#141820] bg-white shadow-[3px_3px_0px_#141820]'
+          : 'border-slate-300 bg-[#EAE6DC] opacity-75'
       }`}
     >
-      <div className="h-12 w-12 shrink-0">{renderEmblem()}</div>
+      <div className="h-11 w-11 shrink-0">{renderEmblem()}</div>
       <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-bold text-[#141820]">{badge.title}</span>
-          <span className="text-xs font-semibold text-[#EA580C] font-mono-tabular">
-            {badge.tierLabel} · {badge.grade}
+        <div className="flex items-baseline justify-between gap-2">
+          <span className="truncate text-sm font-bold text-[#141820]">{badge.title}</span>
+          <span
+            className={`shrink-0 text-[11px] font-semibold whitespace-nowrap font-mono-tabular ${
+              unlocked
+                ? bestStyle === 'onsight'
+                  ? 'text-amber-700'
+                  : bestStyle === 'redpoint'
+                    ? 'text-[#EA580C]'
+                    : 'text-emerald-700'
+                : 'text-slate-500'
+            }`}
+          >
+            {highlightNew ? '新解锁 · ' : ''}
+            {styleLabel}
           </span>
-          {highlightNew && (
-            <span className="text-[11px] font-bold text-amber-700">· 新解锁</span>
-          )}
         </div>
-        <div className="mt-0.5 text-xs text-slate-600">{badge.subtitle}</div>
+        <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-slate-600 font-mono-tabular">
+          <span>{badge.tierLabel}</span>
+          <span aria-hidden="true">·</span>
+          <span>{badge.grade}</span>
+        </div>
+        <div className="mt-0.5 truncate text-[11px] text-slate-500">{badge.subtitle}</div>
       </div>
     </div>
   );

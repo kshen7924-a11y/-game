@@ -2,11 +2,15 @@ import {
   ActiveWeather,
   AltitudeDifficultyBin,
   BadgeInfo,
+  ClimberSkinConfig,
   CloudBand,
+  DistantBird,
   DistantPeak,
   Hold,
   HoldType,
   Ledge,
+  LoadoutConfig,
+  Piton,
   RockFacet,
   RouteConfig,
   RouteId,
@@ -645,6 +649,109 @@ export function getRouteById(id: RouteId): RouteConfig {
   return ROUTES.find((r) => r.id === id) ?? ROUTES[0];
 }
 
+export const LOADOUT_OPTIONS: LoadoutConfig[] = [
+  {
+    id: 'light',
+    label: '轻装速攀',
+    subtitle: '岩钉 -2 · 防粉 -1 · 耐力消耗 -14%',
+    pitonDelta: -2,
+    chalkDelta: -1,
+    drainMult: 0.86,
+  },
+  {
+    id: 'balanced',
+    label: '均衡标准',
+    subtitle: '标准配置 · 稳健容错',
+    pitonDelta: 0,
+    chalkDelta: 0,
+    drainMult: 1.0,
+  },
+  {
+    id: 'heavy',
+    label: '重装安全',
+    subtitle: '岩钉 +2 · 防粉 +1 · 耐力消耗 +10%',
+    pitonDelta: 2,
+    chalkDelta: 1,
+    drainMult: 1.1,
+  },
+];
+
+export const CLIMBER_SKINS: ClimberSkinConfig[] = [
+  {
+    id: 'alpine-orange',
+    name: '经典蓝橙',
+    unlockCount: 0,
+    jacket: '#2563EB',
+    jacketShadow: '#1E3A8A',
+    accent: '#EA580C',
+    scarf: '#F59E0B',
+    beanie: '#D97706',
+    rope: '#F97316',
+  },
+  {
+    id: 'glacier-cyan',
+    name: '极光冰青',
+    unlockCount: 3,
+    jacket: '#0891B2',
+    jacketShadow: '#164E63',
+    accent: '#38BDF8',
+    scarf: '#E0F2FE',
+    beanie: '#0284C7',
+    rope: '#38BDF8',
+  },
+  {
+    id: 'granite-gold',
+    name: '岩壁琥珀',
+    unlockCount: 6,
+    jacket: '#B45309',
+    jacketShadow: '#78350F',
+    accent: '#FBBF24',
+    scarf: '#FEF3C7',
+    beanie: '#D97706',
+    rope: '#FACC15',
+  },
+  {
+    id: 'summit-crimson',
+    name: '神山绯红',
+    unlockCount: 11,
+    jacket: '#BE123C',
+    jacketShadow: '#881337',
+    accent: '#FB7185',
+    scarf: '#FFE4E6',
+    beanie: '#E11D48',
+    rope: '#FB7185',
+  },
+];
+
+export function getTodayDateKey(): string {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+export function getDailyChallengeRoute(): RouteConfig {
+  const dateKey = getTodayDateKey();
+  let hash = 2166136261;
+  for (let i = 0; i < dateKey.length; i++) {
+    hash ^= dateKey.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  const unsigned = hash >>> 0;
+  // Daily Challenge picks an engaging mid-to-advanced template (tiers 4..9 -> indices 3..8)
+  const templateIdx = 3 + (unsigned % 6);
+  const template = ROUTES[templateIdx];
+  return {
+    ...template,
+    name: `今日神山 · ${template.name}`,
+    subtitle: `每日挑战（${dateKey}）· ${template.tierLabel} ${template.grade}`,
+    seed: (unsigned % 900000) + 100000,
+    isDailyChallenge: true,
+    dailyDateKey: dateKey,
+  };
+}
+
 export function getWeatherAtAltitude(
   world: MountainWorld,
   altRatio: number,
@@ -711,9 +818,11 @@ export interface MountainWorld {
   outlineRight: Vec2[];
   facets: RockFacet[];
   holds: Hold[];
+  rustyPitons: Piton[];
   ledges: Ledge[];
   distantPeaks: DistantPeak[];
   clouds: CloudBand[];
+  birds: DistantBird[];
   cairnStones: Vec2[];
   difficultyProfile: AltitudeDifficultyBin[];
 }
@@ -936,7 +1045,9 @@ export function generateMountain(route: RouteConfig): MountainWorld {
     y: number,
     type: HoldType,
     zone: number,
-    radiusOverride?: number
+    radiusOverride?: number,
+    wet = false,
+    forceDownpull = false
   ) => {
     const stabilityMap: Record<HoldType, number> = {
       ledge: 1.45,
@@ -955,19 +1066,42 @@ export function generateMountain(route: RouteConfig): MountainWorld {
       ice: 10,
     };
 
+    let gripKind: Hold['gripKind'] = 'downpull';
+    if (!forceDownpull && type !== 'ledge' && type !== 'ice' && route.tier >= 3) {
+      const dirRoll = rng();
+      const sideChance = Math.min(0.42, 0.14 + (route.tier - 3) * 0.035);
+      const underChance = route.tier >= 5 ? Math.min(0.18, 0.06 + (route.tier - 5) * 0.02) : 0;
+      if (dirRoll < sideChance) {
+        gripKind = rng() < 0.5 ? 'sidepullLeft' : 'sidepullRight';
+      } else if (dirRoll < sideChance + underChance) {
+        gripKind = 'undercling';
+      }
+    }
+
+    const baseAngle =
+      gripKind === 'sidepullLeft'
+        ? -0.52 - rng() * 0.25
+        : gripKind === 'sidepullRight'
+          ? 0.52 + rng() * 0.25
+          : gripKind === 'undercling'
+            ? (rng() - 0.5) * 0.26
+            : (rng() - 0.5) * 0.65;
+
     holds.push({
       id: `hold-${holdCounter++}`,
       x,
       y,
       radius: radiusOverride ?? radiusMap[type],
       type,
+      gripKind,
       shapeVariant: Math.floor(rng() * 4),
       stability: stabilityMap[type],
-      angle: (rng() - 0.5) * 0.72,
+      angle: baseAngle,
       depth: 5 + rng() * 5,
       crackProgress: 0,
       broken: false,
       chalked: false,
+      wet,
       zone,
     });
   };
@@ -980,16 +1114,16 @@ export function generateMountain(route: RouteConfig): MountainWorld {
   };
 
   // Starting anchor holds around 0m base camp
-  pushHold(-22, -22, 'jug', 0);
-  pushHold(22, -24, 'jug', 0);
-  pushHold(-20, -64, 'jug', 0);
-  pushHold(22, -68, 'jug', 0);
-  pushHold(-38, -46, 'ledge', 0);
-  pushHold(38, -48, 'ledge', 0);
+  pushHold(-22, -22, 'jug', 0, undefined, false, true);
+  pushHold(22, -24, 'jug', 0, undefined, false, true);
+  pushHold(-20, -64, 'jug', 0, undefined, false, true);
+  pushHold(22, -68, 'jug', 0, undefined, false, true);
+  pushHold(-38, -46, 'ledge', 0, undefined, false, true);
+  pushHold(38, -48, 'ledge', 0, undefined, false, true);
 
   if (route.hasTutorial) {
-    pushHold(-16, -104, 'jug', 0, 13);
-    pushHold(22, -110, 'jug', 0, 13);
+    pushHold(-16, -104, 'jug', 0, 13, false, true);
+    pushHold(22, -110, 'jug', 0, 13, false, true);
   }
 
   // Build smooth waypoints through base -> bivouacs -> summit so the Main Line connects cleanly
@@ -1058,18 +1192,27 @@ export function generateMountain(route: RouteConfig): MountainWorld {
       return isPrimary ? (r < 0.12 ? 'jug' : r < 0.46 ? 'crack' : 'crimp') : r < 0.24 ? 'crack' : 'crimp';
     };
 
+    const hasRainStage = route.weatherStages.some((s) => s.type === 'rain');
+    const isWetHold = (hType: HoldType) =>
+      tier >= 4 &&
+      hType !== 'ledge' &&
+      hType !== 'ice' &&
+      rng() < (hasRainStage ? 0.12 + progress * 0.08 : 0.06);
+
     const lx = lineX - pairHalfW;
     const ly = y + staggerL;
+    const lType = pickMainType(true);
     if (canPlaceHold(lx, ly, 24)) {
-      pushHold(lx, ly, pickMainType(true), zone, tier === 1 ? 13.5 : undefined);
+      pushHold(lx, ly, lType, zone, tier === 1 ? 13.5 : undefined, isWetHold(lType));
     }
 
     const rx = lineX + pairHalfW;
     const ry = y + staggerR;
+    const rType = pickMainType(false);
     // Higher tiers occasionally alternate single-side crux holds to force thoughtful foot-swaps
     const skipSecond = tier >= 7 && rng() < 0.22;
     if (!skipSecond && canPlaceHold(rx, ry, 24)) {
-      pushHold(rx, ry, pickMainType(false), zone, tier === 1 ? 13.5 : undefined);
+      pushHold(rx, ry, rType, zone, tier === 1 ? 13.5 : undefined, isWetHold(rType));
     }
   }
 
@@ -1160,52 +1303,134 @@ export function generateMountain(route: RouteConfig): MountainWorld {
     }
   }
 
+  // Step 3: Pre-placed weathered rusty pitons on mid/high routes (tier >= 4)
+  const rustyPitons: Piton[] = [];
+  if (tier >= 4 && mainLineNodes.length >= 8) {
+    const rustyCount = tier <= 6 ? 1 : tier <= 9 ? 2 : 3;
+    for (let i = 0; i < rustyCount; i++) {
+      const ratio = (i + 1) / (rustyCount + 1);
+      const idx = Math.max(
+        3,
+        Math.min(mainLineNodes.length - 3, Math.floor(mainLineNodes.length * ratio))
+      );
+      const node = mainLineNodes[idx];
+      rustyPitons.push({
+        id: `rusty-piton-${i}`,
+        x: node.x + (rng() - 0.5) * 24,
+        y: node.y + 6,
+        angle: (rng() - 0.5) * 0.3,
+        integrity: 1,
+        isRusty: true,
+        reliable: rng() < 0.58,
+      });
+    }
+  }
+
+  const isGlacial = route.palette === 'glacial';
+  const isGranite = route.palette === 'granite';
+
   const distantPeaks: DistantPeak[] = [
+    // Layer 0: Far horizon snowy alpine massifs
     {
-      parallax: 0.14,
-      shade: '#313E52',
-      rimShade: '#4B5B73',
+      parallax: 0.08,
+      shade: isGlacial ? '#47617D' : isGranite ? '#6A7B91' : '#4C5A6E',
+      rimShade: isGlacial ? '#8AA6C4' : isGranite ? '#9EB1C7' : '#74869E',
+      shadowShade: isGlacial ? '#344960' : isGranite ? '#4E5D70' : '#374252',
+      hasSnow: true,
+      hasHatching: false,
       points: [
-        { x: -3200, y: 1200 },
-        { x: -2400, y: -1800 },
-        { x: -1750, y: -900 },
-        { x: -1100, y: -2700 },
-        { x: -350, y: -1550 },
-        { x: 450, y: -2950 },
-        { x: 1200, y: -1400 },
-        { x: 2050, y: -2450 },
-        { x: 3200, y: 1200 },
+        { x: -3800, y: 1200 },
+        { x: -3100, y: -1550 },
+        { x: -2450, y: -1020 },
+        { x: -1680, y: -2850 },
+        { x: -960, y: -1650 },
+        { x: -180, y: -3300 },
+        { x: 560, y: -1780 },
+        { x: 1320, y: -3050 },
+        { x: 2150, y: -1450 },
+        { x: 2950, y: -2350 },
+        { x: 3800, y: 1200 },
       ],
     },
+    // Layer 1: Mid-far faceted comic peaks
     {
-      parallax: 0.26,
-      shade: '#222B39',
-      rimShade: '#364357',
+      parallax: 0.16,
+      shade: isGlacial ? '#2E4359' : isGranite ? '#495769' : '#323E4F',
+      rimShade: isGlacial ? '#6785A6' : isGranite ? '#738499' : '#53647D',
+      shadowShade: isGlacial ? '#1E2D3D' : isGranite ? '#333E4D' : '#212A36',
+      hasSnow: isGlacial || route.tier >= 7,
+      hasHatching: true,
+      points: [
+        { x: -3400, y: 1200 },
+        { x: -2600, y: -1850 },
+        { x: -1820, y: -960 },
+        { x: -1120, y: -2620 },
+        { x: -380, y: -1480 },
+        { x: 460, y: -2860 },
+        { x: 1240, y: -1340 },
+        { x: 2100, y: -2380 },
+        { x: 2850, y: -1200 },
+        { x: 3400, y: 1200 },
+      ],
+    },
+    // Layer 2: Near-valley crag silhouettes
+    {
+      parallax: 0.27,
+      shade: isGlacial ? '#1F2F42' : isGranite ? '#35404E' : '#242D3A',
+      rimShade: isGlacial ? '#496380' : isGranite ? '#596778' : '#3D4B5E',
+      shadowShade: '#151B24',
+      hasSnow: false,
+      hasHatching: true,
       points: [
         { x: -3000, y: 1200 },
-        { x: -2100, y: -1150 },
-        { x: -1450, y: -620 },
-        { x: -780, y: -1950 },
-        { x: -120, y: -1100 },
-        { x: 760, y: -2100 },
-        { x: 1520, y: -950 },
-        { x: 2400, y: -1650 },
+        { x: -2150, y: -1120 },
+        { x: -1460, y: -620 },
+        { x: -820, y: -1880 },
+        { x: -140, y: -1020 },
+        { x: 760, y: -2040 },
+        { x: 1520, y: -920 },
+        { x: 2420, y: -1580 },
         { x: 3000, y: 1200 },
       ],
     },
   ];
 
   const clouds: CloudBand[] = [];
-  for (let i = 0; i < 20; i++) {
+  for (let i = 0; i < 26; i++) {
+    const isCirrus = i % 3 === 0;
     clouds.push({
-      x: (rng() - 0.5) * 3200,
-      y: -200 - rng() * Math.max(1200, mountainHeight * 0.92),
-      width: 240 + rng() * 340,
-      height: 42 + rng() * 48,
-      speed: 6 + rng() * 12,
-      parallax: 0.2 + rng() * 0.35,
-      opacity: 0.2 + rng() * 0.28,
+      x: (rng() - 0.5) * 3400,
+      y: -140 - rng() * Math.max(1300, mountainHeight * 0.95),
+      width: isCirrus ? 280 + rng() * 320 : 190 + rng() * 260,
+      height: isCirrus ? 22 + rng() * 18 : 48 + rng() * 44,
+      speed: (isCirrus ? 10 : 5) + rng() * 11,
+      parallax: isCirrus ? 0.12 + rng() * 0.14 : 0.2 + rng() * 0.3,
+      opacity: isCirrus ? 0.3 + rng() * 0.2 : 0.42 + rng() * 0.28,
+      kind: isCirrus ? 'cirrus' : 'cumulus',
     });
+  }
+
+  // Soaring alpine birds grouped in 4 natural flocks across valley depths
+  const birds: DistantBird[] = [];
+  const flockCount = 4;
+  for (let f = 0; f < flockCount; f++) {
+    const flockDir: 1 | -1 = f % 2 === 0 ? 1 : -1;
+    const flockParallax = 0.19 + (f % 3) * 0.11;
+    const flockX = (rng() - 0.5) * 1800;
+    const flockY = -180 - rng() * Math.max(850, mountainHeight * 0.78);
+    const members = 3 + Math.floor(rng() * 3);
+    for (let m = 0; m < members; m++) {
+      birds.push({
+        x: flockX + (m - members * 0.5) * (28 + rng() * 18),
+        y: flockY + Math.abs(m - members * 0.5) * 14 + (rng() - 0.5) * 14,
+        speed: 22 + rng() * 16,
+        parallax: flockParallax,
+        scale: 0.72 + flockParallax * 1.45,
+        flapSpeed: 4.5 + rng() * 2.2,
+        phase: rng() * Math.PI * 2,
+        dir: flockDir,
+      });
+    }
   }
 
   const cairnStones: Vec2[] = [
@@ -1335,9 +1560,11 @@ export function generateMountain(route: RouteConfig): MountainWorld {
     outlineRight,
     facets,
     holds,
+    rustyPitons,
     ledges,
     distantPeaks,
     clouds,
+    birds,
     cairnStones,
     difficultyProfile,
   };

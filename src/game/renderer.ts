@@ -4,13 +4,17 @@ import {
   getShoulderAndHip,
   LEG_LOWER,
   LEG_UPPER,
+  predictReachPose,
   solveTwoBoneIK,
 } from './ik';
 import { MountainWorld } from './mountain';
 import {
   ActiveWeather,
   CameraState,
+  ClimberSkinConfig,
   ClimberState,
+  ClimbEvent,
+  DynoChargeState,
   GamePhase,
   HoverInfo,
   LimbId,
@@ -29,6 +33,61 @@ function tracePoly(ctx: CanvasRenderingContext2D, pts: Vec2[]) {
     ctx.lineTo(pts[i].x, pts[i].y);
   }
   ctx.closePath();
+}
+
+function shadeHexColor(hex: string, delta: number): string {
+  const clean = hex.replace('#', '');
+  if (clean.length !== 6) return hex;
+  const num = parseInt(clean, 16);
+  const r = (num >> 16) & 255;
+  const g = (num >> 8) & 255;
+  const b = num & 255;
+  const shift = (c: number) =>
+    delta >= 0
+      ? Math.round(c + (255 - c) * Math.min(1, delta))
+      : Math.round(c * Math.max(0, 1 + delta));
+  return `rgb(${shift(r)}, ${shift(g)}, ${shift(b)})`;
+}
+
+function computeHoldStaminaCostRatio(
+  h: MountainWorld['holds'][number],
+  climber: ClimberState,
+  weather: ActiveWeather
+): number {
+  const baseCostByType: Record<MountainWorld['holds'][number]['type'], number> = {
+    ledge: 0.1,
+    jug: 0.22,
+    crack: 0.4,
+    crimp: 0.68,
+    fragile: 0.74,
+    ice: 0.84,
+  };
+
+  let cost = baseCostByType[h.type];
+  if (h.type === 'fragile') {
+    cost += h.crackProgress * 0.26;
+  }
+  if (h.chalked) {
+    cost -= h.type === 'ice' ? 0.22 : 0.14;
+  }
+  if (h.wet && !h.chalked) {
+    cost += 0.16;
+  }
+  if (weather.type === 'rain' && !h.chalked) {
+    cost += 0.1 * weather.intensity;
+  }
+
+  const d = Math.hypot(h.x - climber.torsoPos.x, h.y - climber.torsoPos.y);
+  if (d < 150) {
+    const stretch = Math.max(0, (d - 52) / 56);
+    cost += stretch * 0.16;
+  }
+  const staminaRatio = climber.stamina / climber.maxStamina;
+  if (staminaRatio < 0.48) {
+    cost += ((0.48 - staminaRatio) / 0.48) * 0.18;
+  }
+
+  return Math.max(0.05, Math.min(1, cost));
 }
 
 function drawCapsuleLimb(
@@ -93,6 +152,12 @@ export interface RenderParams {
   weather: ActiveWeather;
   isReadingRoute: boolean;
   summitProgress: number;
+  skin: ClimberSkinConfig;
+  dynoCharge: DynoChargeState | null;
+  routeEvents: ClimbEvent[];
+  trailPlaybackProgress: number | null;
+  nearbyRecyclablePitonId: string | null;
+  betaPins?: string[];
 }
 
 export function renderGameFrame(params: RenderParams) {
@@ -115,6 +180,12 @@ export function renderGameFrame(params: RenderParams) {
     weather,
     isReadingRoute,
     summitProgress,
+    skin,
+    dynoCharge,
+    routeEvents,
+    trailPlaybackProgress,
+    nearbyRecyclablePitonId,
+    betaPins = [],
   } = params;
 
   const mountainHeight = world.mountainHeight;
@@ -173,68 +244,179 @@ export function renderGameFrame(params: RenderParams) {
   ctx.fill();
   ctx.restore();
 
-  // 2. Parallax Distant Alpine Range
-  for (const peak of world.distantPeaks) {
+  // 2. Parallax Distant Alpine Ranges (2.5D Split-Lit Comic Peaks + Atmospheric Depth Haze)
+  world.distantPeaks.forEach((peak, layerIdx) => {
     ctx.save();
     ctx.translate(width * 0.5, height * 0.58);
-    const pZoom = Math.max(0.24, camera.zoom * (0.4 + peak.parallax));
+    const pZoom = Math.max(0.22, camera.zoom * (0.36 + peak.parallax));
     ctx.scale(pZoom, pZoom);
     ctx.translate(-camera.x * peak.parallax, -camera.y * peak.parallax + 480);
 
+    // Base silhouette fill
     tracePoly(ctx, peak.points);
     ctx.fillStyle = peak.shade;
     ctx.fill();
-    ctx.strokeStyle = 'rgba(20, 24, 32, 0.65)';
-    ctx.lineWidth = 4;
-    ctx.stroke();
 
-    // Rim ridge highlight on sunlit left slopes
-    ctx.strokeStyle = peak.rimShade;
-    ctx.lineWidth = 14;
-    ctx.beginPath();
-    for (let i = 0; i < peak.points.length - 1; i += 2) {
-      ctx.moveTo(peak.points[i].x, peak.points[i].y);
-      ctx.lineTo(peak.points[i + 1].x, peak.points[i + 1].y);
+    // 2.5D Comic Right-Slope Cel-Shaded Shadow Faces (each peak triangle split from ridge apex)
+    ctx.save();
+    ctx.clip();
+    for (let i = 1; i < peak.points.length - 1; i += 2) {
+      const apex = peak.points[i];
+      const valleyR = peak.points[i + 1];
+      ctx.fillStyle = peak.shadowShade;
+      ctx.beginPath();
+      ctx.moveTo(apex.x, apex.y);
+      ctx.lineTo(valleyR.x, valleyR.y);
+      ctx.lineTo(apex.x + 120, 1200);
+      ctx.lineTo(apex.x - 40, 1200);
+      ctx.closePath();
+      ctx.fill();
+
+      // Sunlit left-slope comic rim highlight
+      const valleyL = peak.points[i - 1];
+      ctx.strokeStyle = peak.rimShade;
+      ctx.lineWidth = 18;
+      ctx.beginPath();
+      ctx.moveTo(valleyL.x, valleyL.y);
+      ctx.lineTo(apex.x, apex.y);
+      ctx.stroke();
+
+      // High-altitude snow ridge cap on distant peaks
+      if (peak.hasSnow) {
+        const capY = apex.y + 340;
+        ctx.fillStyle = 'rgba(238, 245, 252, 0.78)';
+        ctx.beginPath();
+        ctx.moveTo(apex.x, apex.y);
+        ctx.lineTo(apex.x + 145, capY - 35);
+        ctx.lineTo(apex.x + 25, capY + 45);
+        ctx.lineTo(apex.x - 135, capY - 20);
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      // Subtle comic ink cross-hatching on mid-range shadowed slopes
+      if (peak.hasHatching) {
+        ctx.strokeStyle = 'rgba(20, 24, 32, 0.28)';
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        for (let h = 1; h <= 5; h++) {
+          const hx = apex.x + 65 + h * 36;
+          const hy = apex.y + 180 + h * 70;
+          ctx.moveTo(hx, hy);
+          ctx.lineTo(hx + 70, hy + 45);
+        }
+        ctx.stroke();
+      }
     }
+    ctx.restore();
+
+    // Crisp comic ink contour along ridge line
+    tracePoly(ctx, peak.points);
+    ctx.strokeStyle = layerIdx === 0 ? 'rgba(20, 24, 32, 0.42)' : 'rgba(20, 24, 32, 0.78)';
+    ctx.lineWidth = layerIdx === 0 ? 3.5 : 4.5;
     ctx.stroke();
     ctx.restore();
-  }
 
-  // 3. Drifting Cel-Shaded Clouds
+    // Soft atmospheric valley haze band between parallax layers to deepen 2.5D space
+    if (layerIdx < world.distantPeaks.length - 1) {
+      const hazeGrad = ctx.createLinearGradient(0, height * 0.42, 0, height);
+      hazeGrad.addColorStop(0, 'rgba(214, 226, 238, 0)');
+      hazeGrad.addColorStop(0.65, 'rgba(214, 226, 238, 0.14)');
+      hazeGrad.addColorStop(1, 'rgba(226, 234, 242, 0.24)');
+      ctx.fillStyle = hazeGrad;
+      ctx.fillRect(0, height * 0.42, width, height * 0.58);
+    }
+  });
+
+  // 3. Drifting Franco-Belgian Comic Clouds (Sculpted Cumulus & Wind-Swept Cirrus)
   for (const cloud of world.clouds) {
     ctx.save();
     ctx.translate(width * 0.5, height * 0.55);
-    const cZoom = camera.zoom * (0.68 + cloud.parallax * 0.42);
+    const cZoom = camera.zoom * (0.64 + cloud.parallax * 0.44);
     ctx.scale(cZoom, cZoom);
-    const driftX = ((cloud.x + timeSec * cloud.speed + 2000) % 4000) - 2000;
+    const driftX = ((cloud.x + timeSec * cloud.speed + 2200) % 4400) - 2200;
     ctx.translate(driftX - camera.x * cloud.parallax, cloud.y - camera.y * 0.65);
 
     ctx.globalAlpha = cloud.opacity;
-    ctx.fillStyle = '#F1F5F9';
-    ctx.strokeStyle = INK;
-    ctx.lineWidth = 2.4;
-    ctx.beginPath();
-    ctx.roundRect(
-      -cloud.width * 0.5,
-      -cloud.height * 0.5,
-      cloud.width,
-      cloud.height,
-      cloud.height * 0.5
-    );
-    ctx.fill();
-    ctx.stroke();
+    const hw = cloud.width * 0.5;
+    const hh = cloud.height * 0.5;
 
-    ctx.fillStyle = '#BDCCD9';
-    ctx.beginPath();
-    ctx.roundRect(
-      -cloud.width * 0.46,
-      0,
-      cloud.width * 0.92,
-      cloud.height * 0.44,
-      cloud.height * 0.22
-    );
-    ctx.fill();
+    if (cloud.kind === 'cirrus') {
+      // Thin high-altitude comic wind-streaked cloud ribbon
+      ctx.fillStyle = '#F1F5F9';
+      ctx.strokeStyle = 'rgba(20, 24, 32, 0.55)';
+      ctx.lineWidth = 1.8;
+      ctx.beginPath();
+      ctx.moveTo(-hw, 0);
+      ctx.quadraticCurveTo(-hw * 0.35, -hh * 1.15, hw * 0.25, -hh * 0.4);
+      ctx.quadraticCurveTo(hw * 0.72, -hh * 0.9, hw, 0);
+      ctx.quadraticCurveTo(hw * 0.35, hh * 0.55, -hw * 0.4, hh * 0.35);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    } else {
+      // Sculpted puffy cumulus cloud with flat cel-shaded base & bold comic ink outline
+      const drawCumulusSilhouette = () => {
+        ctx.beginPath();
+        ctx.moveTo(-hw * 0.92, hh * 0.45);
+        ctx.arc(-hw * 0.56, hh * 0.05, hh * 0.72, Math.PI * 0.85, Math.PI * 1.85);
+        ctx.arc(-hw * 0.14, -hh * 0.35, hh * 0.95, Math.PI * 1.08, Math.PI * 1.96);
+        ctx.arc(hw * 0.34, -hh * 0.18, hh * 0.78, Math.PI * 1.15, Math.PI * 1.95);
+        ctx.arc(hw * 0.68, hh * 0.12, hh * 0.54, Math.PI * 1.25, Math.PI * 0.2);
+        ctx.lineTo(-hw * 0.92, hh * 0.45);
+        ctx.closePath();
+      };
+
+      drawCumulusSilhouette();
+      ctx.fillStyle = '#F8FAFC';
+      ctx.fill();
+
+      // Flat cel-shaded cool underside clipped inside cloud
+      ctx.save();
+      drawCumulusSilhouette();
+      ctx.clip();
+      ctx.fillStyle = '#BAC9D9';
+      ctx.fillRect(-hw * 1.2, hh * 0.08, cloud.width * 1.2, hh * 0.9);
+      ctx.restore();
+
+      drawCumulusSilhouette();
+      ctx.strokeStyle = INK;
+      ctx.lineWidth = 2.4;
+      ctx.lineJoin = 'round';
+      ctx.stroke();
+    }
     ctx.restore();
+  }
+
+  // 3B. Distant Soaring Alpine Birds (Animated Ink Silhouettes across Valley Depths)
+  if (weather.type !== 'snowstorm') {
+    for (const bird of world.birds) {
+      ctx.save();
+      ctx.translate(width * 0.5, height * 0.55);
+      const bZoom = Math.max(0.28, camera.zoom * (0.58 + bird.parallax * 0.55));
+      ctx.scale(bZoom, bZoom);
+      const span = 4200;
+      const rawX = bird.x + timeSec * bird.speed * bird.dir;
+      const wrapX = ((((rawX + span * 0.5) % span) + span) % span) - span * 0.5;
+      const glideBob = Math.sin(timeSec * 1.8 + bird.phase) * 7;
+      ctx.translate(wrapX - camera.x * bird.parallax, bird.y + glideBob - camera.y * (0.4 + bird.parallax));
+
+      const wingBeat = Math.sin(timeSec * bird.flapSpeed + bird.phase);
+      const wingTipY = -4 + wingBeat * 6.5;
+      const s = bird.scale * 11;
+
+      ctx.globalAlpha = Math.max(0.35, 0.86 - weather.fogOpacity * 0.65);
+      ctx.strokeStyle = INK;
+      ctx.lineWidth = 2.4 * bird.scale;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      ctx.moveTo(-s, wingTipY);
+      ctx.quadraticCurveTo(-s * 0.45, -s * 0.48 + wingTipY * 0.35, 0, 0);
+      ctx.quadraticCurveTo(s * 0.45, -s * 0.48 + wingTipY * 0.35, s, wingTipY);
+      ctx.stroke();
+      ctx.restore();
+    }
   }
 
   // 4. World-Space Camera Transform
@@ -517,6 +699,15 @@ export function renderGameFrame(params: RenderParams) {
       ctx.restore();
     }
 
+    // Map active limb strain per hold so gripped strained holds visibly tremble
+    const strainedHoldMap = new Map<string, number>();
+    (['leftHand', 'rightHand', 'leftFoot', 'rightFoot'] as LimbId[]).forEach((id) => {
+      const l = climber.limbs[id];
+      if (l.holdId && l.strain > 0.3) {
+        strainedHoldMap.set(l.holdId, Math.max(strainedHoldMap.get(l.holdId) ?? 0, l.strain));
+      }
+    });
+
     for (const h of world.holds) {
       if (h.broken) continue;
       if (h.y < minVisY - 80 || h.y > maxVisY + 80) continue;
@@ -524,9 +715,41 @@ export function renderGameFrame(params: RenderParams) {
       const isHovered = hover?.hold?.id === h.id;
       const isReachable = phase === 'PLAYING' && reachableIds.has(h.id);
       const isTutorialTarget = phase === 'PLAYING' && tutorialHoldId === h.id;
+      const costRatio = computeHoldStaminaCostRatio(h, climber, weather);
+      const activeStrain = strainedHoldMap.get(h.id) ?? 0;
+
+      // Per-hold micro-jitter animation by hold type & load/fragility
+      const seedPhase = h.x * 0.13 + h.y * 0.07;
+      let jitterX = 0;
+      let jitterY = 0;
+      let jitterAngle = 0;
+
+      if (h.type === 'fragile') {
+        // Fragile rock continuously trembles with crisp brittle bursts; escalates as cracks widen
+        const burst = 0.45 + 0.55 * Math.max(0, Math.sin(timeSec * 2.9 + seedPhase));
+        const amp = (0.5 + h.crackProgress * 2.1 + activeStrain * 1.1) * burst;
+        jitterX = Math.sin(timeSec * 24 + seedPhase) * amp;
+        jitterY = Math.cos(timeSec * 19 + seedPhase * 1.3) * amp * 0.7;
+        jitterAngle = Math.sin(timeSec * 16 + seedPhase) * (0.025 + h.crackProgress * 0.08);
+      } else if (h.type === 'ice') {
+        // Cold crystalline micro-shiver
+        const amp = 0.28 + activeStrain * 0.75;
+        jitterX = Math.sin(timeSec * 13 + seedPhase) * amp;
+        jitterY = Math.cos(timeSec * 11 + seedPhase) * amp * 0.35;
+      } else if (h.type === 'crimp') {
+        // Tiny tension vibration when climber is fatigued or actively pulling hard
+        const fatigue = climber.stamina < 40 ? (40 - climber.stamina) / 40 : 0;
+        const amp = activeStrain * 0.85 + fatigue * 0.35;
+        if (amp > 0.08) {
+          jitterX = Math.sin(timeSec * 18 + seedPhase) * amp;
+          jitterY = Math.cos(timeSec * 15 + seedPhase) * amp * 0.5;
+        }
+      } else if (activeStrain > 0.55) {
+        jitterX = Math.sin(timeSec * 16 + seedPhase) * activeStrain * 0.55;
+      }
 
       ctx.save();
-      ctx.translate(h.x, h.y);
+      ctx.translate(h.x + jitterX, h.y + jitterY);
 
       // Subtle ivory halo ring for all currently reachable holds (crucial for mobile touch!)
       if (isReachable && !isHovered && !isTutorialTarget) {
@@ -537,7 +760,7 @@ export function renderGameFrame(params: RenderParams) {
         ctx.stroke();
       }
 
-      // Route-Reading Scan Overlay: highlights rock quality up the cliff for strategic line planning
+      // Route-Reading Scan Overlay: highlights rock quality + remaining grip intensity
       if (isReadingRoute && !isHovered) {
         const readColor =
           h.type === 'jug' || h.type === 'ledge'
@@ -558,6 +781,26 @@ export function renderGameFrame(params: RenderParams) {
         ctx.beginPath();
         ctx.arc(0, 0, h.radius + 7, 0, Math.PI * 2);
         ctx.stroke();
+
+        // Remaining grip strength arc (full bright green = low stamina cost; short dark red = high cost)
+        const remainingGrip = Math.max(0.12, 1 - costRatio);
+        ctx.setLineDash([]);
+        ctx.strokeStyle =
+          remainingGrip >= 0.65
+            ? '#6EE7B7'
+            : remainingGrip >= 0.38
+              ? '#FBBF24'
+              : '#EF4444';
+        ctx.lineWidth = 2.4;
+        ctx.beginPath();
+        ctx.arc(
+          0,
+          0,
+          h.radius + 10.5,
+          -Math.PI / 2,
+          -Math.PI / 2 + Math.PI * 2 * remainingGrip
+        );
+        ctx.stroke();
         ctx.restore();
       }
 
@@ -574,28 +817,37 @@ export function renderGameFrame(params: RenderParams) {
         ctx.fill();
       }
 
-      ctx.rotate(h.angle);
+      ctx.rotate(h.angle + jitterAngle);
 
       const r = h.radius;
       const v = h.shapeVariant;
-      let mainColor = '#E6DDD0';
-      let edgeColor = '#8E8477';
+      let baseMain = '#E6DDD0';
+      let baseEdge = '#8E8477';
       if (h.type === 'crimp') {
-        mainColor = '#B6BEC9';
-        edgeColor = '#5E6878';
+        baseMain = '#B6BEC9';
+        baseEdge = '#5E6878';
       } else if (h.type === 'crack') {
-        mainColor = '#252C38';
-        edgeColor = '#141820';
+        baseMain = '#252C38';
+        baseEdge = '#141820';
       } else if (h.type === 'ice') {
-        mainColor = '#BAE6FD';
-        edgeColor = '#0284C7';
+        baseMain = '#BAE6FD';
+        baseEdge = '#0284C7';
       } else if (h.type === 'fragile') {
-        mainColor = '#D9B182';
-        edgeColor = '#9A632C';
+        baseMain = '#D9B182';
+        baseEdge = '#9A632C';
       } else if (h.type === 'ledge') {
-        mainColor = '#F2ECE1';
-        edgeColor = '#948B7D';
+        baseMain = '#F2ECE1';
+        baseEdge = '#948B7D';
       }
+
+      // Visual color lightness/depth tied to remaining grip / stamina cost:
+      // Low cost (<0.38) -> lighter, brighter sunlit stone; high cost (>0.55) -> darker, heavier shadowed rock
+      const shadeShift =
+        costRatio < 0.38
+          ? (0.38 - costRatio) * 0.45
+          : -(costRatio - 0.38) * 0.56;
+      const mainColor = shadeHexColor(baseMain, shadeShift);
+      const edgeColor = shadeHexColor(baseEdge, shadeShift * 0.85);
 
       const strokeClr = isHovered
         ? hover?.reachable
@@ -605,8 +857,8 @@ export function renderGameFrame(params: RenderParams) {
       const strokeW = isHovered ? 3 : 1.9;
 
       if (h.type === 'crack') {
-        // Rich angular rock fissures (vertical / zig-zag / Y-fork / diagonal)
-        ctx.strokeStyle = '#9BA4B0';
+        // Rich angular rock fissures (lip brightness reflects stamina cost)
+        ctx.strokeStyle = shadeHexColor('#9BA4B0', shadeShift);
         ctx.lineWidth = 3.5;
         ctx.lineCap = 'round';
         ctx.beginPath();
@@ -668,8 +920,8 @@ export function renderGameFrame(params: RenderParams) {
         ctx.lineWidth = strokeW;
         ctx.stroke();
 
-        // Crisp sunlit crimp top lip
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.72)';
+        // Crisp sunlit crimp top lip (intensity fades on high-cost crimps)
+        ctx.strokeStyle = `rgba(255, 255, 255, ${(0.82 - costRatio * 0.45).toFixed(2)})`;
         ctx.lineWidth = 1.6;
         ctx.beginPath();
         ctx.moveTo(pts[0].x + 2, pts[0].y + 1.5);
@@ -706,6 +958,15 @@ export function renderGameFrame(params: RenderParams) {
         ctx.lineTo(0, r * 0.95);
         ctx.closePath();
         ctx.fill();
+
+        // Subtle icy glint pulse
+        const glintAlpha = 0.35 + 0.45 * Math.max(0, Math.sin(timeSec * 3.4 + seedPhase));
+        ctx.strokeStyle = `rgba(255, 255, 255, ${glintAlpha.toFixed(2)})`;
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.moveTo(-r * 0.45, -r * 0.35);
+        ctx.lineTo(-r * 0.1, -r * 0.65);
+        ctx.stroke();
       } else {
         // Sculpted polygonal Jug / Ledge / Fragile rock knobs with 4 organic silhouettes
         const pts: Vec2[] =
@@ -764,8 +1025,8 @@ export function renderGameFrame(params: RenderParams) {
         ctx.rect(-r * 1.3, r * 0.16, r * 2.6, r);
         ctx.fill();
 
-        // Top sunlit rim
-        ctx.strokeStyle = 'rgba(255, 252, 244, 0.6)';
+        // Top sunlit rim (brighter for low stamina-cost holds, subdued for draining holds)
+        ctx.strokeStyle = `rgba(255, 252, 244, ${(0.76 - costRatio * 0.48).toFixed(2)})`;
         ctx.lineWidth = 2;
         ctx.beginPath();
         ctx.moveTo(pts[0].x, pts[0].y + 1);
@@ -781,8 +1042,8 @@ export function renderGameFrame(params: RenderParams) {
       }
 
       if (h.type === 'fragile') {
-        ctx.strokeStyle = h.crackProgress > 0.3 ? '#DC2626' : INK;
-        ctx.lineWidth = 1.5 + h.crackProgress * 1.6;
+        ctx.strokeStyle = h.crackProgress > 0.25 ? '#DC2626' : INK;
+        ctx.lineWidth = 1.5 + h.crackProgress * 1.8;
         ctx.beginPath();
         ctx.moveTo(-r * 0.65, -3);
         ctx.lineTo(-1, 1);
@@ -799,15 +1060,152 @@ export function renderGameFrame(params: RenderParams) {
         ctx.fill();
       }
 
+      // Seeping damp rock sheen + glistening water droplet
+      if (h.wet) {
+        ctx.strokeStyle = 'rgba(56, 189, 248, 0.82)';
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.arc(0, 0, r * 0.72, -Math.PI * 0.8, -Math.PI * 0.15);
+        ctx.stroke();
+
+        ctx.fillStyle = '#38BDF8';
+        ctx.beginPath();
+        ctx.arc(r * 0.45, r * 0.38, 2.2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Directional grip lip accent (sidepull / undercling)
+      if (h.gripKind && h.gripKind !== 'downpull') {
+        ctx.strokeStyle =
+          h.gripKind === 'undercling'
+            ? 'rgba(245, 158, 11, 0.92)'
+            : 'rgba(250, 204, 21, 0.92)';
+        ctx.lineWidth = 2.2;
+        ctx.beginPath();
+        if (h.gripKind === 'sidepullLeft') {
+          ctx.arc(0, 0, r * 0.78, Math.PI * 0.65, Math.PI * 1.35);
+        } else if (h.gripKind === 'sidepullRight') {
+          ctx.arc(0, 0, r * 0.78, -Math.PI * 0.35, Math.PI * 0.35);
+        } else {
+          ctx.arc(0, 0, r * 0.78, Math.PI * 0.15, Math.PI * 0.85);
+        }
+        ctx.stroke();
+      }
+
       ctx.restore();
+
+      // Clear directional pull arrow badge when hovered or in Route-Read mode
+      if ((isHovered || isReadingRoute) && h.gripKind && h.gripKind !== 'downpull') {
+        ctx.save();
+        ctx.translate(h.x, h.y - h.radius - 9);
+        ctx.fillStyle = 'rgba(20, 24, 32, 0.86)';
+        ctx.strokeStyle = h.gripKind === 'undercling' ? '#F59E0B' : '#FACC15';
+        ctx.lineWidth = 1.3;
+        ctx.beginPath();
+        ctx.roundRect(-9, -7, 18, 13, 3);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = '#FEF3C7';
+        ctx.font = 'bold 9px "Plus Jakarta Sans", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        const arrow =
+          h.gripKind === 'sidepullLeft' ? '→' : h.gripKind === 'sidepullRight' ? '←' : '↑';
+        ctx.fillText(arrow, 0, -0.5);
+        ctx.restore();
+      }
     }
     ctx.restore();
   }
 
-  // 4F. Summit Zoom-Out Route Trail
-  if (phase === 'SUMMIT' && climber.routeHistory.length > 1) {
+  // 4E-1B. Player-drawn Route-Read Beta Chalk Pins & Sequence Lines
+  if (betaPins.length > 0 && phase === 'PLAYING') {
+    const holdsById = new Map(world.holds.map((h) => [h.id, h]));
+    const pinHolds = betaPins
+      .map((id) => holdsById.get(id))
+      .filter((h): h is NonNullable<typeof h> => !!h && !h.broken);
+
+    if (pinHolds.length > 0) {
+      ctx.save();
+      const baseAlpha = isReadingRoute ? 0.92 : 0.45;
+      if (pinHolds.length >= 2) {
+        ctx.globalAlpha = baseAlpha * 0.75;
+        ctx.strokeStyle = '#FEF3C7';
+        ctx.lineWidth = 2.2;
+        ctx.setLineDash([6, 5]);
+        ctx.beginPath();
+        ctx.moveTo(pinHolds[0].x, pinHolds[0].y);
+        for (let i = 1; i < pinHolds.length; i++) {
+          ctx.lineTo(pinHolds[i].x, pinHolds[i].y);
+        }
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
+      ctx.globalAlpha = baseAlpha;
+      pinHolds.forEach((h, idx) => {
+        const px = h.x + h.radius + 3;
+        const py = h.y - h.radius - 3;
+        ctx.fillStyle = '#FEF3C7';
+        ctx.strokeStyle = INK;
+        ctx.lineWidth = 1.8;
+        ctx.beginPath();
+        ctx.arc(px, py, 8.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = INK;
+        ctx.font = 'bold 10px "JetBrains Mono", monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(String(idx + 1), px, py + 0.5);
+      });
+      ctx.restore();
+    }
+  }
+
+  // 4E-2. Dyno Hold-to-Lunge Charge Indicator
+  if (dynoCharge && phase === 'PLAYING' && !climber.isFalling) {
+    const startLimb = climber.limbs[dynoCharge.limbId];
+    const target = dynoCharge.hold;
     ctx.save();
-    ctx.globalAlpha = Math.min(0.92, summitProgress * 1.25);
+    ctx.strokeStyle = '#F59E0B';
+    ctx.lineWidth = 2.6;
+    ctx.setLineDash([5, 4]);
+    ctx.beginPath();
+    ctx.moveTo(startLimb.pos.x, startLimb.pos.y);
+    ctx.lineTo(target.x, target.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.strokeStyle = 'rgba(20, 24, 32, 0.65)';
+    ctx.lineWidth = 5;
+    ctx.beginPath();
+    ctx.arc(target.x, target.y, target.radius + 9, 0, Math.PI * 2);
+    ctx.stroke();
+
+    ctx.strokeStyle = dynoCharge.progress >= 0.95 ? '#34D399' : '#F59E0B';
+    ctx.lineWidth = 3.2;
+    ctx.beginPath();
+    ctx.arc(
+      target.x,
+      target.y,
+      target.radius + 9,
+      -Math.PI / 2,
+      -Math.PI / 2 + Math.PI * 2 * Math.min(1, dynoCharge.progress)
+    );
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // 4F. Summit Zoom-Out Route Trail & Animated Playback
+  if (phase === 'SUMMIT' && climber.routeHistory.length > 1) {
+    const totalPts = climber.routeHistory.length;
+    const progress = trailPlaybackProgress ?? 1;
+    const visiblePts = Math.max(2, Math.floor(totalPts * Math.max(0.02, Math.min(1, progress))));
+
+    ctx.save();
+    ctx.globalAlpha = Math.min(0.95, summitProgress * 1.25);
     ctx.strokeStyle = '#F59E0B';
     ctx.lineWidth = 5 * inkScale;
     ctx.lineCap = 'round';
@@ -815,17 +1213,63 @@ export function renderGameFrame(params: RenderParams) {
     ctx.setLineDash([12 * inkScale, 8 * inkScale]);
     ctx.beginPath();
     ctx.moveTo(climber.routeHistory[0].x, climber.routeHistory[0].y);
-    for (let i = 1; i < climber.routeHistory.length; i++) {
+    for (let i = 1; i < visiblePts; i++) {
       ctx.lineTo(climber.routeHistory[i].x, climber.routeHistory[i].y);
     }
     ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Moving beacon during trail playback
+    if (trailPlaybackProgress !== null) {
+      const marker = climber.routeHistory[Math.min(totalPts - 1, visiblePts - 1)];
+      ctx.fillStyle = '#FEF3C7';
+      ctx.strokeStyle = '#EA580C';
+      ctx.lineWidth = 3 * inkScale;
+      ctx.beginPath();
+      ctx.arc(marker.x, marker.y, 10 * inkScale, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+
+    // Milestone event pins (Piton, Slip, Dyno, Bivouac) along visible trail
+    const cutoffY =
+      climber.routeHistory[Math.min(totalPts - 1, visiblePts - 1)]?.y ?? -mountainHeight;
+    for (const ev of routeEvents) {
+      if (trailPlaybackProgress !== null && ev.y < cutoffY - 12) continue;
+      const badgeColor =
+        ev.kind === 'slip'
+          ? '#EF4444'
+          : ev.kind === 'dyno'
+            ? '#38BDF8'
+            : ev.kind === 'bivouac'
+              ? '#10B981'
+              : '#F59E0B';
+      const shortText =
+        ev.kind === 'slip' ? '滑' : ev.kind === 'dyno' ? '跃' : ev.kind === 'bivouac' ? '营' : '钉';
+      ctx.fillStyle = badgeColor;
+      ctx.strokeStyle = INK;
+      ctx.lineWidth = 1.8 * inkScale;
+      ctx.beginPath();
+      ctx.arc(ev.x, ev.y, 8 * inkScale, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      if (camera.zoom > 0.25) {
+        ctx.fillStyle = '#141820';
+        ctx.font = `bold ${Math.round(9 * inkScale)}px "Plus Jakarta Sans", sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(shortText, ev.x, ev.y + 0.5);
+      }
+    }
     ctx.restore();
   }
 
-  // 4G. Climbing Rope
+  // 4G. Climbing Rope (skip rusty unclipped wall pitons, only thread player-placed pitons)
+  const ropePitons = pitons.filter((p) => !p.isRusty);
   const ropeAnchors: Vec2[] = [
     { x: 0, y: 0 },
-    ...pitons.map((p) => ({ x: p.x, y: p.y })),
+    ...ropePitons.map((p) => ({ x: p.x, y: p.y })),
     { x: climber.torsoPos.x, y: climber.torsoPos.y + 16 },
   ];
 
@@ -852,52 +1296,173 @@ export function renderGameFrame(params: RenderParams) {
     drawRopePath();
     ctx.stroke();
 
-    ctx.strokeStyle = '#F97316';
+    ctx.strokeStyle = skin.rope;
     ctx.lineWidth = 3 * (camera.zoom < 0.35 ? inkScale * 0.85 : 1);
     drawRopePath();
     ctx.stroke();
     ctx.restore();
   }
 
-  // 4H. Placed Pitons
+  // 4H. Placed Pitons & Pre-placed Rusty Wall Pitons
   for (const p of pitons) {
+    if (p.integrity <= 0) continue;
     ctx.save();
     ctx.translate(p.x, p.y);
     const s = camera.zoom < 0.35 ? inkScale * 0.9 : 1;
     ctx.scale(s, s);
 
-    ctx.fillStyle = '#CBD5E1';
-    ctx.strokeStyle = INK;
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.roundRect(-5, -3, 10, 6, 2);
-    ctx.fill();
-    ctx.stroke();
+    if (p.isRusty) {
+      ctx.rotate(p.angle);
+      ctx.fillStyle = '#92400E';
+      ctx.strokeStyle = INK;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.roundRect(-5, -3, 10, 6, 2);
+      ctx.fill();
+      ctx.stroke();
 
-    ctx.strokeStyle = '#EF4444';
-    ctx.lineWidth = 2.5;
-    ctx.beginPath();
-    ctx.arc(0, 5, 4.5, 0, Math.PI * 2);
-    ctx.stroke();
+      ctx.strokeStyle = '#B45309';
+      ctx.lineWidth = 2.4;
+      ctx.beginPath();
+      ctx.arc(0, 5, 4.5, 0, Math.PI * 2);
+      ctx.stroke();
+
+      if (isReadingRoute) {
+        ctx.strokeStyle = p.reliable ? '#34D399' : '#F59E0B';
+        ctx.lineWidth = 1.6;
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath();
+        ctx.arc(0, 2, 12, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = p.reliable ? '#A7F3D0' : '#FDE68A';
+        ctx.font = 'bold 10px "Plus Jakarta Sans", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(p.reliable ? '旧钉·可用' : '旧钉·锈蚀', 0, -10);
+      }
+    } else {
+      ctx.fillStyle = '#CBD5E1';
+      ctx.strokeStyle = INK;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.roundRect(-5, -3, 10, 6, 2);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.strokeStyle = '#EF4444';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.arc(0, 5, 4.5, 0, Math.PI * 2);
+      ctx.stroke();
+
+      if (nearbyRecyclablePitonId === p.id && phase === 'PLAYING' && !isReadingRoute) {
+        ctx.strokeStyle = '#34D399';
+        ctx.lineWidth = 1.8;
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath();
+        ctx.arc(0, 2, 14, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = '#A7F3D0';
+        ctx.font = 'bold 10px "Plus Jakarta Sans", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('点按回收', 0, -11);
+      }
+    }
     ctx.restore();
   }
 
-  // 4I. Aim / Hover Reach Preview Curve
-  if (hover?.hold && phase === 'PLAYING' && !climber.isFalling) {
+  // 4I. Ghost Limb Stretch Preview & Aim Curve
+  if (
+    hover?.hold &&
+    phase === 'PLAYING' &&
+    !climber.isFalling &&
+    !dynoCharge &&
+    !climber.dynoFlight
+  ) {
     const startLimb = climber.limbs[hover.suggestedLimb];
+    if (hover.reachable) {
+      const preview = predictReachPose(climber, hover.suggestedLimb, hover.hold);
+      const previewClr =
+        preview.directionMismatch || preview.highRisk
+          ? 'rgba(249, 115, 22, 0.42)'
+          : 'rgba(56, 189, 248, 0.38)';
+      const strokeClr =
+        preview.directionMismatch || preview.highRisk ? '#F97316' : '#38BDF8';
+
+      ctx.save();
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = previewClr;
+      ctx.lineWidth = startLimb.isHand ? 11 : 13;
+      ctx.beginPath();
+      ctx.moveTo(preview.root.x, preview.root.y);
+      ctx.lineTo(preview.joint.x, preview.joint.y);
+      ctx.lineTo(preview.end.x, preview.end.y);
+      ctx.stroke();
+
+      ctx.strokeStyle = strokeClr;
+      ctx.lineWidth = 1.8;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(preview.root.x, preview.root.y);
+      ctx.lineTo(preview.joint.x, preview.joint.y);
+      ctx.lineTo(preview.end.x, preview.end.y);
+      ctx.stroke();
+
+      // Predicted center-of-gravity shift ring
+      ctx.setLineDash([]);
+      ctx.fillStyle = previewClr;
+      ctx.strokeStyle = strokeClr;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(preview.predictedTorso.x, preview.predictedTorso.y, 4.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    } else {
+      ctx.save();
+      ctx.strokeStyle = hover.dynoEligible ? '#38BDF8' : '#EF4444';
+      ctx.lineWidth = 2.4;
+      ctx.setLineDash([6, 5]);
+      ctx.beginPath();
+      ctx.moveTo(startLimb.pos.x, startLimb.pos.y);
+      ctx.lineTo(hover.hold.x, hover.hold.y);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  // Airborne Dyno motion streaks behind climber
+  if (climber.dynoFlight && phase === 'PLAYING') {
     ctx.save();
-    ctx.strokeStyle = hover.reachable ? '#F59E0B' : '#EF4444';
-    ctx.lineWidth = 2.4;
-    ctx.setLineDash([6, 5]);
-    ctx.beginPath();
-    ctx.moveTo(startLimb.pos.x, startLimb.pos.y);
-    ctx.lineTo(hover.hold.x, hover.hold.y);
-    ctx.stroke();
+    ctx.strokeStyle = 'rgba(248, 250, 252, 0.65)';
+    ctx.lineWidth = 2.2;
+    ctx.lineCap = 'round';
+    for (let i = -1; i <= 1; i++) {
+      const sx = climber.torsoPos.x + i * 14;
+      const sy = climber.torsoPos.y + 18 + Math.abs(i) * 6;
+      ctx.beginPath();
+      ctx.moveTo(sx, sy);
+      ctx.lineTo(sx, sy + 28);
+      ctx.stroke();
+    }
     ctx.restore();
   }
 
   // 4J. Climber (Aava)
-  drawClimber(ctx, climber, lockedLimb, hover, phase, timeSec, windForce, inkScale);
+  drawClimber(
+    ctx,
+    climber,
+    lockedLimb,
+    hover,
+    phase,
+    timeSec,
+    windForce,
+    inkScale,
+    skin,
+    dynoCharge?.progress ?? 0
+  );
 
   // 4K. World-Space Particles & Comic Rings
   for (const pt of particles) {
@@ -1015,6 +1580,95 @@ function solveNaturalLimbIK(
   }
 }
 
+const LIMB_PHASE_OFFSET: Record<LimbId, number> = {
+  leftHand: 0.7,
+  rightHand: 2.1,
+  leftFoot: 3.6,
+  rightFoot: 5.0,
+};
+
+function getLimbStrainColor(strain: number, alpha = 1): string {
+  const s = Math.max(0, Math.min(1, strain));
+  const t = Math.max(0, Math.min(1, (s - 0.14) / 0.86));
+
+  let r: number;
+  let g: number;
+  let b: number;
+  if (t <= 0.65) {
+    const u = t / 0.65;
+    // Bright yellow (#FACC15) -> Vivid orange (#F97316)
+    r = Math.round(250 + (249 - 250) * u);
+    g = Math.round(204 + (115 - 204) * u);
+    b = Math.round(21 + (22 - 21) * u);
+  } else {
+    const u = (t - 0.65) / 0.35;
+    // Vivid orange (#F97316) -> Deep warning orange (#EA580C)
+    r = Math.round(249 + (234 - 249) * u);
+    g = Math.round(115 + (88 - 115) * u);
+    b = Math.round(22 + (12 - 22) * u);
+  }
+
+  return `rgba(${r}, ${g}, ${b}, ${Math.max(0, Math.min(1, alpha)).toFixed(3)})`;
+}
+
+function getLimbStrainTremor(limbId: LimbId, strain: number, timeSec: number): Vec2 {
+  if (strain <= 0.45) return { x: 0, y: 0 };
+  const excess = Math.max(0, Math.min(1, (strain - 0.45) / 0.55));
+  const amp = Math.pow(excess, 1.35) * 3.4;
+  const phase = LIMB_PHASE_OFFSET[limbId];
+  const f1 = 26 + excess * 22;
+  const f2 = 41 + excess * 28;
+  return {
+    x: (Math.sin(timeSec * f1 + phase) * 0.65 + Math.cos(timeSec * f2 + phase * 1.7) * 0.35) * amp,
+    y: (Math.cos(timeSec * (f1 * 1.13) + phase * 1.3) * 0.65 + Math.sin(timeSec * (f2 * 0.92) + phase) * 0.35) * amp,
+  };
+}
+
+function drawLimbStrainGlow(
+  ctx: CanvasRenderingContext2D,
+  root: Vec2,
+  joint: Vec2,
+  end: Vec2,
+  limbWidth: number,
+  strain: number,
+  timeSec: number,
+  limbId: LimbId
+) {
+  if (strain <= 0.14) return;
+  const intensity = Math.max(0, Math.min(1, (strain - 0.14) / 0.86));
+  const pulse = 0.82 + 0.18 * Math.sin(timeSec * (5 + intensity * 11) + LIMB_PHASE_OFFSET[limbId]);
+
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  // Outer diffused fatigue aura
+  ctx.strokeStyle = getLimbStrainColor(strain, (0.16 + intensity * 0.28) * pulse);
+  ctx.lineWidth = limbWidth + 7 + intensity * 8;
+  ctx.beginPath();
+  ctx.moveTo(root.x, root.y);
+  ctx.lineTo(joint.x, joint.y);
+  ctx.lineTo(end.x, end.y);
+  ctx.stroke();
+
+  // Inner concentrated warning glow
+  ctx.strokeStyle = getLimbStrainColor(strain, (0.28 + intensity * 0.44) * pulse);
+  ctx.lineWidth = limbWidth + 3 + intensity * 3.5;
+  ctx.beginPath();
+  ctx.moveTo(root.x, root.y);
+  ctx.lineTo(joint.x, joint.y);
+  ctx.lineTo(end.x, end.y);
+  ctx.stroke();
+
+  // Soft grip-point glow halo
+  ctx.fillStyle = getLimbStrainColor(strain, (0.18 + intensity * 0.34) * pulse);
+  ctx.beginPath();
+  ctx.arc(end.x, end.y, 7 + intensity * 6.5, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.restore();
+}
+
 function drawClimber(
   ctx: CanvasRenderingContext2D,
   climber: ClimberState,
@@ -1023,18 +1677,26 @@ function drawClimber(
   phase: GamePhase,
   timeSec: number,
   windForce: number,
-  inkScale: number
+  inkScale: number,
+  skin: ClimberSkinConfig,
+  dynoCoilProgress = 0
 ) {
   const joints = getShoulderAndHip(climber);
   const { leftHand, rightHand, leftFoot, rightFoot } = climber.limbs;
 
   const breathRate = climber.stamina < 30 ? 6.5 : 2.2;
-  const breathY = Math.sin(timeSec * breathRate) * 1.1;
+  const breathY = Math.sin(timeSec * breathRate) * 1.1 + dynoCoilProgress * 7.5;
 
-  const lhPos = { x: leftHand.pos.x + leftHand.jitter.x, y: leftHand.pos.y + leftHand.jitter.y };
-  const rhPos = { x: rightHand.pos.x + rightHand.jitter.x, y: rightHand.pos.y + rightHand.jitter.y };
-  const lfPos = { x: leftFoot.pos.x + leftFoot.jitter.x, y: leftFoot.pos.y + leftFoot.jitter.y };
-  const rfPos = { x: rightFoot.pos.x + rightFoot.jitter.x, y: rightFoot.pos.y + rightFoot.jitter.y };
+  const activeStrainFx = phase === 'PLAYING' && !climber.isFalling;
+  const lhTremor = activeStrainFx ? getLimbStrainTremor('leftHand', leftHand.strain, timeSec) : { x: 0, y: 0 };
+  const rhTremor = activeStrainFx ? getLimbStrainTremor('rightHand', rightHand.strain, timeSec) : { x: 0, y: 0 };
+  const lfTremor = activeStrainFx ? getLimbStrainTremor('leftFoot', leftFoot.strain, timeSec) : { x: 0, y: 0 };
+  const rfTremor = activeStrainFx ? getLimbStrainTremor('rightFoot', rightFoot.strain, timeSec) : { x: 0, y: 0 };
+
+  const lhPos = { x: leftHand.pos.x + leftHand.jitter.x + lhTremor.x, y: leftHand.pos.y + leftHand.jitter.y + lhTremor.y };
+  const rhPos = { x: rightHand.pos.x + rightHand.jitter.x + rhTremor.x, y: rightHand.pos.y + rightHand.jitter.y + rhTremor.y };
+  const lfPos = { x: leftFoot.pos.x + leftFoot.jitter.x + lfTremor.x, y: leftFoot.pos.y + leftFoot.jitter.y + lfTremor.y };
+  const rfPos = { x: rightFoot.pos.x + rightFoot.jitter.x + rfTremor.x, y: rightFoot.pos.y + rightFoot.jitter.y + rfTremor.y };
 
   const lhIK = solveNaturalLimbIK(
     joints.leftShoulder,
@@ -1073,6 +1735,17 @@ function drawClimber(
     climber.torsoPos.x
   );
 
+  if (activeStrainFx) {
+    lhIK.joint.x += lhTremor.x * 0.55;
+    lhIK.joint.y += lhTremor.y * 0.55;
+    rhIK.joint.x += rhTremor.x * 0.55;
+    rhIK.joint.y += rhTremor.y * 0.55;
+    lfIK.joint.x += lfTremor.x * 0.55;
+    lfIK.joint.y += lfTremor.y * 0.55;
+    rfIK.joint.x += rfTremor.x * 0.55;
+    rfIK.joint.y += rfTremor.y * 0.55;
+  }
+
   // 2.5D Drop Shadow onto Rock Wall
   ctx.save();
   const shadowOffX = climber.isFalling ? 24 : 13;
@@ -1104,6 +1777,11 @@ function drawClimber(
   ctx.fill();
   ctx.restore();
 
+  if (activeStrainFx) {
+    drawLimbStrainGlow(ctx, joints.leftHip, lfIK.joint, lfIK.end, 10.5, leftFoot.strain, timeSec, 'leftFoot');
+    drawLimbStrainGlow(ctx, joints.rightHip, rfIK.joint, rfIK.end, 10.5, rightFoot.strain, timeSec, 'rightFoot');
+  }
+
   const legOutline = 1.7;
   drawCapsuleLimb(ctx, joints.leftHip, lfIK.joint, 11, '#374151', '#1F2937', legOutline);
   drawCapsuleLimb(ctx, lfIK.joint, lfIK.end, 9.5, '#374151', '#1F2937', legOutline);
@@ -1122,10 +1800,15 @@ function drawClimber(
     ctx.restore();
   });
 
-  drawCapsuleLimb(ctx, joints.leftShoulder, lhIK.joint, 9.5, '#2563EB', '#1E3A8A', legOutline);
-  drawCapsuleLimb(ctx, lhIK.joint, lhIK.end, 8, '#2563EB', '#1E3A8A', legOutline);
-  drawCapsuleLimb(ctx, joints.rightShoulder, rhIK.joint, 9.5, '#3B82F6', '#1D4ED8', legOutline);
-  drawCapsuleLimb(ctx, rhIK.joint, rhIK.end, 8, '#3B82F6', '#1D4ED8', legOutline);
+  if (activeStrainFx) {
+    drawLimbStrainGlow(ctx, joints.leftShoulder, lhIK.joint, lhIK.end, 9, leftHand.strain, timeSec, 'leftHand');
+    drawLimbStrainGlow(ctx, joints.rightShoulder, rhIK.joint, rhIK.end, 9, rightHand.strain, timeSec, 'rightHand');
+  }
+
+  drawCapsuleLimb(ctx, joints.leftShoulder, lhIK.joint, 9.5, skin.jacket, skin.jacketShadow, legOutline);
+  drawCapsuleLimb(ctx, lhIK.joint, lhIK.end, 8, skin.jacket, skin.jacketShadow, legOutline);
+  drawCapsuleLimb(ctx, joints.rightShoulder, rhIK.joint, 9.5, skin.jacket, skin.jacketShadow, legOutline);
+  drawCapsuleLimb(ctx, rhIK.joint, rhIK.end, 8, skin.jacket, skin.jacketShadow, legOutline);
 
   [lhIK.end, rhIK.end].forEach((handEnd) => {
     ctx.save();
@@ -1144,7 +1827,7 @@ function drawClimber(
   ctx.translate(climber.torsoPos.x, climber.torsoPos.y + breathY);
   ctx.rotate(climber.leanAngle);
 
-  ctx.fillStyle = '#2563EB';
+  ctx.fillStyle = skin.jacket;
   ctx.strokeStyle = INK;
   ctx.lineWidth = 2.2;
   ctx.beginPath();
@@ -1152,7 +1835,7 @@ function drawClimber(
   ctx.fill();
   ctx.stroke();
 
-  ctx.fillStyle = '#1E3A8A';
+  ctx.fillStyle = skin.jacketShadow;
   ctx.beginPath();
   ctx.roundRect(1, -20, 12, 38, [0, 6, 6, 0]);
   ctx.fill();
@@ -1171,7 +1854,7 @@ function drawClimber(
   ctx.fill();
   ctx.stroke();
 
-  ctx.fillStyle = '#EA580C';
+  ctx.fillStyle = skin.accent;
   ctx.beginPath();
   ctx.roundRect(-12, -23, 24, 7, 3.5);
   ctx.fill();
@@ -1190,7 +1873,7 @@ function drawClimber(
   ctx.moveTo(-4, -22);
   ctx.quadraticCurveTo(-12 + scarfFlutter * 0.5, -18, -16 + scarfFlutter, -10);
   ctx.stroke();
-  ctx.strokeStyle = '#F59E0B';
+  ctx.strokeStyle = skin.scarf;
   ctx.lineWidth = 2.8;
   ctx.stroke();
 
@@ -1205,7 +1888,7 @@ function drawClimber(
   ctx.fill();
   ctx.stroke();
 
-  ctx.fillStyle = '#D97706';
+  ctx.fillStyle = skin.beanie;
   ctx.beginPath();
   ctx.arc(0, -2, 9.5, Math.PI, 0);
   ctx.closePath();
@@ -1223,7 +1906,7 @@ function drawClimber(
 
   ctx.restore();
 
-  if (phase === 'PLAYING' && !climber.isFalling) {
+  if (activeStrainFx) {
     const limbList: { id: LimbId; pos: Vec2 }[] = [
       { id: 'leftHand', pos: lhIK.end },
       { id: 'rightHand', pos: rhIK.end },
@@ -1235,15 +1918,26 @@ function drawClimber(
       const limb = climber.limbs[item.id];
       const isLocked = lockedLimb === item.id;
       const isSuggested = hover?.suggestedLimb === item.id && hover.hold !== null;
-      const highStrain = limb.strain > 0.55;
+      const hasStrainWarning = limb.strain > 0.25;
 
-      if (isLocked || isSuggested || highStrain) {
+      if (hasStrainWarning) {
+        const strainNorm = Math.max(0, Math.min(1, (limb.strain - 0.25) / 0.75));
+        const ringPulse =
+          limb.strain > 0.65
+            ? Math.sin(timeSec * (8 + strainNorm * 10) + LIMB_PHASE_OFFSET[item.id]) * 1.4
+            : 0;
         ctx.save();
-        ctx.strokeStyle = highStrain
-          ? '#EF4444'
-          : isLocked
-            ? '#F59E0B'
-            : 'rgba(245, 158, 11, 0.85)';
+        ctx.strokeStyle = getLimbStrainColor(limb.strain, 0.48 + strainNorm * 0.48);
+        ctx.lineWidth = 1.8 + strainNorm * 1.2;
+        ctx.beginPath();
+        ctx.arc(item.pos.x, item.pos.y, 9.5 + strainNorm * 3.5 + ringPulse, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      if (isLocked || isSuggested) {
+        ctx.save();
+        ctx.strokeStyle = isLocked ? '#F59E0B' : 'rgba(245, 158, 11, 0.85)';
         ctx.lineWidth = isLocked ? 2.6 : 1.8;
         ctx.beginPath();
         ctx.arc(item.pos.x, item.pos.y, isLocked ? 12 : 10, 0, Math.PI * 2);

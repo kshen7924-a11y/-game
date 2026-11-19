@@ -19,6 +19,44 @@ export type RouteId =
 
 export type WeatherType = 'clear' | 'mist' | 'rain' | 'snowstorm';
 
+export type LoadoutId = 'light' | 'balanced' | 'heavy';
+
+export interface LoadoutConfig {
+  id: LoadoutId;
+  label: string;
+  subtitle: string;
+  pitonDelta: number;
+  chalkDelta: number;
+  drainMult: number;
+}
+
+export type ClimbStyle = 'onsight' | 'redpoint' | 'summit';
+
+export type ClimberSkinId =
+  | 'alpine-orange'
+  | 'glacier-cyan'
+  | 'granite-gold'
+  | 'summit-crimson';
+
+export interface ClimberSkinConfig {
+  id: ClimberSkinId;
+  name: string;
+  unlockCount: number;
+  jacket: string;
+  jacketShadow: string;
+  accent: string;
+  scarf: string;
+  beanie: string;
+  rope: string;
+}
+
+export interface ClimbEvent {
+  x: number;
+  y: number;
+  kind: 'piton' | 'slip' | 'dyno' | 'bivouac';
+  label: string;
+}
+
 export interface WeatherStage {
   minRatio: number;
   maxRatio: number;
@@ -79,6 +117,8 @@ export interface RouteConfig {
   seed: number;
   summitImage: string;
   weatherStages: WeatherStage[];
+  isDailyChallenge?: boolean;
+  dailyDateKey?: string;
 }
 
 export interface Vec2 {
@@ -86,12 +126,19 @@ export interface Vec2 {
   y: number;
 }
 
+export type HoldGripKind =
+  | 'downpull'
+  | 'sidepullLeft'
+  | 'sidepullRight'
+  | 'undercling';
+
 export interface Hold {
   id: string;
   x: number;
   y: number;
   radius: number;
   type: HoldType;
+  gripKind?: HoldGripKind;
   shapeVariant: number;
   stability: number;
   angle: number;
@@ -99,6 +146,7 @@ export interface Hold {
   crackProgress: number;
   broken: boolean;
   chalked: boolean;
+  wet?: boolean;
   zone: number;
 }
 
@@ -119,6 +167,8 @@ export interface Piton {
   y: number;
   angle: number;
   integrity: number;
+  isRusty?: boolean;
+  reliable?: boolean;
 }
 
 export interface LimbState {
@@ -136,10 +186,21 @@ export interface LimbState {
   jitter: Vec2;
 }
 
+export interface DynoFlightState {
+  holdId: string;
+  limbId: LimbId;
+  startTorso: Vec2;
+  targetPos: Vec2;
+  t: number;
+  duration: number;
+  willSlip: boolean;
+}
+
 export interface ClimberState {
   torsoPos: Vec2;
   torsoVel: Vec2;
   leanAngle: number;
+  leanBias: -1 | 0 | 1;
   lookAngle: number;
   stamina: number;
   maxStamina: number;
@@ -149,10 +210,19 @@ export interface ClimberState {
   health: number;
   isFalling: boolean;
   isResting: boolean;
+  isStemming?: boolean;
+  isShakingOut?: boolean;
+  dynoFlight?: DynoFlightState | null;
   limbs: Record<LimbId, LimbState>;
   lastCheckpointY: number;
   lastCheckpointX: number;
   routeHistory: Vec2[];
+}
+
+export interface DynoChargeState {
+  hold: Hold;
+  limbId: LimbId;
+  progress: number;
 }
 
 export interface RockFacet {
@@ -170,7 +240,10 @@ export interface DistantPeak {
   points: Vec2[];
   shade: string;
   rimShade: string;
+  shadowShade: string;
   parallax: number;
+  hasSnow?: boolean;
+  hasHatching?: boolean;
 }
 
 export interface CloudBand {
@@ -181,6 +254,18 @@ export interface CloudBand {
   speed: number;
   parallax: number;
   opacity: number;
+  kind?: 'cumulus' | 'cirrus';
+}
+
+export interface DistantBird {
+  x: number;
+  y: number;
+  speed: number;
+  parallax: number;
+  scale: number;
+  flapSpeed: number;
+  phase: number;
+  dir: 1 | -1;
 }
 
 export interface Particle {
@@ -219,6 +304,7 @@ export interface HoverInfo {
   hold: Hold | null;
   suggestedLimb: LimbId;
   reachable: boolean;
+  dynoEligible?: boolean;
   stabilityHint: string;
   worldPos: Vec2;
 }
