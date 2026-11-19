@@ -19,7 +19,7 @@ export type RouteId =
 
 export type WeatherType = 'clear' | 'mist' | 'rain' | 'snowstorm';
 
-export type LoadoutId = 'light' | 'balanced' | 'heavy';
+export type LoadoutId = 'light' | 'balanced' | 'heavy' | 'free-solo';
 
 export interface LoadoutConfig {
   id: LoadoutId;
@@ -28,6 +28,7 @@ export interface LoadoutConfig {
   pitonDelta: number;
   chalkDelta: number;
   drainMult: number;
+  noProtection?: boolean;
 }
 
 export type ClimbStyle = 'onsight' | 'redpoint' | 'summit';
@@ -148,6 +149,7 @@ export interface Hold {
   chalked: boolean;
   wet?: boolean;
   zone: number;
+  isDecoy?: boolean;
 }
 
 export interface Ledge {
@@ -184,6 +186,35 @@ export interface LimbState {
   load: number;
   strain: number;
   jitter: Vec2;
+  isDragging?: boolean;
+}
+
+export interface LimbDragState {
+  limbId: LimbId;
+  pointerId: number;
+  isTouch?: boolean;
+  originHoldId: string | null;
+  startWorldPos: Vec2;
+  targetPos: Vec2;
+  aimWorldPos?: Vec2;
+  snappedHold: Hold | null;
+  canGrab: boolean;
+  estimatedLoad?: number;
+  failReason: string | null;
+  hasMovedOut: boolean;
+}
+
+export interface PelvisDragState {
+  pointerId: number;
+  startWorldPos: Vec2;
+  startOffset: Vec2;
+  hasMoved?: boolean;
+}
+
+export interface RopeCatchState {
+  pitonId: string;
+  anchor: Vec2;
+  ropeLen: number;
 }
 
 export interface DynoFlightState {
@@ -201,6 +232,9 @@ export interface ClimberState {
   torsoVel: Vec2;
   leanAngle: number;
   leanBias: -1 | 0 | 1;
+  pelvisOffset: Vec2;
+  hipTwist: number;
+  wallHug: number;
   lookAngle: number;
   stamina: number;
   maxStamina: number;
@@ -213,6 +247,7 @@ export interface ClimberState {
   isStemming?: boolean;
   isShakingOut?: boolean;
   dynoFlight?: DynoFlightState | null;
+  ropeCatch?: RopeCatchState | null;
   limbs: Record<LimbId, LimbState>;
   lastCheckpointY: number;
   lastCheckpointX: number;
@@ -223,6 +258,7 @@ export interface DynoChargeState {
   hold: Hold;
   limbId: LimbId;
   progress: number;
+  pointerId?: number;
 }
 
 export interface RockFacet {
@@ -291,6 +327,49 @@ export interface CameraState {
   shake: number;
 }
 
+export interface RouteWallAnalysis {
+  holdsPer10M: number;
+  avgUpperStepPx: number;
+  sparseSectionRatio: number;
+  densityLabel: '密集支点' | '适中节奏' | '稀疏长距' | '绝壁稀缺';
+  baseTechnicalScore: number;
+}
+
+export type OverallRatingGrade = 'SSS' | 'S+' | 'S' | 'A' | 'B' | 'C';
+
+export interface RoadbookStaminaEstimate {
+  pinCount: number;
+  totalAscentM: number;
+  estimatedDrain: number;
+  estimatedRecovery: number;
+  netStaminaChange: number;
+  projectedRemainingStamina: number;
+  estimatedTimeSec: number;
+  decoyHitsCount: number;
+  riskySpanCount: number;
+  verdictLabel: string;
+  freeSoloNote?: string;
+}
+
+export interface ClimbAssessment {
+  assessedGrade: string;
+  gradeDeltaLabel: string;
+  overallScore: number;
+  ratingGrade: OverallRatingGrade;
+  ratingTitle: string;
+  staminaConsumedTotal: number;
+  staminaRecoveredTotal: number;
+  netStaminaTotal: number;
+  staminaConsumedPer10M: number;
+  avgStaminaRemainingPct: number;
+  keyActionMistakeRatePct: number;
+  holdDensityLabel: RouteWallAnalysis['densityLabel'];
+  summaryNote: string;
+  roadbookNote?: string;
+  isFreeSolo?: boolean;
+  tributeNote?: string;
+}
+
 export interface ClimbStats {
   altitudeM: number;
   maxAltitudeM: number;
@@ -298,6 +377,15 @@ export interface ClimbStats {
   pitonsPlaced: number;
   fallsCaught: number;
   movesMade: number;
+  staminaSpent: number;
+  staminaRecovered: number;
+  staminaSamplesSum: number;
+  staminaSampleCount: number;
+  keyActionAttempts: number;
+  keyActionErrors: number;
+  betaPinsPlanned: number;
+  betaPinsFollowed: number;
+  roadbookFlowHits: number;
 }
 
 export interface HoverInfo {
@@ -311,6 +399,7 @@ export interface HoverInfo {
 
 export interface TutorialState {
   active: boolean;
+  variant?: 'basic' | 'advanced';
   step: number;
   highlightHoldId: string | null;
 }

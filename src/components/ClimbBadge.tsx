@@ -6,6 +6,7 @@ interface ClimbBadgeProps {
   compact?: boolean;
   highlightNew?: boolean;
   bestStyle?: ClimbStyle;
+  isFreeSoloCleared?: boolean;
 }
 
 export function ClimbBadge({
@@ -14,6 +15,7 @@ export function ClimbBadge({
   compact = false,
   highlightNew = false,
   bestStyle,
+  isFreeSoloCleared = false,
 }: ClimbBadgeProps) {
   const renderEmblem = () => {
     const stroke = unlocked ? '#141820' : '#64748B';
@@ -107,7 +109,7 @@ export function ClimbBadge({
     }
   };
 
-  const styleLabel =
+  const baseStyleLabel =
     unlocked && bestStyle === 'onsight'
       ? '盲攀 ★'
       : unlocked && bestStyle === 'redpoint'
@@ -115,6 +117,9 @@ export function ClimbBadge({
         : unlocked
           ? '已完攀'
           : '未解锁';
+
+  const styleLabel =
+    unlocked && isFreeSoloCleared ? `${baseStyleLabel} · 徒手 SSS` : baseStyleLabel;
 
   if (compact) {
     return (

@@ -1,7 +1,14 @@
 import { useState } from 'react';
 import { Mountain, Play, Square } from 'lucide-react';
 import { BADGES, ROUTES } from '../game/mountain';
-import { ClimbStats, ClimbStyle, GamePhase, RouteConfig } from '../game/types';
+import {
+  ClimbAssessment,
+  ClimbStats,
+  ClimbStyle,
+  GamePhase,
+  OverallRatingGrade,
+  RouteConfig,
+} from '../game/types';
 import { ClimbBadge } from './ClimbBadge';
 
 interface SummitOverlayProps {
@@ -14,12 +21,23 @@ interface SummitOverlayProps {
   newlyUnlockedBadge: boolean;
   isPlayingTrail: boolean;
   fallDiagnosis?: string | null;
+  assessment?: ClimbAssessment | null;
+  isFreeSolo?: boolean;
   onToggleTrailPlayback: () => void;
   onRespawnCheckpoint: () => void;
   onRestart: () => void;
   onNextRoute: (next: RouteConfig) => void;
   onBackToMenu: () => void;
 }
+
+const RATING_BADGE_STYLE: Record<OverallRatingGrade, string> = {
+  SSS: 'bg-gradient-to-br from-[#F59E0B] via-[#FDE68A] to-[#EA580C] text-[#141820] ring-2 ring-[#F59E0B]/60',
+  'S+': 'bg-[#F59E0B] text-[#141820]',
+  S: 'bg-emerald-600 text-white',
+  A: 'bg-sky-700 text-white',
+  B: 'bg-slate-700 text-white',
+  C: 'bg-stone-600 text-white',
+};
 
 function formatDuration(sec: number): string {
   const m = Math.floor(sec / 60);
@@ -37,6 +55,8 @@ export function SummitOverlay({
   newlyUnlockedBadge,
   isPlayingTrail,
   fallDiagnosis,
+  assessment,
+  isFreeSolo = false,
   onToggleTrailPlayback,
   onRespawnCheckpoint,
   onRestart,
@@ -58,11 +78,14 @@ export function SummitOverlay({
         : '完攀登顶';
 
   if (phase === 'SUMMIT') {
-    if (summitProgress < 0.7) {
+    if (summitProgress < 0.9) {
+      const pct = Math.min(100, Math.round((summitProgress / 0.9) * 100));
       return (
         <div className="pointer-events-none fixed inset-x-0 bottom-8 z-20 flex justify-center px-4">
-          <div className="border border-white/20 bg-[#141820]/82 px-4 py-2 text-xs tracking-wide text-slate-200 backdrop-blur-sm">
-            已登顶 {route.isDailyChallenge ? '今日神山' : route.tierLabel}（{route.grade}）· 正在拉远全景视角
+          <div className="border border-amber-200/35 bg-[#141820]/84 px-4 py-2 text-xs tracking-wide text-amber-100 backdrop-blur-sm">
+            {summitProgress < 0.25
+              ? `已立于最高峰顶 · ${route.isDailyChallenge ? '今日神山' : route.tierLabel}（${route.grade}）`
+              : `已登顶 ${route.isDailyChallenge ? '今日神山' : route.tierLabel}（${route.grade}）· 正在拉远全景视角 ${pct}%`}
           </div>
         </div>
       );
@@ -113,6 +136,12 @@ export function SummitOverlay({
 
           <div className="mt-3.5 flex flex-wrap items-center gap-1.5 text-xs font-semibold text-[#EA580C]">
             <span>{styleTitle}</span>
+            {isFreeSolo && (
+              <>
+                <span aria-hidden="true">·</span>
+                <span className="text-red-700">徒手无保护</span>
+              </>
+            )}
             <span aria-hidden="true">·</span>
             <span>{route.isDailyChallenge ? `今日神山 (${route.dailyDateKey})` : route.tierLabel}</span>
             <span aria-hidden="true">·</span>
@@ -130,6 +159,7 @@ export function SummitOverlay({
               badge={badge}
               unlocked
               bestStyle={climbStyle}
+              isFreeSoloCleared={isFreeSolo || assessment?.isFreeSolo}
               highlightNew={newlyUnlockedBadge}
             />
           </div>
@@ -146,15 +176,91 @@ export function SummitOverlay({
               <div className="text-[11px] text-slate-500">步数</div>
               <div className="mt-0.5 font-semibold font-mono-tabular">{stats.movesMade}</div>
             </div>
-            <div>
-              <div className="text-[11px] text-slate-500">岩钉</div>
-              <div className="mt-0.5 font-semibold font-mono-tabular">{stats.pitonsPlaced}</div>
-            </div>
-            <div>
-              <div className="text-[11px] text-slate-500">救险</div>
-              <div className="mt-0.5 font-semibold font-mono-tabular">{stats.fallsCaught}</div>
-            </div>
+            {isFreeSolo || assessment?.isFreeSolo ? (
+              <>
+                <div>
+                  <div className="text-[11px] text-slate-500">保护</div>
+                  <div className="mt-0.5 font-semibold text-red-700">无保护</div>
+                </div>
+                <div>
+                  <div className="text-[11px] text-slate-500">方式</div>
+                  <div className="mt-0.5 font-semibold text-[#B45309]">徒手独攀</div>
+                </div>
+              </>
+            ) : (
+              <>
+                <div>
+                  <div className="text-[11px] text-slate-500">岩钉</div>
+                  <div className="mt-0.5 font-semibold font-mono-tabular">{stats.pitonsPlaced}</div>
+                </div>
+                <div>
+                  <div className="text-[11px] text-slate-500">救险</div>
+                  <div className="mt-0.5 font-semibold font-mono-tabular">{stats.fallsCaught}</div>
+                </div>
+              </>
+            )}
           </div>
+
+          {/* Post-Climb Smart Technical Difficulty & Overall Rating */}
+          {assessment && (
+            <div
+              className={`mt-3 border-2 p-2.5 text-xs ${
+                assessment.ratingGrade === 'SSS'
+                  ? 'border-[#B45309] bg-[#FFFBEB]'
+                  : 'border-[#141820] bg-[#EAE6DC]'
+              }`}
+            >
+              <div className="flex items-center gap-3">
+                <div
+                  className={`flex h-14 w-14 shrink-0 flex-col items-center justify-center border-2 border-[#141820] shadow-[2px_2px_0px_#141820] ${RATING_BADGE_STYLE[assessment.ratingGrade]}`}
+                >
+                  <span className="font-display text-xl font-extrabold leading-none">
+                    {assessment.ratingGrade}
+                  </span>
+                  <span className="mt-0.5 font-mono-tabular text-[10px] font-bold opacity-90">
+                    {assessment.overallScore}分
+                  </span>
+                </div>
+
+                <div className="min-w-0 flex-1 space-y-1">
+                  <div className="flex flex-wrap items-baseline justify-between gap-1">
+                    <span className="font-bold text-[#141820]">{assessment.ratingTitle}</span>
+                  </div>
+                  <div className="text-[11px] text-slate-800">
+                    实际难度{' '}
+                    <span className="font-mono-tabular font-bold text-[#EA580C]">
+                      {assessment.assessedGrade}
+                    </span>{' '}
+                    <span className="text-slate-600">· {assessment.gradeDeltaLabel}</span>
+                  </div>
+                  <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-slate-700 font-mono-tabular">
+                    <span>
+                      耗体 {assessment.staminaConsumedTotal} · 回复 {assessment.staminaRecoveredTotal}（均余 {assessment.avgStaminaRemainingPct}%）
+                    </span>
+                    <span>
+                      失误率 {assessment.keyActionMistakeRatePct}% · {assessment.holdDensityLabel}
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <p className="mt-2 border-t border-[#141820]/15 pt-1.5 text-[11px] leading-snug text-slate-700">
+                {assessment.summaryNote}
+              </p>
+              {assessment.roadbookNote && (
+                <p className="mt-1 text-[11px] font-medium leading-snug text-sky-900">
+                  路书读线：{assessment.roadbookNote}
+                </p>
+              )}
+              {assessment.tributeNote && (
+                <div className="mt-2 border-l-4 border-[#B45309] bg-[#FEF3C7]/85 px-2.5 py-2 text-[11px] leading-relaxed text-[#78350F]">
+                  <div className="font-bold text-[#92400E]">
+                    致敬徒手攀登传奇 · Alex Honnold（亚历克斯·霍诺德）
+                  </div>
+                  <p className="mt-0.5">{assessment.tributeNote}</p>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Clean Two-Tier Action Hierarchy */}
           <div className="mt-4 space-y-2 border-t border-slate-300 pt-3">
@@ -204,20 +310,24 @@ export function SummitOverlay({
       <div className="fixed inset-0 z-20 flex items-center justify-center bg-[#141820]/70 p-4 backdrop-blur-xs">
         <div className="w-full max-w-md border-2 border-[#141820] bg-[#F4F1EA] p-5 text-[#141820] shadow-[6px_6px_0px_#141820] sm:p-6">
           <div className="flex items-center gap-2 text-xs font-semibold text-red-700">
-            <span>坠落重伤</span>
+            <span>{isFreeSolo ? '徒手坠落 · 无保护' : '坠落重伤'}</span>
             <span aria-hidden="true">·</span>
             <span className="font-mono-tabular">
               {route.tierLabel}（{route.grade}）最高 {stats.maxAltitudeM.toFixed(1)}m
             </span>
           </div>
-          <h2 className="font-display mt-1 text-3xl font-bold tracking-tight">失足脱手</h2>
+          <h2 className="font-display mt-1 text-3xl font-bold tracking-tight">
+            {isFreeSolo ? '徒手失手' : '失足脱手'}
+          </h2>
           {fallDiagnosis && (
             <div className="mt-2.5 border border-red-300 bg-red-50 px-3 py-2 text-xs font-semibold leading-relaxed text-red-900">
               复盘原因：{fallDiagnosis}
             </div>
           )}
           <p className="mt-2 text-xs leading-relaxed text-slate-700 sm:text-sm">
-            在艰难路段前打入岩钉挂绳，配合「左倾/右倾」顺应岩点发力方向，可大幅减轻臂力负担。
+            {isFreeSolo
+              ? '徒手无保护模式未携带岩钉与防滑粉，也不设休息台存档，一旦脱手坠落只能从起点从头重攀。'
+              : '在艰难路段前打入岩钉挂绳，配合「左倾/右倾」顺应岩点发力方向，可大幅减轻臂力负担。'}
           </p>
 
           <div className="mt-5 space-y-2">

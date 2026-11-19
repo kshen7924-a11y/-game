@@ -20,6 +20,7 @@ interface TitleOverlayProps {
   selectedRouteId: RouteId;
   completedRoutes: Set<RouteId>;
   bestStyles: Record<string, ClimbStyle>;
+  freeSoloRoutes?: Set<RouteId>;
   dailyRoute: RouteConfig;
   dailyCompleted: boolean;
   selectedLoadout: LoadoutId;
@@ -71,6 +72,7 @@ export function TitleOverlay({
   selectedRouteId,
   completedRoutes,
   bestStyles,
+  freeSoloRoutes = new Set(),
   dailyRoute,
   dailyCompleted,
   selectedLoadout,
@@ -89,8 +91,9 @@ export function TitleOverlay({
   const activeSkin =
     CLIMBER_SKINS.find((s) => s.id === selectedSkin) ?? CLIMBER_SKINS[0];
 
-  const effectivePitons = Math.max(1, activeRoute.pitons + activeLoadout.pitonDelta);
-  const effectiveChalk = Math.max(1, activeRoute.chalkUses + activeLoadout.chalkDelta);
+  const isFreeSolo = !!activeLoadout.noProtection;
+  const effectivePitons = isFreeSolo ? 0 : Math.max(1, activeRoute.pitons + activeLoadout.pitonDelta);
+  const effectiveChalk = isFreeSolo ? 0 : Math.max(1, activeRoute.chalkUses + activeLoadout.chalkDelta);
 
   const filteredRoutes = useMemo(
     () => ROUTES.filter((r) => matchesTierFilter(r, tierFilter)),
@@ -211,9 +214,11 @@ export function TitleOverlay({
                   {filteredRoutes.map((route) => {
                     const isSelected = route.id === selectedRouteId;
                     const isDone = completedRoutes.has(route.id);
+                    const isSoloCleared = freeSoloRoutes.has(route.id);
                     const style = bestStyles[route.id];
-                    const styleMark =
-                      style === 'onsight'
+                    const styleMark = isSoloCleared
+                      ? 'SSS'
+                      : style === 'onsight'
                         ? '★'
                         : style === 'redpoint'
                           ? '◆'
@@ -238,13 +243,15 @@ export function TitleOverlay({
                           </span>
                           <span
                             className={`font-semibold ${
-                              style === 'onsight'
-                                ? 'text-amber-600'
-                                : style === 'redpoint'
-                                  ? 'text-[#EA580C]'
-                                  : isDone
-                                    ? 'text-emerald-700'
-                                    : 'text-slate-500'
+                              isSoloCleared
+                                ? 'font-extrabold text-[#B45309]'
+                                : style === 'onsight'
+                                  ? 'text-amber-600'
+                                  : style === 'redpoint'
+                                    ? 'text-[#EA580C]'
+                                    : isDone
+                                      ? 'text-emerald-700'
+                                      : 'text-slate-500'
                             }`}
                           >
                             {styleMark ? `${styleMark} ` : ''}
@@ -268,12 +275,24 @@ export function TitleOverlay({
                 <div className="flex flex-col justify-between border-2 border-[#141820] bg-white p-4">
                   <div className="space-y-3">
                     <div>
-                      <div className="flex items-center gap-1.5 text-xs font-semibold text-[#EA580C] font-mono-tabular">
+                      <div className="flex flex-wrap items-center gap-1.5 text-xs font-semibold text-[#EA580C] font-mono-tabular">
                         <span>第 {activeRoute.tier} 阶</span>
                         <span aria-hidden="true">·</span>
                         <span>难度 {activeRoute.grade}</span>
                         <span aria-hidden="true">·</span>
                         <span>{activeRoute.heightM}m</span>
+                        {freeSoloRoutes.has(activeRoute.id) && (
+                          <>
+                            <span aria-hidden="true">·</span>
+                            <span className="font-bold text-[#B45309]">已获徒手 SSS</span>
+                          </>
+                        )}
+                        {activeRoute.tier >= 5 && (
+                          <>
+                            <span aria-hidden="true">·</span>
+                            <span className="font-semibold text-sky-700">含路书读线</span>
+                          </>
+                        )}
                       </div>
                       <h2 className="font-display mt-0.5 text-2xl font-bold text-[#141820]">
                         {activeRoute.tierLabel} · {activeRoute.name}
@@ -284,11 +303,28 @@ export function TitleOverlay({
                       {activeRoute.description}
                     </p>
 
+                    {activeRoute.tier >= 5 && (
+                      <div className="border border-sky-300 bg-sky-50/80 px-2.5 py-1.5 text-[11px] leading-relaxed text-sky-900">
+                        <span className="font-bold">中级以上路书系统：</span>
+                        开攀前自动进入读线观察，支持提前标记路线序列、可行性校验与参考路书生成。
+                      </div>
+                    )}
+
+                    {isFreeSolo && (
+                      <div className="border border-red-300 bg-[#FEF2F2] px-2.5 py-2 text-[11px] leading-relaxed text-red-900">
+                        <span className="font-bold text-[#B91C1C]">徒手攀登已启用：</span>
+                        体力消耗 -50%，全程无岩钉、无防滑粉与休息台存档（失败只能从头重攀），登顶直评{' '}
+                        <span className="font-bold text-[#B45309]">SSS</span> 致敬亚历克斯。
+                      </div>
+                    )}
+
                     <dl className="grid grid-cols-2 gap-x-3 gap-y-2 border-t border-slate-200 pt-3 text-xs">
                       <div>
                         <dt className="text-[11px] text-slate-500">携带装备</dt>
                         <dd className="mt-0.5 font-semibold text-[#141820] font-mono-tabular">
-                          岩钉 ×{effectivePitons} · 防粉 ×{effectiveChalk}
+                          {isFreeSolo
+                            ? '无岩钉防粉（徒手无保护）'
+                            : `岩钉 ×${effectivePitons} · 防粉 ×${effectiveChalk}`}
                         </dd>
                       </div>
                       <div>
@@ -332,7 +368,7 @@ export function TitleOverlay({
                   </span>
                 </div>
 
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   {LOADOUT_OPTIONS.map((opt) => {
                     const active = opt.id === selectedLoadout;
                     const drainPct = Math.round((opt.drainMult - 1) * 100);
@@ -344,17 +380,21 @@ export function TitleOverlay({
                           : `体力消耗 +${drainPct}%`;
 
                     const gearParts: string[] = [];
-                    if (opt.pitonDelta !== 0) {
-                      gearParts.push(
-                        `岩钉 ${opt.pitonDelta > 0 ? `+${opt.pitonDelta}` : opt.pitonDelta}`
-                      );
+                    if (opt.noProtection) {
+                      gearParts.push('无岩钉防粉 · 失败从头开始');
+                    } else {
+                      if (opt.pitonDelta !== 0) {
+                        gearParts.push(
+                          `岩钉 ${opt.pitonDelta > 0 ? `+${opt.pitonDelta}` : opt.pitonDelta}`
+                        );
+                      }
+                      if (opt.chalkDelta !== 0) {
+                        gearParts.push(
+                          `防粉 ${opt.chalkDelta > 0 ? `+${opt.chalkDelta}` : opt.chalkDelta}`
+                        );
+                      }
+                      if (gearParts.length === 0) gearParts.push('默认补给');
                     }
-                    if (opt.chalkDelta !== 0) {
-                      gearParts.push(
-                        `防粉 ${opt.chalkDelta > 0 ? `+${opt.chalkDelta}` : opt.chalkDelta}`
-                      );
-                    }
-                    if (gearParts.length === 0) gearParts.push('默认补给');
 
                     return (
                       <button
@@ -363,13 +403,19 @@ export function TitleOverlay({
                         onClick={() => onSelectLoadout(opt.id)}
                         className={`flex flex-col justify-between border-2 p-3.5 text-left transition-all ${
                           active
-                            ? 'border-[#141820] bg-white shadow-[4px_4px_0px_#141820]'
+                            ? opt.noProtection
+                              ? 'border-[#141820] bg-[#FFF7ED] shadow-[4px_4px_0px_#141820]'
+                              : 'border-[#141820] bg-white shadow-[4px_4px_0px_#141820]'
                             : 'border-slate-300 bg-[#EAE6DC] hover:border-[#141820] hover:bg-white/75'
                         }`}
                       >
                         <div>
                           <div className="flex items-center justify-between gap-2">
-                            <span className="text-sm font-bold text-[#141820]">
+                            <span
+                              className={`text-sm font-bold ${
+                                opt.noProtection ? 'text-[#B91C1C]' : 'text-[#141820]'
+                              }`}
+                            >
                               {opt.label}
                             </span>
                             {active && <Check className="h-4 w-4 text-[#EA580C]" />}
@@ -379,12 +425,14 @@ export function TitleOverlay({
                           </p>
                         </div>
 
-                        <div className="mt-3 flex items-center gap-1.5 border-t border-slate-200 pt-2 text-[11px] font-semibold font-mono-tabular text-slate-700">
+                        <div className="mt-3 flex flex-wrap items-center gap-1.5 border-t border-slate-200 pt-2 text-[11px] font-semibold font-mono-tabular text-slate-700">
                           <span className={drainPct < 0 ? 'text-emerald-700' : drainPct > 0 ? 'text-orange-700' : ''}>
                             {drainText}
                           </span>
                           <span aria-hidden="true">·</span>
-                          <span>{gearParts.join(' / ')}</span>
+                          <span className={opt.noProtection ? 'text-red-700' : ''}>
+                            {gearParts.join(' / ')}
+                          </span>
                         </div>
                       </button>
                     );
@@ -448,7 +496,7 @@ export function TitleOverlay({
                 <div className="font-bold text-[#141820]">
                   山岳纪念徽章墙
                 </div>
-                <div className="flex items-center gap-2 text-slate-600 font-mono-tabular">
+                <div className="flex flex-wrap items-center gap-2 text-slate-600 font-mono-tabular">
                   <span>
                     已点亮 {completedRoutes.size}/{BADGES.length}
                   </span>
@@ -456,6 +504,8 @@ export function TitleOverlay({
                   <span className="text-amber-700 font-semibold">盲攀 ★ {onsightCount}</span>
                   <span aria-hidden="true">·</span>
                   <span className="text-[#EA580C] font-semibold">红点 ◆ {redpointCount}</span>
+                  <span aria-hidden="true">·</span>
+                  <span className="text-[#B45309] font-bold">徒手 SSS {freeSoloRoutes.size}</span>
                 </div>
               </div>
 
@@ -466,6 +516,7 @@ export function TitleOverlay({
                     badge={badge}
                     unlocked={completedRoutes.has(badge.id)}
                     bestStyle={bestStyles[badge.id]}
+                    isFreeSoloCleared={freeSoloRoutes.has(badge.id)}
                   />
                 ))}
               </div>
@@ -480,16 +531,22 @@ export function TitleOverlay({
               {activeRoute.tierLabel}（{activeRoute.grade}）· {activeRoute.name}
             </div>
             <div className="truncate text-[11px] text-slate-600 font-mono-tabular">
-              {activeRoute.heightM}m · {activeLoadout.label} · 岩钉 ×{effectivePitons} · 防粉 ×{effectiveChalk}
+              {isFreeSolo
+                ? `${activeRoute.heightM}m · ${activeLoadout.label} · 无保护 · 失败重头`
+                : `${activeRoute.heightM}m · ${activeLoadout.label} · 岩钉 ×${effectivePitons} · 防粉 ×${effectiveChalk}`}
             </div>
           </div>
 
           <button
             type="button"
             onClick={() => onStart(activeRoute)}
-            className="min-h-[46px] shrink-0 border-2 border-[#141820] bg-[#EA580C] px-6 py-2.5 text-sm font-bold text-white shadow-[3px_3px_0px_#141820] whitespace-nowrap transition-transform hover:bg-[#DC4C06] active:translate-x-0.5 active:translate-y-0.5"
+            className={`min-h-[46px] shrink-0 border-2 border-[#141820] px-6 py-2.5 text-sm font-bold text-white shadow-[3px_3px_0px_#141820] whitespace-nowrap transition-transform active:translate-x-0.5 active:translate-y-0.5 ${
+              isFreeSolo
+                ? 'bg-[#B91C1C] hover:bg-[#991B1B]'
+                : 'bg-[#EA580C] hover:bg-[#DC4C06]'
+            }`}
           >
-            开始攀登
+            {isFreeSolo ? '开始徒手攀登' : '开始攀登'}
           </button>
         </footer>
       </div>

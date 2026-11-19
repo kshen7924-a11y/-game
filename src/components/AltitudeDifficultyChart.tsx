@@ -5,6 +5,8 @@ interface AltitudeDifficultyChartProps {
   profile: AltitudeDifficultyBin[];
   altitudeM: number;
   routeHeightM: number;
+  isReadingRoute?: boolean;
+  onInspectBin?: (bin: AltitudeDifficultyBin) => void;
 }
 
 function getBarColor(
@@ -41,6 +43,8 @@ export function AltitudeDifficultyChart({
   profile,
   altitudeM,
   routeHeightM,
+  isReadingRoute = false,
+  onInspectBin,
 }: AltitudeDifficultyChartProps) {
   const [inspectedIndex, setInspectedIndex] = useState<number | null>(null);
 
@@ -72,7 +76,9 @@ export function AltitudeDifficultyChart({
   return (
     <div className="pointer-events-auto w-[166px] border border-white/15 bg-[#141820]/80 px-2 py-1 backdrop-blur-sm sm:w-[208px] sm:px-2.5 sm:py-1.5">
       <div className="flex items-center justify-between gap-1.5 text-[10px] leading-tight">
-        <span className="font-medium text-slate-400 whitespace-nowrap">坡度</span>
+        <span className="font-medium text-slate-400 whitespace-nowrap">
+          {isReadingRoute ? '点选段' : '坡度'}
+        </span>
         <span className={`truncate font-semibold font-mono-tabular ${focusColor}`}>
           {previewPrefix} · {focusBin.challengeTag}
         </span>
@@ -91,7 +97,12 @@ export function AltitudeDifficultyChart({
             <button
               key={bin.index}
               type="button"
-              onClick={() => setInspectedIndex((prev) => (prev === idx ? null : idx))}
+              onClick={() => {
+                setInspectedIndex((prev) => (prev === idx && !isReadingRoute ? null : idx));
+                if (isReadingRoute && onInspectBin) {
+                  onInspectBin(bin);
+                }
+              }}
               title={`${bin.startM}-${bin.endM}m · ${bin.challengeTag} (坡度 ${bin.difficulty})`}
               className="group relative flex h-full flex-1 flex-col items-center justify-end focus:outline-none"
             >

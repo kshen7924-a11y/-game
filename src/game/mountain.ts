@@ -2,7 +2,11 @@ import {
   ActiveWeather,
   AltitudeDifficultyBin,
   BadgeInfo,
+  ClimbAssessment,
   ClimberSkinConfig,
+  ClimberState,
+  ClimbStats,
+  ClimbStyle,
   CloudBand,
   DistantBird,
   DistantPeak,
@@ -10,10 +14,14 @@ import {
   HoldType,
   Ledge,
   LoadoutConfig,
+  LoadoutId,
+  OverallRatingGrade,
   Piton,
+  RoadbookStaminaEstimate,
   RockFacet,
   RouteConfig,
   RouteId,
+  RouteWallAnalysis,
   Vec2,
 } from './types';
 
@@ -159,9 +167,9 @@ export const ROUTES: RouteConfig[] = [
     tierLabel: '入门线',
     grade: '5.6',
     name: '晨雾花岗岩',
-    subtitle: '入门线 · 5.6 · 含分步教学与山间轻雾',
+    subtitle: '入门线 · 5.6 · 含进阶操作教学与山间轻雾',
     description:
-      '坡度平缓、支点稳固，包含五步新手教学；半山会升起柔和晨雾，带你完整熟悉岩钉保护与防滑粉涂抹。',
+      '坡度平缓、支点稳固，包含进阶操作教学（双击或拖离松手、拖动腰部移重心与甩臂回耐），带你熟练掌握核心攀爬技巧。',
     heightM: 35,
     drainMultiplier: 0.38,
     windMultiplier: 0.22,
@@ -200,9 +208,9 @@ export const ROUTES: RouteConfig[] = [
     tierLabel: '初级线',
     grade: '5.7',
     name: '青苔阶梯壁',
-    subtitle: '初级线 · 5.7 · 独立攀登与初阶读线',
+    subtitle: '初级线 · 5.7 · 独立攀登与平衡控体',
     description:
-      '开始脱离辅助提示，路线中段穿插少量小指点与岩缝，需要学会用「读线」功能提前规划双脚站位。',
+      '开始脱离辅助提示，路线中段穿插少量小指点与岩缝，需要自主判断岩点成色并合理调整双脚站位。',
     heightM: 45,
     drainMultiplier: 0.48,
     windMultiplier: 0.32,
@@ -645,6 +653,12 @@ export const ROUTES: RouteConfig[] = [
   },
 ];
 
+export const ROUTE_BOOK_MIN_TIER = 5;
+
+export function isRouteBookSupported(route: RouteConfig): boolean {
+  return route.tier >= ROUTE_BOOK_MIN_TIER;
+}
+
 export function getRouteById(id: RouteId): RouteConfig {
   return ROUTES.find((r) => r.id === id) ?? ROUTES[0];
 }
@@ -673,6 +687,15 @@ export const LOADOUT_OPTIONS: LoadoutConfig[] = [
     pitonDelta: 2,
     chalkDelta: 1,
     drainMult: 1.1,
+  },
+  {
+    id: 'free-solo',
+    label: '徒手攀登',
+    subtitle: '无岩钉防粉与任何保护，失败重头开始 · 体力消耗 -50% · 登顶直评 SSS',
+    pitonDelta: -99,
+    chalkDelta: -99,
+    drainMult: 0.5,
+    noProtection: true,
   },
 ];
 
@@ -825,23 +848,596 @@ export interface MountainWorld {
   birds: DistantBird[];
   cairnStones: Vec2[];
   difficultyProfile: AltitudeDifficultyBin[];
+  wallAnalysis: RouteWallAnalysis;
+}
+
+const YDS_GRADE_LADDER = [
+  '5.4',
+  '5.5',
+  '5.6',
+  '5.7',
+  '5.8',
+  '5.9',
+  '5.10a',
+  '5.10b',
+  '5.10c',
+  '5.10d',
+  '5.11a',
+  '5.11b',
+  '5.11c',
+  '5.11d',
+  '5.12a',
+  '5.12b',
+  '5.12c',
+  '5.12d',
+  '5.13a',
+  '5.13b',
+  '5.13c',
+  '5.13d',
+  '5.14a',
+] as const;
+
+/**
+ * 基于当前体力状态与岩壁支点疏密程度的智能分析函数：
+ * 结合岩点分布密度、上攀跨步间距、方向性握点比例与当前体力余量，
+ * 动态评估岩壁的实际体力压迫度与技术难度得分。
+ */
+export function analyzeStaminaAndHoldDensity(
+  holds: Hold[],
+  mountainHeight: number,
+  currentStaminaRatio = 1,
+  route?: RouteConfig
+): RouteWallAnalysis {
+  const allActiveHolds = holds.filter((h) => !h.broken);
+  const coreHolds = allActiveHolds.filter((h) => !h.isDecoy);
+  const activeHolds = coreHolds.length >= 6 ? coreHolds : allActiveHolds;
+  const heightM = Math.max(1, mountainHeight / PIXELS_PER_METER);
+  const holdsPer10M = Math.round(((activeHolds.length / heightM) * 10) * 10) / 10;
+
+  const staminaClamped = Math.max(0, Math.min(1, currentStaminaRatio));
+  const holdRiskMap: Record<HoldType, number> = {
+    ledge: 10,
+    jug: 18,
+    crack: 46,
+    crimp: 72,
+    fragile: 82,
+    ice: 92,
+  };
+
+  let upperStepSum = 0;
+  let upperStepCount = 0;
+  let sparseCount = 0;
+  let holdTechSum = 0;
+
+  for (let i = 0; i < activeHolds.length; i++) {
+    const h = activeHolds[i];
+    let dirPenalty = 0;
+    if (h.gripKind === 'sidepullLeft' || h.gripKind === 'sidepullRight') dirPenalty = 10;
+    else if (h.gripKind === 'undercling') dirPenalty = 14;
+    holdTechSum += holdRiskMap[h.type] + dirPenalty + (h.wet ? 9 : 0);
+
+    // Exclude summit top holds when measuring upward stepping intervals
+    if (h.y <= -mountainHeight + 44) continue;
+
+    let minUpperDist = Infinity;
+    let localNeighbors = 0;
+    for (let j = 0; j < activeHolds.length; j++) {
+      if (i === j) continue;
+      const other = activeHolds[j];
+      const dx = other.x - h.x;
+      const dy = other.y - h.y;
+      const d = Math.hypot(dx, dy);
+      if (d <= 74) localNeighbors++;
+      if (other.y < h.y - 10 && other.y >= h.y - 145) {
+        if (d < minUpperDist) minUpperDist = d;
+      }
+    }
+
+    if (minUpperDist < Infinity) {
+      upperStepSum += minUpperDist;
+      upperStepCount++;
+      if (minUpperDist > 62 || localNeighbors <= 1) {
+        sparseCount++;
+      }
+    }
+  }
+
+  const avgUpperStepPx =
+    upperStepCount > 0 ? Math.round((upperStepSum / upperStepCount) * 10) / 10 : 48;
+  const sparseSectionRatio =
+    upperStepCount > 0 ? Math.round((sparseCount / upperStepCount) * 1000) / 1000 : 0.2;
+
+  let densityLabel: RouteWallAnalysis['densityLabel'] = '适中节奏';
+  if (avgUpperStepPx <= 44 && sparseSectionRatio < 0.16) {
+    densityLabel = '密集支点';
+  } else if (avgUpperStepPx <= 53 && sparseSectionRatio < 0.34) {
+    densityLabel = '适中节奏';
+  } else if (avgUpperStepPx <= 62 && sparseSectionRatio < 0.56) {
+    densityLabel = '稀疏长距';
+  } else {
+    densityLabel = '绝壁稀缺';
+  }
+
+  const avgHoldTech = activeHolds.length > 0 ? holdTechSum / activeHolds.length : 35;
+  const densityPressure = Math.max(0, (avgUpperStepPx - 38) * 1.15) + sparseSectionRatio * 34;
+  // Lower remaining stamina amplifies the technical demand of sparse rock sections
+  const fatigueAmp = 1 + (1 - staminaClamped) * (0.28 + sparseSectionRatio * 0.42);
+  const tierFactor = route ? (route.tier - 1) * 2.4 : 0;
+
+  const baseTechnicalScore = Math.round(
+    Math.max(12, Math.min(100, (avgHoldTech * 0.56 + densityPressure * 0.44 + tierFactor) * fatigueAmp))
+  );
+
+  return {
+    holdsPer10M,
+    avgUpperStepPx,
+    sparseSectionRatio,
+    densityLabel,
+    baseTechnicalScore,
+  };
+}
+
+/**
+ * 通关后根据「体力消耗记录」「岩点疏密分析」与「关键动作失误率」
+ * 自动评估该次攀登的实际技术线路难度，并给出综合评分等级。
+ */
+export function evaluateClimbAssessment(
+  world: MountainWorld,
+  stats: ClimbStats,
+  climbStyle: ClimbStyle,
+  loadoutId: LoadoutId = 'balanced'
+): ClimbAssessment {
+  const isFreeSolo = loadoutId === 'free-solo';
+  const avgStaminaRemainingPct = Math.round(
+    stats.staminaSampleCount > 0
+      ? Math.max(0, Math.min(100, stats.staminaSamplesSum / stats.staminaSampleCount))
+      : 72
+  );
+  const avgStaminaRatio = avgStaminaRemainingPct / 100;
+
+  const liveAnalysis = analyzeStaminaAndHoldDensity(
+    world.holds,
+    world.mountainHeight,
+    avgStaminaRatio,
+    world.route
+  );
+
+  const heightUnits10M = Math.max(1, world.route.heightM / 10);
+  const staminaConsumedTotal = Math.round(stats.staminaSpent);
+  const staminaRecoveredTotal = Math.round(stats.staminaRecovered);
+  const netStaminaTotal = Math.round(stats.staminaSpent - stats.staminaRecovered);
+  const staminaConsumedPer10M = Math.round((stats.staminaSpent / heightUnits10M) * 10) / 10;
+
+  const totalActions = Math.max(
+    1,
+    stats.keyActionAttempts + stats.fallsCaught,
+    stats.movesMade + stats.keyActionErrors
+  );
+  const mistakeRate = Math.max(0, Math.min(1, stats.keyActionErrors / totalActions));
+  const keyActionMistakeRatePct = Math.round(mistakeRate * 1000) / 10;
+
+  // Expected baseline stamina burn per 10m scaled by route tier
+  const expectedBurnPer10M = (15 + world.route.tier * 2.4) * (isFreeSolo ? 0.5 : 1);
+  const staminaBurnRatio = staminaConsumedPer10M / Math.max(8, expectedBurnPer10M);
+
+  const fatigueTechShift =
+    (liveAnalysis.baseTechnicalScore - world.wallAnalysis.baseTechnicalScore) / 13;
+  const staminaShift = (staminaBurnRatio - 1.0) * 1.15;
+  const mistakeShift = (mistakeRate - 0.06) * 5.2 + stats.fallsCaught * 0.45;
+  const smoothBonusShift =
+    mistakeRate < 0.04 && stats.fallsCaught === 0 && avgStaminaRemainingPct >= 68 ? -0.65 : 0;
+
+  const gradeDelta = isFreeSolo
+    ? Math.max(1, Math.min(3, Math.round(fatigueTechShift + staminaShift + mistakeShift + 1)))
+    : Math.max(
+        -1,
+        Math.min(3, Math.round(fatigueTechShift + staminaShift + mistakeShift + smoothBonusShift))
+      );
+
+  const nominalIdx = Math.max(
+    0,
+    YDS_GRADE_LADDER.indexOf(world.route.grade as (typeof YDS_GRADE_LADDER)[number])
+  );
+  const assessedIdx = Math.max(
+    0,
+    Math.min(YDS_GRADE_LADDER.length - 1, nominalIdx + gradeDelta)
+  );
+  const assessedGrade = YDS_GRADE_LADDER[assessedIdx];
+
+  const gradeDeltaLabel = isFreeSolo
+    ? `徒手无保护突破（心理与技术 +${gradeDelta} 档）`
+    : gradeDelta > 0
+      ? `实测难度 +${gradeDelta} 档（高压技术挑战）`
+      : gradeDelta < 0
+        ? '实测体感 -1 档（高效流畅掌控）'
+        : '实测符合标称技术定级';
+
+  const supportsRoadbook = isRouteBookSupported(world.route);
+  let roadbookNote: string | undefined;
+  if (supportsRoadbook) {
+    if (stats.betaPinsPlanned > 0) {
+      const execPct = Math.min(
+        100,
+        Math.round((stats.betaPinsFollowed / stats.betaPinsPlanned) * 100)
+      );
+      const flowSuffix =
+        stats.roadbookFlowHits >= 2
+          ? `触发 ${stats.roadbookFlowHits} 次路书连贯提速，避开干扰点显著加快登顶。`
+          : '';
+      roadbookNote =
+        execPct >= 75
+          ? `路书规划 ${stats.betaPinsPlanned} 步 · 命中 ${stats.betaPinsFollowed} 步（执行率 ${execPct}%），提前读线与路线执行力出色。${flowSuffix}`
+          : `路书规划 ${stats.betaPinsPlanned} 步 · 命中 ${stats.betaPinsFollowed} 步（执行率 ${execPct}%），攀爬中适时临场微调了线路。${flowSuffix}`;
+    } else {
+      roadbookNote =
+        stats.fallsCaught === 0
+          ? '未使用路书标记，纯凭临场读线能力一次稳健登顶。'
+          : '本次未绘制路书节点，中级以上干扰岩点密集，提前标记「路书」可避开死胡同并加快登顶。';
+    }
+  }
+
+  if (isFreeSolo) {
+    return {
+      assessedGrade,
+      gradeDeltaLabel,
+      overallScore: 100,
+      ratingGrade: 'SSS',
+      ratingTitle: '传奇徒手完攀 · 致敬亚历克斯',
+      staminaConsumedTotal,
+      staminaRecoveredTotal,
+      netStaminaTotal,
+      staminaConsumedPer10M,
+      avgStaminaRemainingPct,
+      keyActionMistakeRatePct,
+      holdDensityLabel: world.wallAnalysis.densityLabel,
+      summaryNote: `零岩钉、零防滑粉、零保护一次登顶「${world.wallAnalysis.densityLabel}」绝壁（耗体 ${staminaConsumedTotal} · 回复 ${staminaRecoveredTotal} · 失误率 ${keyActionMistakeRatePct}%）。`,
+      roadbookNote,
+      isFreeSolo: true,
+      tributeNote:
+        '无绳、无钉、无退路——以绝对的冷静与专注完成徒手独攀，谨以此 SSS 级完攀向徒手攀登传奇亚历克斯·霍诺德（Alex Honnold）致敬！',
+    };
+  }
+
+  let rawScore = 100;
+  rawScore -= Math.min(34, mistakeRate * 75);
+  rawScore -= Math.min(24, stats.fallsCaught * 11);
+  rawScore -= Math.max(0, Math.min(18, (staminaBurnRatio - 1.05) * 14));
+  rawScore -= Math.max(0, Math.min(10, (55 - avgStaminaRemainingPct) * 0.25));
+  if (climbStyle === 'onsight') rawScore += 5;
+  else if (climbStyle === 'redpoint') rawScore += 2;
+  if (world.wallAnalysis.sparseSectionRatio >= 0.28 && mistakeRate <= 0.06) {
+    rawScore += 3;
+  }
+  if (supportsRoadbook && stats.roadbookFlowHits >= 3) {
+    rawScore += 2;
+  }
+
+  const overallScore = Math.round(Math.max(42, Math.min(100, rawScore)));
+
+  let ratingGrade: OverallRatingGrade = 'C';
+  let ratingTitle = '艰难完赛 · 建议加强读线与节奏';
+  if (overallScore >= 94 && stats.fallsCaught === 0) {
+    ratingGrade = 'S+';
+    ratingTitle = '大师级完攀 · 零失误精密控体';
+  } else if (overallScore >= 86) {
+    ratingGrade = 'S';
+    ratingTitle = '卓越攀登 · 体力与动作精准';
+  } else if (overallScore >= 75) {
+    ratingGrade = 'A';
+    ratingTitle = '稳健登顶 · 线路掌控良好';
+  } else if (overallScore >= 62) {
+    ratingGrade = 'B';
+    ratingTitle = '成功突破 · 仍有省力空间';
+  }
+
+  const summaryNote =
+    stats.fallsCaught === 0 && mistakeRate <= 0.05
+      ? `在「${world.wallAnalysis.densityLabel}」岩壁耗体 ${staminaConsumedTotal}、回复 ${staminaRecoveredTotal}，均余 ${avgStaminaRemainingPct}% 耐力且失误率仅 ${keyActionMistakeRatePct}%。`
+      : staminaBurnRatio > 1.2
+        ? `累计耗体 ${staminaConsumedTotal}（回复 ${staminaRecoveredTotal}），在${world.wallAnalysis.densityLabel}段可多沿路书主线并用双脚顶撑、甩臂回耐。`
+        : `耗体 ${staminaConsumedTotal} / 回复 ${staminaRecoveredTotal}，失误率 ${keyActionMistakeRatePct}%；留意侧拉/反扣重心与路书顺畅衔接可冲击更高评价。`;
+
+  return {
+    assessedGrade,
+    gradeDeltaLabel,
+    overallScore,
+    ratingGrade,
+    ratingTitle,
+    staminaConsumedTotal,
+    staminaRecoveredTotal,
+    netStaminaTotal,
+    staminaConsumedPer10M,
+    avgStaminaRemainingPct,
+    keyActionMistakeRatePct,
+    holdDensityLabel: world.wallAnalysis.densityLabel,
+    summaryNote,
+    roadbookNote,
+  };
+}
+
+/**
+ * 为中级及以上线路生成智能参考路书序列：
+ * 采用 2 步前瞻避开死胡同与干扰岩点，结合岩点安全度、手脚跨度与徒手安全余量，挑选快速且稳妥的最优读线。
+ */
+export function generateSuggestedRoadbook(
+  world: MountainWorld,
+  fromPos: Vec2,
+  maxPins = 10,
+  loadoutId: LoadoutId = 'balanced'
+): string[] {
+  const isFreeSolo = loadoutId === 'free-solo';
+  const candidates = world.holds.filter(
+    (h) => !h.broken && h.y < fromPos.y - 14 && h.y >= fromPos.y - 720
+  );
+  if (candidates.length === 0) return [];
+
+  const typeWeight: Record<HoldType, number> = {
+    ledge: 36,
+    jug: 28,
+    crack: 18,
+    crimp: isFreeSolo ? -14 : -8,
+    fragile: isFreeSolo ? -55 : -36,
+    ice: isFreeSolo ? -46 : -28,
+  };
+
+  const getUpwardContinuationScore = (h: Hold): number => {
+    if (h.y <= -world.mountainHeight + 55) return 26;
+    const nextNeighbors = world.holds.filter(
+      (n) =>
+        !n.broken &&
+        n.id !== h.id &&
+        n.y < h.y - 16 &&
+        n.y >= h.y - 102 &&
+        Math.hypot(n.x - h.x, n.y - h.y) <= 98
+    );
+    if (nextNeighbors.length === 0) return -68;
+    let best2nd = -40;
+    for (const n of nextNeighbors) {
+      let s2 = typeWeight[n.type];
+      if (n.wet) s2 -= isFreeSolo ? 16 : 8;
+      if (n.isDecoy) s2 -= 18;
+      const has3rd =
+        n.y <= -world.mountainHeight + 55 ||
+        world.holds.some(
+          (n2) =>
+            !n2.broken &&
+            n2.id !== n.id &&
+            n2.y < n.y - 16 &&
+            Math.hypot(n2.x - n.x, n2.y - n.y) <= 98
+        );
+      if (!has3rd) s2 -= 42;
+      if (s2 > best2nd) best2nd = s2;
+    }
+    return best2nd * 0.48 + Math.min(10, nextNeighbors.length * 3);
+  };
+
+  const selected: string[] = [];
+  const usedIds = new Set<string>();
+  let cur: Vec2 = { x: fromPos.x, y: fromPos.y - 12 };
+
+  for (let step = 0; step < maxPins; step++) {
+    let best: Hold | null = null;
+    let bestScore = -Infinity;
+
+    for (const h of candidates) {
+      if (usedIds.has(h.id)) continue;
+      const dy = cur.y - h.y;
+      if (dy < 22 || dy > 92) continue;
+      const d = Math.hypot(h.x - cur.x, h.y - cur.y);
+      if (d > 102) continue;
+
+      let score = typeWeight[h.type];
+      if (h.wet) score -= isFreeSolo ? 20 : 12;
+      if (h.gripKind === 'undercling') score -= 5;
+      else if (h.gripKind === 'sidepullLeft' || h.gripKind === 'sidepullRight') score -= 3;
+      if (h.isDecoy) score -= 34;
+
+      // Favor clean vertical efficiency so optimal roadbook climbs faster
+      score += Math.min(30, dy * 0.48);
+      if (d > 86) score -= (d - 86) * 1.15;
+      score += getUpwardContinuationScore(h);
+
+      if (score > bestScore) {
+        bestScore = score;
+        best = h;
+      }
+    }
+
+    if (!best) break;
+    selected.push(best.id);
+    usedIds.add(best.id);
+    cur = { x: best.x, y: best.y };
+    if (best.y <= -world.mountainHeight + 24) break;
+  }
+
+  return selected;
+}
+
+/**
+ * 实时计算已标记路书序列的预计体力消耗、途中回复与净变化（含徒手-50%与湿滑风险）
+ */
+export function estimateRoadbookStamina(
+  world: MountainWorld,
+  pinIds: string[],
+  climber: ClimberState,
+  weather: ActiveWeather,
+  loadoutId: LoadoutId
+): RoadbookStaminaEstimate {
+  const loadout =
+    LOADOUT_OPTIONS.find((l) => l.id === loadoutId) ?? LOADOUT_OPTIONS[1];
+  const isFreeSolo = !!loadout.noProtection || loadout.id === 'free-solo';
+  const drainMult = world.route.drainMultiplier * loadout.drainMult;
+
+  const holdMap = new Map<string, Hold>();
+  for (const h of world.holds) {
+    holdMap.set(h.id, h);
+  }
+
+  const holdsSeq = pinIds
+    .map((id) => holdMap.get(id))
+    .filter((h): h is Hold => !!h && !h.broken);
+
+  if (holdsSeq.length === 0) {
+    return {
+      pinCount: 0,
+      totalAscentM: 0,
+      estimatedDrain: 0,
+      estimatedRecovery: 0,
+      netStaminaChange: 0,
+      projectedRemainingStamina: Math.round(climber.stamina),
+      estimatedTimeSec: 0,
+      decoyHitsCount: 0,
+      riskySpanCount: 0,
+      verdictLabel: '尚未标记路书节点，可点岩点或点「参考路书」自动计算耗体与回复',
+      freeSoloNote: isFreeSolo
+        ? '徒手无防滑粉无保护，务必先读线避开脆岩/冰面死胡同'
+        : undefined,
+    };
+  }
+
+  let prevPos: Vec2 = { x: climber.torsoPos.x, y: climber.torsoPos.y };
+  let totalDrain = 0;
+  let totalRecovery = 0;
+  let totalTimeSec = 0;
+  let decoyHitsCount = 0;
+  let riskySpanCount = 0;
+
+  const holdStrainCost: Record<HoldType, number> = {
+    ledge: 0.4,
+    jug: 1.55,
+    crack: 2.35,
+    crimp: 3.45,
+    fragile: 4.1,
+    ice: 4.3,
+  };
+
+  const startY = climber.torsoPos.y;
+  let maxPinUpY = startY;
+
+  for (let i = 0; i < holdsSeq.length; i++) {
+    const h = holdsSeq[i];
+    if (h.y < maxPinUpY) maxPinUpY = h.y;
+    const stepD = Math.hypot(h.x - prevPos.x, h.y - prevPos.y);
+    const dy = Math.max(0, prevPos.y - h.y);
+    const dx = Math.abs(h.x - prevPos.x);
+
+    if (h.isDecoy) decoyHitsCount++;
+    if (stepD > 132) riskySpanCount++;
+
+    // Roadbook flow lowers step move time (~1.75s..3.2s depending on reach & hold difficulty)
+    const baseMoveSec =
+      1.65 +
+      stepD / 85 +
+      (h.type === 'crimp' || h.type === 'ice' || h.type === 'fragile' ? 0.55 : 0) +
+      (h.isDecoy ? 0.95 : 0);
+    totalTimeSec += baseMoveSec;
+
+    // Step stamina consumption
+    const spanPenalty = stepD > 125 ? 5.2 : stepD > 95 ? 2.4 : 0;
+    const dirPenalty =
+      h.gripKind === 'undercling'
+        ? 0.9
+        : h.gripKind === 'sidepullLeft' || h.gripKind === 'sidepullRight'
+          ? 0.55
+          : 0;
+    const wetPenalty = h.wet ? (isFreeSolo ? 1.55 : 0.85) : 0;
+    const decoyPenalty = h.isDecoy ? 2.1 : 0;
+    const weatherMult =
+      weather.type === 'snowstorm' ? 1.22 : weather.type === 'rain' ? 1.14 : 1.0;
+
+    // Roadbook clean flow gives ~14% rhythm stamina saving on non-decoy holds
+    const flowSaving = !h.isDecoy ? 0.86 : 1.08;
+    const stepDrain =
+      (holdStrainCost[h.type] +
+        dy * 0.022 +
+        dx * 0.015 +
+        spanPenalty +
+        dirPenalty +
+        wetPenalty +
+        decoyPenalty) *
+      Math.max(0.42, drainMult) *
+      weatherMult *
+      flowSaving;
+
+    totalDrain += stepDrain;
+
+    // Natural stamina recovery opportunities on ledges, jugs, or bivouacs along route
+    const nearBivouac = world.ledges.some(
+      (l) => !l.isSummit && Math.abs(l.y - h.y) <= 28 && Math.abs(l.x - h.x) <= l.width * 0.65
+    );
+    if (nearBivouac) {
+      totalRecovery += 14.5;
+    } else if (h.type === 'ledge') {
+      totalRecovery += 5.8;
+    } else if (h.type === 'jug' && !h.isDecoy && stepD <= 88) {
+      // Brief balanced shake-out recovery on solid jugs
+      totalRecovery += 2.2;
+    }
+
+    prevPos = { x: h.x, y: h.y };
+  }
+
+  const estimatedDrain = Math.round(totalDrain * 10) / 10;
+  const estimatedRecovery = Math.round(totalRecovery * 10) / 10;
+  const netStaminaChange = Math.round((estimatedRecovery - estimatedDrain) * 10) / 10;
+  const projectedRemainingStamina = Math.round(
+    Math.max(0, Math.min(climber.maxStamina, climber.stamina + netStaminaChange))
+  );
+  const totalAscentM = Math.max(
+    0,
+    Math.round(((startY - maxPinUpY) / PIXELS_PER_METER) * 10) / 10
+  );
+
+  let verdictLabel = '路线节奏稳健 · 耐力可控';
+  if (decoyHitsCount > 0 || riskySpanCount > 0) {
+    verdictLabel = `含 ${decoyHitsCount} 处干扰岔点 / ${riskySpanCount} 处超距跨步，建议调整`;
+  } else if (projectedRemainingStamina <= 20) {
+    verdictLabel = '长段高耗能 · 途中建议在稳点甩臂回耐';
+  } else if (netStaminaChange >= -8) {
+    verdictLabel = '黄金省力速攀线 · 体力收支极佳';
+  }
+
+  let freeSoloNote: string | undefined;
+  if (isFreeSolo) {
+    const hasSlipHazard = holdsSeq.some((h) => h.type === 'ice' || h.type === 'fragile' || h.wet);
+    freeSoloNote = hasSlipHazard
+      ? '徒手耗体减半，但无防滑粉——尽量绕开路书中的脆岩与湿冰点'
+      : '徒手耗体 -50% 且全线稳固，按路书连贯推进可极速登顶';
+  }
+
+  return {
+    pinCount: holdsSeq.length,
+    totalAscentM,
+    estimatedDrain,
+    estimatedRecovery,
+    netStaminaChange,
+    projectedRemainingStamina,
+    estimatedTimeSec: Math.round(totalTimeSec),
+    decoyHitsCount,
+    riskySpanCount,
+    verdictLabel,
+    freeSoloNote,
+  };
 }
 
 export function generateMountain(route: RouteConfig): MountainWorld {
   const rng = createRng(route.seed);
   const mountainHeight = route.heightM * PIXELS_PER_METER;
 
+  const summitCenter = getMountainCenterOffset(-mountainHeight, mountainHeight);
   const outlineLeft: Vec2[] = [];
   const outlineRight: Vec2[] = [];
 
   const stepY = 48;
-  for (let y = 120; y >= -mountainHeight - 40; y -= stepY) {
+  for (let y = 120; y > -mountainHeight + 26; y -= stepY) {
     const b = getCliffBounds(y, mountainHeight);
     const jitterL = (rng() - 0.5) * 14;
     const jitterR = (rng() - 0.5) * 14;
     outlineLeft.push({ x: b.left + jitterL, y });
     outlineRight.push({ x: b.right + jitterR, y });
   }
+  outlineLeft.push({ x: summitCenter - 84, y: -mountainHeight + 2 });
+  outlineRight.push({ x: summitCenter + 84, y: -mountainHeight + 2 });
 
   const facets: RockFacet[] = [];
   const rowH = 104;
@@ -941,7 +1537,6 @@ export function generateMountain(route: RouteConfig): MountainWorld {
     }
   }
 
-  const summitCenter = getMountainCenterOffset(-mountainHeight, mountainHeight);
   const ledges: Ledge[] = [
     {
       id: 'base-camp',
@@ -1047,7 +1642,8 @@ export function generateMountain(route: RouteConfig): MountainWorld {
     zone: number,
     radiusOverride?: number,
     wet = false,
-    forceDownpull = false
+    forceDownpull = false,
+    isDecoy = false
   ) => {
     const stabilityMap: Record<HoldType, number> = {
       ledge: 1.45,
@@ -1103,6 +1699,7 @@ export function generateMountain(route: RouteConfig): MountainWorld {
       chalked: false,
       wet,
       zone,
+      ...(isDecoy ? { isDecoy: true } : {}),
     });
   };
 
@@ -1216,34 +1813,57 @@ export function generateMountain(route: RouteConfig): MountainWorld {
     }
   }
 
-  // Step 2: Intentional Route-Reading Forks & Decoy Traps scaled strictly by tier
+  // Step 2: Intentional Route-Reading Forks & High-Density Decoy Traps (heavily enriched on Tier >= 5)
   // Tier 1: 0 branches (pure single line)
   // Tier 2: 1 harmless parallel step
   // Tier 3-4: 2-3 short alternative forks
-  // Tier 5-6: 4-5 forks with fragile traps
-  // Tier 7-8: 6-7 traverse/dead-end crux decoys
-  // Tier 9-11: 8-11 deceptive alpine false lines
+  // Tier 5-6: 7-9 misleading forks + false-promise entry traps + flank distractors
+  // Tier 7-8: 11-13 deceptive traverse/dead-end crux decoys
+  // Tier 9-11: 14-16 dense alpine false lines & high-drain decoys
   const branchCount =
-    tier === 1 ? 0 : tier === 2 ? 1 : tier <= 4 ? tier - 1 : tier <= 8 ? tier : tier + 1;
+    tier === 1
+      ? 0
+      : tier === 2
+        ? 1
+        : tier <= 4
+          ? tier - 1
+          : tier === 5
+            ? 7
+            : tier === 6
+              ? 9
+              : tier === 7
+                ? 11
+                : tier === 8
+                  ? 13
+                  : tier + 5;
+
+  const hasRainRoute = route.weatherStages.some((s) => s.type === 'rain');
 
   for (let b = 0; b < branchCount; b++) {
     if (mainLineNodes.length < 6) break;
     const minIdx = 2;
     const maxIdx = mainLineNodes.length - 4;
     const startIdx =
-      minIdx + Math.floor(((b + 0.35 + rng() * 0.3) / branchCount) * (maxIdx - minIdx));
+      minIdx + Math.floor(((b + 0.25 + rng() * 0.5) / branchCount) * (maxIdx - minIdx));
     const anchor = mainLineNodes[Math.max(0, Math.min(mainLineNodes.length - 1, startIdx))];
 
-    const dir = rng() > 0.5 ? 1 : -1;
-    const branchLen = tier <= 3 ? 3 : tier <= 6 ? 4 : 5;
-    const isDeadEndTrap = tier >= 4 && (tier >= 7 ? rng() < 0.72 : rng() < 0.5);
+    const dir = b % 2 === 0 ? 1 : -1;
+    const branchLen = tier <= 3 ? 3 : tier <= 6 ? 4 + (b % 2) : 5 + (b % 2);
+    const isDeadEndTrap =
+      tier >= 5
+        ? tier >= 7
+          ? rng() < 0.82
+          : rng() < 0.72
+        : tier === 4
+          ? rng() < 0.5
+          : false;
 
-    let bx = anchor.x + dir * (44 + rng() * 18);
+    let bx = anchor.x + dir * (38 + rng() * 16);
     let by = anchor.y - 16;
 
     for (let s = 0; s < branchLen; s++) {
       const bounds = getCliffBounds(by, mountainHeight);
-      if (bx < bounds.left + 26 || bx > bounds.right - 26 || by < -mountainHeight + 48) {
+      if (bx < bounds.left + 24 || bx > bounds.right - 24 || by < -mountainHeight + 48) {
         break;
       }
 
@@ -1257,35 +1877,83 @@ export function generateMountain(route: RouteConfig): MountainWorld {
       } else if (tier <= 4) {
         bType = isDeadEndTrap && s === branchLen - 1 ? 'fragile' : r < 0.55 ? 'crimp' : 'crack';
       } else if (tier <= 6) {
-        bType =
-          isDeadEndTrap && s >= branchLen - 2
-            ? 'fragile'
-            : r < 0.45
-              ? 'crimp'
-              : r < 0.75
-                ? 'crack'
-                : 'fragile';
-      } else {
-        const allowIce = progress > 0.35 || tier >= 9;
-        if (isDeadEndTrap && s >= branchLen - 2) {
-          bType = allowIce && rng() < 0.5 ? 'ice' : 'fragile';
+        // False-promise entry: step 0 lures with a tempting crack/jug before turning into crimp/fragile traps
+        if (isDeadEndTrap && s === 0) {
+          bType = r < 0.38 ? 'jug' : 'crack';
         } else {
-          bType = allowIce && r < 0.4 ? 'ice' : r < 0.78 ? 'crimp' : 'fragile';
+          bType =
+            isDeadEndTrap && s >= branchLen - 2
+              ? r < 0.68
+                ? 'fragile'
+                : 'crimp'
+              : r < 0.5
+                ? 'crimp'
+                : r < 0.74
+                  ? 'crack'
+                  : 'fragile';
+        }
+      } else {
+        const allowIce = progress > 0.28 || tier >= 9;
+        if (isDeadEndTrap && s === 0) {
+          bType = r < 0.3 ? 'jug' : 'crack';
+        } else if (isDeadEndTrap && s >= branchLen - 2) {
+          bType = allowIce && rng() < 0.54 ? 'ice' : 'fragile';
+        } else {
+          bType = allowIce && r < 0.44 ? 'ice' : r < 0.8 ? 'crimp' : 'fragile';
         }
       }
 
-      if (canPlaceHold(bx, by, 26)) {
-        pushHold(bx, by, bType, zone);
+      const bWet =
+        tier >= 5 &&
+        bType !== 'ice' &&
+        rng() < (hasRainRoute ? 0.22 + progress * 0.14 : 0.1);
+
+      if (canPlaceHold(bx, by, 24)) {
+        pushHold(bx, by, bType, zone, undefined, bWet, false, isDeadEndTrap);
       }
 
       // Either curve away into a dead end or rejoin main line
       if (isDeadEndTrap) {
-        bx += dir * (16 + rng() * 18);
-        by -= 36 + rng() * 10;
+        bx += dir * (17 + rng() * 19);
+        by -= 35 + rng() * 11;
       } else {
         const nextMainX = getMainLineCenterX(by - 38);
         bx = bx * 0.55 + nextMainX * 0.45;
         by -= 36;
+      }
+    }
+  }
+
+  // Step 2b: Scattered flank distractor holds on Intermediate+ (tier >= 5) to raise route-reading stakes
+  if (tier >= ROUTE_BOOK_MIN_TIER && mainLineNodes.length >= 6) {
+    const decoyScatterCount = 8 + (tier - ROUTE_BOOK_MIN_TIER) * 4;
+    for (let dIdx = 0; dIdx < decoyScatterCount; dIdx++) {
+      const nodeIdx = 1 + Math.floor(((dIdx + 0.5) / decoyScatterCount) * (mainLineNodes.length - 3));
+      const anchor = mainLineNodes[Math.max(0, Math.min(mainLineNodes.length - 1, nodeIdx))];
+      const side = dIdx % 2 === 0 ? -1 : 1;
+      const dx = anchor.x + side * (46 + rng() * 54);
+      const dy = anchor.y + (rng() - 0.5) * 26;
+      const bounds = getCliffBounds(dy, mountainHeight);
+      if (dx < bounds.left + 26 || dx > bounds.right - 26 || dy < -mountainHeight + 52) {
+        continue;
+      }
+      const progress = Math.max(0, Math.min(1, -dy / mountainHeight));
+      const zone = progress < 0.35 ? 0 : progress < 0.7 ? 1 : 2;
+      const roll = rng();
+      let dType: HoldType = 'crimp';
+      if (tier >= 7 && (progress > 0.35 || tier >= 9) && roll < 0.34) {
+        dType = 'ice';
+      } else if (roll < 0.66) {
+        dType = 'fragile';
+      } else if (roll < 0.88) {
+        dType = 'crimp';
+      } else {
+        dType = 'crack';
+      }
+      const dWet =
+        dType !== 'ice' && rng() < (hasRainRoute ? 0.25 : 0.12);
+      if (canPlaceHold(dx, dy, 25)) {
+        pushHold(dx, dy, dType, zone, undefined, dWet, false, true);
       }
     }
   }
@@ -1434,10 +2102,10 @@ export function generateMountain(route: RouteConfig): MountainWorld {
   }
 
   const cairnStones: Vec2[] = [
-    { x: summitCenter + 38, y: -mountainHeight - 6 },
-    { x: summitCenter + 38, y: -mountainHeight - 16 },
-    { x: summitCenter + 38, y: -mountainHeight - 25 },
-    { x: summitCenter + 38, y: -mountainHeight - 32 },
+    { x: summitCenter + 54, y: -mountainHeight - 8 },
+    { x: summitCenter + 54, y: -mountainHeight - 17 },
+    { x: summitCenter + 54, y: -mountainHeight - 25 },
+    { x: summitCenter + 54, y: -mountainHeight - 31 },
   ];
 
   // Compute 12-band altitude difficulty slope profile from actual holds, weather & ledges
@@ -1511,11 +2179,15 @@ export function generateMountain(route: RouteConfig): MountainWorld {
       return lr >= r0 && lr < r1;
     });
 
+    const binDensityPenalty =
+      holdsInBin.length <= 2 ? 12 : holdsInBin.length === 3 ? 6 : 0;
+
     const rawDiff =
-      avgHoldScore * 0.62 +
+      avgHoldScore * 0.6 +
       (tier - 1) * 2.5 +
       weatherBonus +
       branchComplexity +
+      binDensityPenalty +
       midR * 8 -
       (hasBivouac ? 10 : 0);
 
@@ -1553,6 +2225,8 @@ export function generateMountain(route: RouteConfig): MountainWorld {
     });
   }
 
+  const wallAnalysis = analyzeStaminaAndHoldDensity(holds, mountainHeight, 1.0, route);
+
   return {
     route,
     mountainHeight,
@@ -1567,5 +2241,6 @@ export function generateMountain(route: RouteConfig): MountainWorld {
     birds,
     cairnStones,
     difficultyProfile,
+    wallAnalysis,
   };
 }
