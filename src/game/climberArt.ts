@@ -317,6 +317,7 @@ export function drawClimberKit(
 
     ctx.save();
     ctx.translate(waistX * 0.25 - twist * 4.2, waistY * 0.25);
+    ctx.rotate(twist * 0.07 + bagSwing * 0.09);
     ctx.scale(1 - Math.abs(twist) * 0.18, 1);
     drawPack(ctx, loadout, skin.accent);
     ctx.restore();

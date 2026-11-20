@@ -92,3 +92,11 @@
   .climb-hud { padding-block: max(6px, env(safe-area-inset-top)) max(6px, env(safe-area-inset-bottom)); }
   .climb-roadbook { max-height: 43dvh; }
 }
+
+@media (prefers-reduced-motion: reduce) {
+  .climb-hud .climb-stamina-fill,
+  .climb-hud button,
+  .climb-altitude-chart button > div {
+    transition: none;
+  }
+}

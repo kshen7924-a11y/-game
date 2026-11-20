@@ -26,6 +26,7 @@ import {
   HoverInfo,
   LimbDragState,
   LimbId,
+  LimbState,
   LoadoutId,
   Particle,
   PelvisDragState,
@@ -34,6 +35,7 @@ import {
 } from './types';
 
 const INK = '#141820';
+const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 
 function tracePoly(ctx: CanvasRenderingContext2D, pts: Vec2[]) {
   if (pts.length === 0) return;
@@ -2268,10 +2270,15 @@ function drawClimber(
   const lfTremor = activeStrainFx ? getLimbStrainTremor('leftFoot', leftFoot.strain, timeSec) : { x: 0, y: 0 };
   const rfTremor = activeStrainFx ? getLimbStrainTremor('rightFoot', rightFoot.strain, timeSec) : { x: 0, y: 0 };
 
-  const lhPos = { x: leftHand.pos.x + leftHand.jitter.x + lhTremor.x, y: leftHand.pos.y + leftHand.jitter.y + lhTremor.y };
-  const rhPos = { x: rightHand.pos.x + rightHand.jitter.x + rhTremor.x, y: rightHand.pos.y + rightHand.jitter.y + rhTremor.y };
-  const lfPos = { x: leftFoot.pos.x + leftFoot.jitter.x + lfTremor.x, y: leftFoot.pos.y + leftFoot.jitter.y + lfTremor.y };
-  const rfPos = { x: rightFoot.pos.x + rightFoot.jitter.x + rfTremor.x, y: rightFoot.pos.y + rightFoot.jitter.y + rfTremor.y };
+  const isPlanted = (limb: LimbState) => limb.holdId !== null && limb.reachT >= 1 && !limb.isDragging;
+  const visualTarget = (limb: LimbState, tremor: Vec2): Vec2 => isPlanted(limb) ? limb.pos : ({
+    x: limb.pos.x + limb.jitter.x + tremor.x,
+    y: limb.pos.y + limb.jitter.y + tremor.y,
+  });
+  const lhPos = visualTarget(leftHand, lhTremor);
+  const rhPos = visualTarget(rightHand, rhTremor);
+  const lfPos = visualTarget(leftFoot, lfTremor);
+  const rfPos = visualTarget(rightFoot, rfTremor);
 
   // Compute target 2.5D biomechanical Drop-Knee & Lower-Back Weight-Shift targets
   const rawPelvisX = climber.pelvisOffset?.x ?? climber.leanBias * 18;
@@ -2445,6 +2452,13 @@ function drawClimber(
     hipMidX,
     visDropR
   );
+
+  // Pose solving may shorten a limb. Keep settled contacts on the input anchor,
+  // with load tremor applied to the rendered joints and glow.
+  if (isPlanted(leftHand)) lhIK.end = lhPos;
+  if (isPlanted(rightHand)) rhIK.end = rhPos;
+  if (isPlanted(leftFoot)) lfIK.end = lfPos;
+  if (isPlanted(rightFoot)) rfIK.end = rfPos;
 
   if (activeStrainFx) {
     lhIK.joint.x += lhTremor.x * 0.55;
@@ -2657,8 +2671,8 @@ function drawClimber(
     Math.max(-0.35, Math.min(0.35, climber.torsoVel.x * 0.002));
   drawClimberKit(ctx, skin, loadout, {
     lookAngle: climber.lookAngle,
-    scarfSwing: Math.sin(timeSec * 6.5) * 4.5 + windForce * 15,
-    bagSwing,
+    scarfSwing: reducedMotion.matches ? 0 : Math.sin(timeSec * 6.5) * 4.5 + windForce * 15,
+    bagSwing: reducedMotion.matches ? 0 : bagSwing,
     twist: visTwist,
     waistX: visWaistX * 0.85,
     waistY: visWaistY * 0.72,
