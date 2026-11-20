@@ -13,7 +13,7 @@ import {
 import { drawArmPanels, drawClimberHand, drawClimberKit, drawClimberShoe, drawLegPanels } from './climberArt';
 import { drawGraniteHold } from './holdArt';
 import { MountainWorld } from './mountain';
-import { drawAlpineBackdrop, drawCliffMaterial, drawTalusForeground } from './mountainArt';
+import { drawAlpineBackdrop, drawCliffMaterial, drawTalusForeground, hasTalusForeground } from './mountainArt';
 import {
   ActiveWeather,
   CameraState,
@@ -491,10 +491,11 @@ export function renderGameFrame(params: RenderParams) {
     ctx.lineTo(p.x + flankDepthX, p.y + flankDepthY);
   }
   ctx.closePath();
-  ctx.fillStyle = '#232934';
+  const flankColor = world.route.palette === 'granite' ? '#554c40' : '#303d49';
+  ctx.fillStyle = paintedBackdrop ? flankColor : '#232934';
   ctx.fill();
-  ctx.strokeStyle = INK;
-  ctx.lineWidth = 3 * inkScale;
+  ctx.strokeStyle = paintedBackdrop ? 'rgba(29, 34, 32, 0.83)' : INK;
+  ctx.lineWidth = (paintedBackdrop ? 1.5 : 3) * inkScale;
   ctx.stroke();
   ctx.restore();
 
@@ -537,7 +538,7 @@ export function renderGameFrame(params: RenderParams) {
   );
 
   ctx.save();
-  if (hasCliffMaterial) ctx.globalAlpha = 0.23;
+  if (hasCliffMaterial) ctx.globalAlpha = 0.09;
   for (const f of world.facets) {
     const fy = f.points[0].y;
     if (fy < minVisY - 260 || fy > maxVisY + 260) continue;
@@ -654,9 +655,10 @@ export function renderGameFrame(params: RenderParams) {
   ctx.fillRect(-520, minVisY - 300, 1040, maxVisY - minVisY + 600);
 
   // Valley Base Apron & Stylized Alpine Pines at 0m
-  ctx.fillStyle = '#2B333D';
-  ctx.fillRect(-600, 12, 1200, 240);
-  if (maxVisY > -100) {
+  const paintedTalus = world.route.palette !== 'glacial' && hasTalusForeground();
+  if (!paintedTalus && maxVisY > -100) {
+    ctx.fillStyle = '#2B333D';
+    ctx.fillRect(-600, 12, 1200, 240);
     for (let px = -280; px <= 280; px += 46) {
       if (Math.abs(px) < 95) continue;
       const h = 34 + (Math.abs(px * 13) % 24);
@@ -687,13 +689,14 @@ export function renderGameFrame(params: RenderParams) {
     ctx.lineTo(p.x, p.y);
   }
   ctx.closePath();
-  ctx.strokeStyle = INK;
-  ctx.lineWidth = 3.2 * inkScale;
+  ctx.strokeStyle = hasCliffMaterial ? 'rgba(38, 42, 39, 0.86)' : INK;
+  ctx.lineWidth = (hasCliffMaterial ? 1.5 : 3.2) * inkScale;
   ctx.stroke();
   ctx.restore();
 
-  if (world.route.palette !== 'glacial' && maxVisY > 40) {
-    drawTalusForeground(ctx, width / camera.zoom, camera.x * 0.2);
+  if (paintedTalus && maxVisY > 8) {
+    const visibleBottomY = camera.y + (height * 0.48 + Math.abs(shakeY)) / camera.zoom;
+    drawTalusForeground(ctx, width / camera.zoom, camera.x * 0.2, visibleBottomY);
   }
 
   // 4D. Rest / Bivouac Ledges & Summit Crown
@@ -703,23 +706,37 @@ export function renderGameFrame(params: RenderParams) {
     const ly = ledge.y;
 
     ctx.save();
-    ctx.fillStyle = '#47505E';
-    ctx.strokeStyle = INK;
-    ctx.lineWidth = 2.2 * inkScale;
-    ctx.beginPath();
-    ctx.moveTo(lx, ly);
-    ctx.lineTo(lx + ledge.width, ly);
-    ctx.lineTo(lx + ledge.width + 18, ly + 22);
-    ctx.lineTo(lx + 12, ly + 26);
-    ctx.closePath();
-    ctx.fill();
-    ctx.stroke();
+    let paintedLedge = false;
+    if (world.route.palette === 'granite') {
+      ctx.save();
+      ctx.translate(ledge.x, ly);
+      ctx.scale(1, 0.44);
+      paintedLedge = drawGraniteHold(ctx, {
+        type: 'crimp',
+        shapeVariant: ledge.isSummit ? 1 : 0,
+        radius: ledge.width * 0.48,
+      });
+      ctx.restore();
+    }
+    if (!paintedLedge) {
+      ctx.fillStyle = '#47505E';
+      ctx.strokeStyle = INK;
+      ctx.lineWidth = 2.2 * inkScale;
+      ctx.beginPath();
+      ctx.moveTo(lx, ly);
+      ctx.lineTo(lx + ledge.width, ly);
+      ctx.lineTo(lx + ledge.width + 18, ly + 22);
+      ctx.lineTo(lx + 12, ly + 26);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
 
-    ctx.fillStyle = ledge.isSummit ? '#F8FAFC' : '#DFE7EF';
-    ctx.beginPath();
-    ctx.roundRect(lx - 4, ly - 8, ledge.width + 8, 12, 4);
-    ctx.fill();
-    ctx.stroke();
+      ctx.fillStyle = ledge.isSummit ? '#F8FAFC' : '#DFE7EF';
+      ctx.beginPath();
+      ctx.roundRect(lx - 4, ly - 8, ledge.width + 8, 12, 4);
+      ctx.fill();
+      ctx.stroke();
+    }
 
     if (ledge.isSummit) {
       // Sculpted highest-point summit apex crest where the climber stands
@@ -808,9 +825,15 @@ export function renderGameFrame(params: RenderParams) {
     }
 
     if (camera.zoom > 0.32) {
-      ctx.fillStyle = 'rgba(20, 24, 32, 0.88)';
+      ctx.fillStyle = paintedLedge ? '#f8efdb' : 'rgba(20, 24, 32, 0.88)';
       ctx.font = '600 12px "Plus Jakarta Sans", sans-serif';
       ctx.textAlign = 'center';
+      if (paintedLedge) {
+        ctx.strokeStyle = '#39382f';
+        ctx.lineWidth = 2.5;
+        ctx.lineJoin = 'round';
+        ctx.strokeText(ledge.label, ledge.x, ly + 40);
+      }
       ctx.fillText(ledge.label, ledge.x, ly + 40);
     }
     ctx.restore();

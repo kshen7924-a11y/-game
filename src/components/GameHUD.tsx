@@ -344,9 +344,9 @@ export function GameHUD({
       </div>
 
       {/* Bottom Ergonomic Thumb Zones */}
-      <div className="flex flex-col gap-1.5 pb-[env(safe-area-inset-bottom)]">
+      <div className="climb-hud-bottom flex flex-col gap-1.5" data-reading={isReadingRoute}>
         {/* Single Concise Context Hint Line */}
-        <div className="flex justify-center">
+        <div className="climb-context flex justify-center">
           {dynoProgress !== null ? (
             <div className="border border-amber-400/80 bg-[#141820]/90 px-3 py-1 text-xs font-bold text-amber-300">
               蓄力跃抓 {Math.round(dynoProgress * 100)}% · 松手腾跃

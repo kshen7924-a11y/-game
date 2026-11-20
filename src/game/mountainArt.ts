@@ -141,8 +141,20 @@ export function drawCliffMaterial(
   return paintedGranite || pattern !== null;
 }
 
-export function drawTalusForeground(ctx: CanvasRenderingContext2D, width: number, center: number) {
-  if (!talus.complete || !talus.naturalWidth) return;
+export function hasTalusForeground(): boolean {
+  return talus.complete && talus.naturalWidth > 0;
+}
+
+export function drawTalusForeground(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  center: number,
+  visibleBottom: number,
+) {
+  if (!hasTalusForeground()) return;
   const foregroundWidth = Math.max(1120, Math.min(2100, width * 1.12));
-  ctx.drawImage(talus, center - foregroundWidth * 0.5, -66, foregroundWidth, 505);
+  // The top quarter is transparent. Keep that edge at ground level as the viewport changes.
+  const alphaEdge = 0.24;
+  const foregroundHeight = Math.max(510, (visibleBottom + 12) / (1 - alphaEdge));
+  ctx.drawImage(talus, center - foregroundWidth * 0.5, -foregroundHeight * alphaEdge, foregroundWidth, foregroundHeight);
 }
