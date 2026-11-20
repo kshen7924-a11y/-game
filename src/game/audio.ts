@@ -362,8 +362,171 @@ class SoundEngine {
     });
   }
 
+  public playSpringLaunch() {
+    if (this.muted || !this.ctx) return;
+    const now = this.ctx.currentTime;
+    const kick = this.ctx.createOscillator();
+    const kickGain = this.ctx.createGain();
+    kick.type = 'sine';
+    kick.frequency.setValueAtTime(118, now);
+    kick.frequency.exponentialRampToValueAtTime(48, now + 0.14);
+    kickGain.gain.setValueAtTime(0.22, now);
+    kickGain.gain.exponentialRampToValueAtTime(0.001, now + 0.16);
+    kick.connect(kickGain);
+    kickGain.connect(this.ctx.destination);
+    kick.start(now);
+    kick.stop(now + 0.17);
+
+    const sweep = this.ctx.createOscillator();
+    const sweepGain = this.ctx.createGain();
+    sweep.type = 'triangle';
+    sweep.frequency.setValueAtTime(220, now + 0.02);
+    sweep.frequency.exponentialRampToValueAtTime(640, now + 0.19);
+    sweepGain.gain.setValueAtTime(0.11, now + 0.02);
+    sweepGain.gain.exponentialRampToValueAtTime(0.001, now + 0.21);
+    sweep.connect(sweepGain);
+    sweepGain.connect(this.ctx.destination);
+    sweep.start(now + 0.02);
+    sweep.stop(now + 0.22);
+  }
+
+  public playComboChime(combo: number) {
+    if (this.muted || !this.ctx) return;
+    const now = this.ctx.currentTime;
+    const pentatonic = [392, 440, 523.25, 587.33, 659.25, 783.99];
+    const freq = pentatonic[Math.min(pentatonic.length - 1, Math.max(0, combo - 2))];
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(freq, now);
+    osc.frequency.exponentialRampToValueAtTime(freq * 1.06, now + 0.12);
+    gain.gain.setValueAtTime(0.075, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.16);
+    osc.connect(gain);
+    gain.connect(this.ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.17);
+  }
+
+  public playIncidentWarning(kind: 'crosswind_gust' | 'icefall' | 'whiteout_squall') {
+    if (this.muted || !this.ctx) return;
+    const now = this.ctx.currentTime;
+    const freqs =
+      kind === 'icefall' ? [680, 460] : kind === 'crosswind_gust' ? [340, 480] : [260, 210];
+    freqs.forEach((f, idx) => {
+      if (!this.ctx) return;
+      const t = now + idx * 0.14;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = kind === 'icefall' ? 'sawtooth' : 'triangle';
+      osc.frequency.setValueAtTime(f, t);
+      osc.frequency.exponentialRampToValueAtTime(f * 0.86, t + 0.13);
+      gain.gain.setValueAtTime(0.09, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
+      osc.connect(gain);
+      gain.connect(this.ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.16);
+    });
+  }
+
+  public playRockImpact() {
+    if (this.muted || !this.ctx) return;
+    const now = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(115, now);
+    osc.frequency.exponentialRampToValueAtTime(34, now + 0.24);
+    gain.gain.setValueAtTime(0.24, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.26);
+    osc.connect(gain);
+    gain.connect(this.ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.27);
+  }
+
+  public playTremorRumble(freqRad: number, intensity: number, isFoot = true) {
+    if (this.muted || !this.ctx) return;
+    const now = this.ctx.currentTime;
+    const clamped = Math.max(0.15, Math.min(1, intensity));
+    const dur = 0.16 + clamped * 0.08;
+
+    // 1. Resonant seismic low-frequency wobble modulated by hold tremor frequency
+    const osc = this.ctx.createOscillator();
+    const oscGain = this.ctx.createGain();
+    const lfo = this.ctx.createOscillator();
+    const lfoGain = this.ctx.createGain();
+
+    const basePitch = (isFoot ? 66 : 82) + clamped * 28;
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(basePitch, now);
+    osc.frequency.exponentialRampToValueAtTime(basePitch * 0.72, now + dur);
+
+    // Modulate pitch rapidly to evoke loose stone rattling in its socket
+    lfo.type = 'sine';
+    lfo.frequency.setValueAtTime(Math.max(12, Math.min(34, freqRad * 0.95)), now);
+    lfoGain.gain.setValueAtTime(14 + clamped * 22, now);
+    lfo.connect(lfoGain);
+    lfoGain.connect(osc.frequency);
+
+    oscGain.gain.setValueAtTime(0.001, now);
+    oscGain.gain.linearRampToValueAtTime(0.11 + clamped * 0.08, now + 0.02);
+    oscGain.gain.exponentialRampToValueAtTime(0.001, now + dur);
+
+    osc.connect(oscGain);
+    oscGain.connect(this.ctx.destination);
+    osc.start(now);
+    lfo.start(now);
+    osc.stop(now + dur + 0.02);
+    lfo.stop(now + dur + 0.02);
+
+    // 2. Gritty loose-pebble rock rattle burst
+    const len = Math.floor(this.ctx.sampleRate * dur);
+    const buf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
+    const ch = buf.getChannelData(0);
+    const pulseRate = Math.max(8, freqRad * 0.65);
+    for (let i = 0; i < len; i++) {
+      const p = i / len;
+      const env = Math.sin(p * Math.PI) * (1 - p * 0.35);
+      const stutter = 0.45 + 0.55 * Math.abs(Math.sin(p * Math.PI * pulseRate));
+      ch[i] = (Math.random() * 2 - 1) * env * stutter;
+    }
+
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+    const flt = this.ctx.createBiquadFilter();
+    flt.type = 'bandpass';
+    flt.frequency.setValueAtTime(780 + clamped * 560, now);
+    flt.Q.value = 2.6;
+
+    const nGain = this.ctx.createGain();
+    nGain.gain.setValueAtTime(0.08 + clamped * 0.07, now);
+    nGain.gain.exponentialRampToValueAtTime(0.001, now + dur);
+
+    src.connect(flt);
+    flt.connect(nGain);
+    nGain.connect(this.ctx.destination);
+    src.start(now);
+
+    // 3. High-tension harmonic chime when tremor approaches shake-off threshold
+    if (clamped > 0.55) {
+      const warn = this.ctx.createOscillator();
+      const wGain = this.ctx.createGain();
+      warn.type = 'sine';
+      warn.frequency.setValueAtTime(420 + clamped * 190, now);
+      warn.frequency.exponentialRampToValueAtTime(310 + clamped * 120, now + 0.09);
+      wGain.gain.setValueAtTime((clamped - 0.5) * 0.09, now);
+      wGain.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
+      warn.connect(wGain);
+      wGain.connect(this.ctx.destination);
+      warn.start(now);
+      warn.stop(now + 0.11);
+    }
+  }
+
   public playGrab(
-    type: 'jug' | 'crimp' | 'crack' | 'ice' | 'fragile' | 'ledge',
+    type: 'jug' | 'crimp' | 'crack' | 'ice' | 'fragile' | 'ledge' | 'spring' | 'swing' | 'tremor',
     options?: GrabSoundOptions
   ) {
     if (this.muted || !this.ctx) return;
@@ -379,27 +542,34 @@ class SoundEngine {
     const baseFreq =
       type === 'ice'
         ? 460
-        : type === 'crimp'
-          ? 215
-          : type === 'ledge'
-            ? 135
-            : options?.isFoot
-              ? 145
-              : 175;
-    osc.type = type === 'ice' ? 'triangle' : 'sine';
+        : type === 'swing'
+          ? 275
+          : type === 'spring'
+            ? 235
+            : type === 'crimp'
+              ? 215
+              : type === 'ledge'
+                ? 135
+                : options?.isFoot
+                  ? 145
+                  : 175;
+    osc.type = type === 'ice' || type === 'swing' ? 'triangle' : 'sine';
     osc.frequency.setValueAtTime(baseFreq, now);
-    osc.frequency.exponentialRampToValueAtTime(baseFreq * 0.48, now + 0.09);
+    osc.frequency.exponentialRampToValueAtTime(
+      type === 'spring' ? baseFreq * 1.25 : baseFreq * 0.48,
+      now + 0.095
+    );
 
-    gain.gain.setValueAtTime(options?.isSnowy ? 0.09 : 0.14, now);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
+    gain.gain.setValueAtTime(options?.isSnowy ? 0.09 : 0.145, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.11);
 
     osc.connect(gain);
     gain.connect(this.ctx.destination);
     osc.start(now);
-    osc.stop(now + 0.11);
+    osc.stop(now + 0.12);
 
-    // Subtle gritty rock crackle on fragile holds or wet splash tick on damp holds
-    if (type === 'fragile' || options?.wet) {
+    // Subtle gritty rock crackle on fragile/tremor holds or wet splash tick on damp holds
+    if (type === 'fragile' || type === 'tremor' || options?.wet) {
       const crackLen = Math.floor(this.ctx.sampleRate * 0.06);
       const buf = this.ctx.createBuffer(1, crackLen, this.ctx.sampleRate);
       const ch = buf.getChannelData(0);
@@ -410,9 +580,9 @@ class SoundEngine {
       src.buffer = buf;
       const flt = this.ctx.createBiquadFilter();
       flt.type = 'bandpass';
-      flt.frequency.value = options?.wet ? 1900 : 880;
+      flt.frequency.value = options?.wet ? 1900 : type === 'tremor' ? 620 : 880;
       const g = this.ctx.createGain();
-      g.gain.setValueAtTime(0.09, now);
+      g.gain.setValueAtTime(type === 'tremor' ? 0.12 : 0.09, now);
       g.gain.exponentialRampToValueAtTime(0.001, now + 0.06);
       src.connect(flt);
       flt.connect(g);

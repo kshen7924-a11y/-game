@@ -2,7 +2,16 @@ export type GamePhase = 'TITLE_MENU' | 'PLAYING' | 'SUMMIT' | 'FALLEN';
 
 export type LimbId = 'leftHand' | 'rightHand' | 'leftFoot' | 'rightFoot';
 
-export type HoldType = 'jug' | 'crimp' | 'crack' | 'ice' | 'fragile' | 'ledge';
+export type HoldType =
+  | 'jug'
+  | 'crimp'
+  | 'crack'
+  | 'ice'
+  | 'fragile'
+  | 'ledge'
+  | 'spring'
+  | 'swing'
+  | 'tremor';
 
 export type RouteId =
   | 'kids'
@@ -79,6 +88,35 @@ export interface ActiveWeather {
   fogOpacity: number;
 }
 
+export type WeatherIncidentType = 'crosswind_gust' | 'icefall' | 'whiteout_squall';
+
+export interface FallingRockProjectile {
+  id: string;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  radius: number;
+  rotation: number;
+  spin: number;
+  kind: 'ice' | 'rock';
+  hit?: boolean;
+}
+
+export interface WeatherIncidentState {
+  type: WeatherIncidentType;
+  phase: 'telegraph' | 'active';
+  label: string;
+  hint: string;
+  timer: number;
+  duration: number;
+  direction: -1 | 1;
+  laneX: number;
+  laneWidth: number;
+  projectiles: FallingRockProjectile[];
+  dodged?: boolean;
+}
+
 export interface AltitudeDifficultyBin {
   index: number;
   startM: number;
@@ -150,6 +188,10 @@ export interface Hold {
   wet?: boolean;
   zone: number;
   isDecoy?: boolean;
+  /** Resonant vibration frequency (rad/s) for 'tremor' holds */
+  tremorFreq?: number;
+  /** Dynamic 0..1 vibration buildup when stepped on or gripped */
+  tremorEnergy?: number;
 }
 
 export interface Ledge {
@@ -225,6 +267,8 @@ export interface DynoFlightState {
   t: number;
   duration: number;
   willSlip: boolean;
+  isSpringLaunch?: boolean;
+  isSwingCatch?: boolean;
 }
 
 export interface ClimberState {
@@ -246,6 +290,8 @@ export interface ClimberState {
   isResting: boolean;
   isStemming?: boolean;
   isShakingOut?: boolean;
+  flowCombo?: number;
+  swingBoostTimer?: number;
   dynoFlight?: DynoFlightState | null;
   ropeCatch?: RopeCatchState | null;
   limbs: Record<LimbId, LimbState>;
@@ -258,6 +304,7 @@ export interface DynoChargeState {
   hold: Hold;
   limbId: LimbId;
   progress: number;
+  dwellSec?: number;
   pointerId?: number;
 }
 

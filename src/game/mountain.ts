@@ -654,9 +654,14 @@ export const ROUTES: RouteConfig[] = [
 ];
 
 export const ROUTE_BOOK_MIN_TIER = 5;
+export const MASTER_MIN_TIER = 9;
 
 export function isRouteBookSupported(route: RouteConfig): boolean {
   return route.tier >= ROUTE_BOOK_MIN_TIER;
+}
+
+export function isMasterRoute(route: RouteConfig): boolean {
+  return route.tier >= MASTER_MIN_TIER;
 }
 
 export function getRouteById(id: RouteId): RouteConfig {
@@ -897,8 +902,11 @@ export function analyzeStaminaAndHoldDensity(
   const staminaClamped = Math.max(0, Math.min(1, currentStaminaRatio));
   const holdRiskMap: Record<HoldType, number> = {
     ledge: 10,
+    spring: 16,
+    swing: 18,
     jug: 18,
     crack: 46,
+    tremor: 64,
     crimp: 72,
     fragile: 82,
     ice: 92,
@@ -1173,9 +1181,12 @@ export function generateSuggestedRoadbook(
 
   const typeWeight: Record<HoldType, number> = {
     ledge: 36,
+    swing: 34,
+    spring: 30,
     jug: 28,
     crack: 18,
     crimp: isFreeSolo ? -14 : -8,
+    tremor: isFreeSolo ? -26 : -14,
     fragile: isFreeSolo ? -55 : -36,
     ice: isFreeSolo ? -46 : -28,
   };
@@ -1304,8 +1315,11 @@ export function estimateRoadbookStamina(
 
   const holdStrainCost: Record<HoldType, number> = {
     ledge: 0.4,
+    swing: 1.05,
+    spring: 1.15,
     jug: 1.55,
     crack: 2.35,
+    tremor: 3.1,
     crimp: 3.45,
     fragile: 4.1,
     ice: 4.3,
@@ -1328,7 +1342,7 @@ export function estimateRoadbookStamina(
     const baseMoveSec =
       1.65 +
       stepD / 85 +
-      (h.type === 'crimp' || h.type === 'ice' || h.type === 'fragile' ? 0.55 : 0) +
+      (h.type === 'crimp' || h.type === 'ice' || h.type === 'fragile' || h.type === 'tremor' ? 0.55 : 0) +
       (h.isDecoy ? 0.95 : 0);
     totalTimeSec += baseMoveSec;
 
@@ -1369,6 +1383,10 @@ export function estimateRoadbookStamina(
       totalRecovery += 14.5;
     } else if (h.type === 'ledge') {
       totalRecovery += 5.8;
+    } else if (h.type === 'swing' && !h.isDecoy) {
+      totalRecovery += 5.4;
+    } else if (h.type === 'spring' && !h.isDecoy) {
+      totalRecovery += 3.2;
     } else if (h.type === 'jug' && !h.isDecoy && stepD <= 88) {
       // Brief balanced shake-out recovery on solid jugs
       totalRecovery += 2.2;
@@ -1647,15 +1665,21 @@ export function generateMountain(route: RouteConfig): MountainWorld {
   ) => {
     const stabilityMap: Record<HoldType, number> = {
       ledge: 1.45,
+      swing: 1.32,
       jug: 1.25,
+      spring: 1.2,
       crack: 1.05,
+      tremor: 0.88,
       crimp: 0.76,
       fragile: 0.68,
       ice: 0.48,
     };
     const radiusMap: Record<HoldType, number> = {
       ledge: 14,
+      swing: 13,
+      spring: 12.5,
       jug: 12,
+      tremor: 11.5,
       crack: 11,
       crimp: 9,
       fragile: 10.5,
@@ -1663,7 +1687,15 @@ export function generateMountain(route: RouteConfig): MountainWorld {
     };
 
     let gripKind: Hold['gripKind'] = 'downpull';
-    if (!forceDownpull && type !== 'ledge' && type !== 'ice' && route.tier >= 3) {
+    if (
+      !forceDownpull &&
+      type !== 'ledge' &&
+      type !== 'ice' &&
+      type !== 'spring' &&
+      type !== 'swing' &&
+      type !== 'tremor' &&
+      route.tier >= 3
+    ) {
       const dirRoll = rng();
       const sideChance = Math.min(0.42, 0.14 + (route.tier - 3) * 0.035);
       const underChance = route.tier >= 5 ? Math.min(0.18, 0.06 + (route.tier - 5) * 0.02) : 0;
@@ -1700,6 +1732,9 @@ export function generateMountain(route: RouteConfig): MountainWorld {
       wet,
       zone,
       ...(isDecoy ? { isDecoy: true } : {}),
+      ...(type === 'tremor'
+        ? { tremorFreq: 18 + rng() * 14, tremorEnergy: 0 }
+        : {}),
     });
   };
 
@@ -1794,20 +1829,49 @@ export function generateMountain(route: RouteConfig): MountainWorld {
       tier >= 4 &&
       hType !== 'ledge' &&
       hType !== 'ice' &&
+      hType !== 'spring' &&
+      hType !== 'swing' &&
+      hType !== 'tremor' &&
       rng() < (hasRainStage ? 0.12 + progress * 0.08 : 0.06);
+
+    // Periodically infuse dynamic Spring Kickoff, Swing Catch, and Tremor holds along main flow sections
+    const nodeIdx = mainLineNodes.length - 1;
+    const dynamicCycle = tier >= 2 && nodeIdx >= 2 && nodeIdx % 5 === 2;
+    const swingCycle = tier >= 2 && nodeIdx >= 3 && nodeIdx % 5 === 4;
+    const tremorCycle = tier >= 2 && nodeIdx >= 1 && nodeIdx % 4 === 1;
+    const tremorChance = Math.min(0.76, 0.44 + (tier - 2) * 0.045);
 
     const lx = lineX - pairHalfW;
     const ly = y + staggerL;
-    const lType = pickMainType(true);
+    let lType = pickMainType(true);
+    if (dynamicCycle && rng() < 0.72) {
+      lType = 'spring';
+    } else if (swingCycle && rng() < 0.68) {
+      lType = 'swing';
+    } else if (tremorCycle && rng() < tremorChance) {
+      lType = 'tremor';
+    }
     if (canPlaceHold(lx, ly, 24)) {
       pushHold(lx, ly, lType, zone, tier === 1 ? 13.5 : undefined, isWetHold(lType));
     }
 
     const rx = lineX + pairHalfW;
     const ry = y + staggerR;
-    const rType = pickMainType(false);
+    let rType = pickMainType(false);
+    if (dynamicCycle && lType !== 'spring' && rng() < 0.75) {
+      rType = 'spring';
+    } else if (swingCycle && lType !== 'swing' && rng() < 0.7) {
+      rType = 'swing';
+    } else if (tremorCycle && lType !== 'tremor' && rng() < tremorChance) {
+      rType = 'tremor';
+    }
     // Higher tiers occasionally alternate single-side crux holds to force thoughtful foot-swaps
-    const skipSecond = tier >= 7 && rng() < 0.22;
+    const skipSecond =
+      tier >= 7 &&
+      rType !== 'spring' &&
+      rType !== 'swing' &&
+      rType !== 'tremor' &&
+      rng() < 0.22;
     if (!skipSecond && canPlaceHold(rx, ry, 24)) {
       pushHold(rx, ry, rType, zone, tier === 1 ? 13.5 : undefined, isWetHold(rType));
     }
@@ -2113,8 +2177,11 @@ export function generateMountain(route: RouteConfig): MountainWorld {
   const difficultyProfile: AltitudeDifficultyBin[] = [];
   const holdRiskWeight: Record<HoldType, number> = {
     ledge: 8,
+    spring: 14,
+    swing: 16,
     jug: 18,
     crack: 48,
+    tremor: 68,
     crimp: 74,
     fragile: 86,
     ice: 95,
@@ -2136,6 +2203,7 @@ export function generateMountain(route: RouteConfig): MountainWorld {
     let crackCount = 0;
     let crimpCount = 0;
     let fragileCount = 0;
+    let tremorCount = 0;
     let iceCount = 0;
     let minX = Infinity;
     let maxX = -Infinity;
@@ -2147,6 +2215,7 @@ export function generateMountain(route: RouteConfig): MountainWorld {
         if (h.type === 'crack') crackCount++;
         else if (h.type === 'crimp') crimpCount++;
         else if (h.type === 'fragile') fragileCount++;
+        else if (h.type === 'tremor') tremorCount++;
         else if (h.type === 'ice') iceCount++;
         if (h.x < minX) minX = h.x;
         if (h.x > maxX) maxX = h.x;
@@ -2200,6 +2269,8 @@ export function generateMountain(route: RouteConfig): MountainWorld {
       challengeTag = '冰面滑区';
     } else if (fragileCount >= 2 || (fragileCount >= 1 && tier >= 5)) {
       challengeTag = '脆岩多发';
+    } else if (tremorCount >= 2) {
+      challengeTag = '颤动危岩';
     } else if (crimpCount >= Math.max(2, Math.ceil(holdsInBin.length * 0.36))) {
       challengeTag = '细小指点';
     } else if (stage.type === 'snowstorm') {

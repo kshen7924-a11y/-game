@@ -12,7 +12,7 @@ export const LEG_MAX_REACH = LEG_UPPER + LEG_LOWER;
 
 export const EFFECTIVE_ARM_REACH = 98;
 export const EFFECTIVE_LEG_REACH = 106;
-export const DYNO_EXTRA_REACH = 38;
+export const DYNO_EXTRA_REACH = 26;
 
 export function dist(a: Vec2, b: Vec2): number {
   return Math.hypot(a.x - b.x, a.y - b.y);
@@ -415,21 +415,40 @@ export function evaluateHoldGrab(
   };
 }
 
+export function isStandingOnSpringHold(
+  climber: ClimberState,
+  holdsMap: Map<string, Hold>
+): boolean {
+  for (const id of ['leftFoot', 'rightFoot'] as const) {
+    const hid = climber.limbs[id].holdId;
+    if (!hid) continue;
+    const h = holdsMap.get(hid);
+    if (h && !h.broken && h.type === 'spring') return true;
+  }
+  return false;
+}
+
 export function isDynoReachable(
   climber: ClimberState,
   limbId: LimbId,
-  hold: Hold
+  hold: Hold,
+  extraRange = 0
 ): boolean {
   if (hold.broken) return false;
   if (limbId !== 'leftHand' && limbId !== 'rightHand') return false;
-  if (climber.stamina < 15) return false;
+  const clampedExtra = Math.max(0, Math.min(18, extraRange));
+  const minStamina = hold.type === 'swing' || clampedExtra > 0 ? 10 : 16;
+  if (climber.stamina < minStamina) return false;
   if (isHoldReachable(climber, limbId, hold)) return false;
 
-  // Need at least 2 limbs anchored before leaping
-  const anchoredCount = (Object.keys(climber.limbs) as LimbId[]).filter(
+  // Need at least 2 limbs anchored including at least 1 foot to push off for a real dyno
+  const anchoredIds = (Object.keys(climber.limbs) as LimbId[]).filter(
     (id) => climber.limbs[id].holdId !== null
-  ).length;
-  if (anchoredCount < 2) return false;
+  );
+  if (anchoredIds.length < 2) return false;
+  const hasFootPush =
+    climber.limbs.leftFoot.holdId !== null || climber.limbs.rightFoot.holdId !== null;
+  if (!hasFootPush) return false;
 
   // Prevent grabbing hold occupied by another limb unless wide ledge
   for (const otherId of Object.keys(climber.limbs) as LimbId[]) {
@@ -438,24 +457,28 @@ export function isDynoReachable(
     }
   }
 
-  // Dyno leaps are upward or diagonal-upward reaches within dynamic range
-  if (hold.y >= climber.torsoPos.y - 6) return false;
+  // Dyno leaps are controlled upward or diagonal-upward reaches with strict vertical cap
+  const dyUp = climber.torsoPos.y - hold.y;
+  const maxVerticalLeap = clampedExtra > 0 ? 128 : 112;
+  if (dyUp < 18 || dyUp > maxVerticalLeap) return false;
 
   const isLeft = limbId === 'leftHand';
   const otherHand = isLeft ? climber.limbs.rightHand : climber.limbs.leftHand;
   if (otherHand.holdId !== null) {
-    if (isLeft && hold.x > otherHand.pos.x + 20) return false;
-    if (!isLeft && hold.x < otherHand.pos.x - 20) return false;
+    if (isLeft && hold.x > otherHand.pos.x + 22) return false;
+    if (!isLeft && hold.x < otherHand.pos.x - 22) return false;
   }
 
-  const shoulderOffsetX = (isLeft ? -SHOULDER_HALF_W : SHOULDER_HALF_W) + climber.leanBias * 14;
+  const shoulderOffsetX = (isLeft ? -SHOULDER_HALF_W : SHOULDER_HALF_W) + climber.leanBias * 12;
   const shoulder: Vec2 = {
     x: climber.torsoPos.x + shoulderOffsetX,
     y: climber.torsoPos.y - TORSO_HEIGHT * 0.48,
   };
 
+  const swingBonus = hold.type === 'swing' ? 8 : 0;
+  const maxDynoDist = Math.min(134, ARM_MAX_REACH + DYNO_EXTRA_REACH + 10 + clampedExtra + swingBonus);
   const d = dist(shoulder, hold);
-  return d <= ARM_MAX_REACH + DYNO_EXTRA_REACH + 20;
+  return d <= maxDynoDist;
 }
 
 export function pickBestLimbForHold(
@@ -646,7 +669,8 @@ export type SlipCause =
   | 'wet_slip'
   | 'direction_mismatch'
   | 'stamina_exhausted'
-  | 'overload';
+  | 'overload'
+  | 'tremor_shake';
 
 export function updateClimberPhysics(
   climber: ClimberState,
@@ -656,7 +680,8 @@ export function updateClimberPhysics(
   drainMultiplier: number,
   weather: { type: string; intensity: number; chalkDrainMult: number },
   dt: number,
-  roadbookFlowBonus = 0
+  roadbookFlowBonus = 0,
+  manualPelvisOverride = false
 ): {
   slippedLimb: LimbId | null;
   slipReason: SlipCause | null;
@@ -667,46 +692,55 @@ export function updateClimberPhysics(
   staminaSpentDelta: number;
   staminaRecoveredDelta: number;
   netStaminaRatePerSec: number;
+  activeTremor?: { hold: Hold; intensity: number; isFoot: boolean } | null;
 } {
   const limbIds: LimbId[] = ['leftHand', 'rightHand', 'leftFoot', 'rightFoot'];
   const clampedFlow = Math.max(0, Math.min(1, roadbookFlowBonus));
+  const comboBoost = Math.min(0.42, Math.max(0, (climber.flowCombo ?? 0) - 1) * 0.11);
+  if (climber.swingBoostTimer && climber.swingBoostTimer > 0) {
+    climber.swingBoostTimer = Math.max(0, climber.swingBoostTimer - dt);
+  }
 
-  // Airborne two-stage Dyno flight arc
+  // Controlled two-stage Dyno lunge arc (weighty deadpoint feel, never superhero rocketing)
   if (climber.dynoFlight && !climber.isFalling) {
     const flight = climber.dynoFlight;
     flight.t = Math.min(1, flight.t + dt / flight.duration);
     const p = flight.t;
-    const easeOut = 1 - Math.pow(1 - p, 2.2);
-    const arcLift = Math.sin(p * Math.PI) * 18;
+    const easeOut = 1 - Math.pow(1 - p, flight.isSpringLaunch ? 2.4 : 2.1);
+    const arcLift = Math.sin(p * Math.PI) * (flight.isSpringLaunch ? 14 : 10);
 
     const prevX = climber.torsoPos.x;
     const prevY = climber.torsoPos.y;
     const targetTorsoX = flight.targetPos.x + (flight.limbId === 'leftHand' ? 14 : -14);
-    const targetTorsoY = flight.targetPos.y + 30;
+    const targetTorsoY = flight.targetPos.y + 32;
     climber.torsoPos.x = flight.startTorso.x + (targetTorsoX - flight.startTorso.x) * easeOut;
     climber.torsoPos.y = flight.startTorso.y + (targetTorsoY - flight.startTorso.y) * easeOut - arcLift;
     if (dt > 0.0001) {
-      climber.torsoVel.x = (climber.torsoPos.x - prevX) / dt;
-      climber.torsoVel.y = (climber.torsoPos.y - prevY) / dt;
+      climber.torsoVel.x = Math.max(-135, Math.min(135, (climber.torsoPos.x - prevX) / dt));
+      climber.torsoVel.y = Math.max(-135, Math.min(135, (climber.torsoPos.y - prevY) / dt));
     }
-    climber.leanAngle = (targetTorsoX - flight.startTorso.x) * 0.006;
+    climber.leanAngle = Math.max(-0.42, Math.min(0.42, (targetTorsoX - flight.startTorso.x) * 0.007));
 
-    // Reaching hand surges upward toward target while feet trail naturally
+    // Reaching hand moves toward target while any unanchored limbs trail naturally
     for (const id of limbIds) {
       const limb = climber.limbs[id];
       if (id === flight.limbId) {
         limb.pos.x = limb.startPos.x + (flight.targetPos.x - limb.startPos.x) * Math.min(1, p * 1.15);
-        limb.pos.y = limb.startPos.y + (flight.targetPos.y - limb.startPos.y) * Math.min(1, p * 1.15) - arcLift * 0.4;
-      } else if (!limb.isHand && limb.holdId === null) {
-        const hipX = climber.torsoPos.x + (limb.isLeft ? -9 : 9);
-        const hipY = climber.torsoPos.y + 20;
-        limb.pos.x += (hipX + (limb.isLeft ? -10 : 10) - limb.pos.x) * Math.min(1, dt * 12);
-        limb.pos.y += (hipY + 42 - limb.pos.y) * Math.min(1, dt * 12);
+        limb.pos.y = limb.startPos.y + (flight.targetPos.y - limb.startPos.y) * Math.min(1, p * 1.15) - arcLift * 0.35;
+      } else if (limb.holdId === null) {
+        const rootX = climber.torsoPos.x + (limb.isLeft ? (limb.isHand ? -13 : -9) : limb.isHand ? 13 : 9);
+        const rootY = climber.torsoPos.y + (limb.isHand ? -18 : 20);
+        const trailX = rootX + (limb.isLeft ? -10 : 10);
+        const trailY = rootY + (limb.isHand ? 26 : 42);
+        limb.pos.x += (trailX - limb.pos.x) * Math.min(1, dt * 12);
+        limb.pos.y += (trailY - limb.pos.y) * Math.min(1, dt * 12);
       }
     }
 
     if (flight.t >= 1) {
       climber.dynoFlight = null;
+      climber.torsoVel.x *= 0.2;
+      climber.torsoVel.y = 0;
       const targetHold = holdsMap.get(flight.holdId);
       if (!targetHold || targetHold.broken || flight.willSlip) {
         climber.limbs[flight.limbId].holdId = null;
@@ -727,7 +761,14 @@ export function updateClimberPhysics(
       catchingLimb.pos = { x: targetHold.x, y: targetHold.y };
       catchingLimb.targetPos = { x: targetHold.x, y: targetHold.y };
       catchingLimb.reachT = 1;
-      catchingLimb.strain = Math.max(0, catchingLimb.strain - 0.14);
+      catchingLimb.strain = Math.max(0, catchingLimb.strain - 0.16);
+
+      // Subtle, controlled pendulum follow-through on swing hold catches (no upward rocket impulse)
+      if (flight.isSwingCatch || targetHold.type === 'swing') {
+        const swingDir = Math.sign(targetHold.x - flight.startTorso.x) || (catchingLimb.isLeft ? -1 : 1);
+        climber.torsoVel.x += swingDir * 28;
+        climber.torsoVel.y -= 10;
+      }
 
       return {
         slippedLimb: null,
@@ -755,8 +796,8 @@ export function updateClimberPhysics(
     };
   }
 
-  // Deliberate, weighty reach interpolation (faster & cleaner when flowing along a Roadbook)
-  const reachSpeed = 4.4 * (1 + clampedFlow * 0.44);
+  // Deliberate, weighty reach interpolation (snappier when flowing along Roadbook or Dynamic Combo)
+  const reachSpeed = 4.6 * (1 + clampedFlow * 0.42 + comboBoost + ((climber.swingBoostTimer ?? 0) > 0 ? 0.25 : 0));
   for (const id of limbIds) {
     const limb = climber.limbs[id];
     if (limb.isDragging) continue;
@@ -871,6 +912,59 @@ export function updateClimberPhysics(
         : 0;
 
   if (totalW > 0) {
+    // Smart Automatic Center-of-Mass Balancing (active whenever player isn't manually dragging waist)
+    if (!manualPelvisOverride) {
+      let smartTargetX = 0;
+      let smartTargetY = 0;
+
+      // 1. Automatically counter directional sidepull & undercling grips on anchored hands
+      let sidepullVote = 0;
+      let hasUndercling = false;
+      for (const hid of anchoredHands) {
+        const holdId = climber.limbs[hid].holdId;
+        const h = holdId ? holdsMap.get(holdId) : undefined;
+        if (!h) continue;
+        if (h.gripKind === 'sidepullLeft') sidepullVote += 1;
+        else if (h.gripKind === 'sidepullRight') sidepullVote -= 1;
+        else if (h.gripKind === 'undercling') hasUndercling = true;
+      }
+
+      if (sidepullVote !== 0) {
+        smartTargetX += Math.sign(sidepullVote) * 15;
+      } else if (anchoredHands.length === 1 && anchoredFeet.length >= 1) {
+        // Reaching / hanging with one hand: shift CoM smoothly toward the anchored foot side
+        const handPos = climber.limbs[anchoredHands[0]].pos;
+        const footAvgX =
+          anchoredFeet.reduce((s, id) => s + climber.limbs[id].pos.x, 0) / anchoredFeet.length;
+        smartTargetX += Math.max(-14, Math.min(14, (footAvgX - handPos.x) * 0.28));
+      } else if (anchoredHands.length === 2 && anchoredFeet.length === 2) {
+        // Subtle ergonomic hip shift toward the higher-reaching arm to encourage natural Drop-Knee
+        const handDeltaY = climber.limbs.rightHand.pos.y - climber.limbs.leftHand.pos.y;
+        if (Math.abs(handDeltaY) > 22) {
+          smartTargetX += handDeltaY > 0 ? -9 : 9;
+        }
+      }
+
+      // 2. Counter strong gusts slightly and tuck hips cleanly for underclings
+      if (Math.abs(windForce) > 0.9) {
+        smartTargetX += Math.max(-10, Math.min(10, -windForce * 5.2));
+      }
+      if (hasUndercling) {
+        smartTargetY = 6;
+      }
+
+      const autoLerp = Math.min(1, dt * 3.8);
+      climber.pelvisOffset = clampPelvisOffset({
+        x: climber.pelvisOffset.x + (smartTargetX - climber.pelvisOffset.x) * autoLerp,
+        y: climber.pelvisOffset.y + (smartTargetY - climber.pelvisOffset.y) * autoLerp,
+      });
+    }
+
+    // Derive leanBias from actual effective CoM shift (used for left/right HUD text prompt & grip bonus)
+    const effectiveComX =
+      climber.pelvisOffset.x + (climber.torsoPos.x - supportCenterX) * 0.42;
+    climber.leanBias = effectiveComX <= -9.5 ? -1 : effectiveComX >= 9.5 ? 1 : 0;
+
     const footSupportRatio = anchoredFeet.length / 2;
     const sag = 7 - footSupportRatio * 4.5;
     const pelvisX = climber.pelvisOffset?.x ?? climber.leanBias * 18;
@@ -879,8 +973,9 @@ export function updateClimberPhysics(
     const eqY = sumY / totalW + sag + pelvisY;
 
     // Continuous spring-damper + gravity + pendulum swing velocity integration
-    const stiffness = anchored.length >= 3 ? 44 : 30;
-    const damping = anchored.length >= 3 ? 9.6 : 6.5;
+    const stiffness = anchored.length >= 3 ? 40 : 28;
+    const damping = anchored.length >= 3 ? 10.8 : 7.4;
+    const upwardExtraDamp = climber.torsoVel.y < 0 ? 1.35 : 1.0;
     const pendulumPullX =
       (supportCenterX - climber.torsoPos.x) * (anchored.length === 2 ? 12 : 4) +
       Math.sign(supportCenterX - climber.torsoPos.x) * overhangDistance * 6;
@@ -894,10 +989,10 @@ export function updateClimberPhysics(
     const ay =
       (eqY - climber.torsoPos.y) * stiffness +
       gravitySagY -
-      climber.torsoVel.y * damping;
+      climber.torsoVel.y * damping * upwardExtraDamp;
 
-    climber.torsoVel.x = Math.max(-240, Math.min(240, climber.torsoVel.x + ax * dt));
-    climber.torsoVel.y = Math.max(-240, Math.min(240, climber.torsoVel.y + ay * dt));
+    climber.torsoVel.x = Math.max(-145, Math.min(145, climber.torsoVel.x + ax * dt));
+    climber.torsoVel.y = Math.max(-120, Math.min(155, climber.torsoVel.y + ay * dt));
     climber.torsoPos.x += climber.torsoVel.x * dt;
     climber.torsoPos.y += climber.torsoVel.y * dt;
 
@@ -1006,6 +1101,18 @@ export function updateClimberPhysics(
   let slipHold: Hold | null = null;
   let touchingWetHold = false;
   let touchingDecoyHold = false;
+  let activeTremor: { hold: Hold; intensity: number; isFoot: boolean } | null = null;
+
+  const occupiedHoldIds = new Set<string>();
+  for (const id of limbIds) {
+    const hid = climber.limbs[id].holdId;
+    if (hid) occupiedHoldIds.add(hid);
+  }
+  holdsMap.forEach((h) => {
+    if (h.type === 'tremor' && !occupiedHoldIds.has(h.id) && (h.tremorEnergy ?? 0) > 0) {
+      h.tremorEnergy = Math.max(0, (h.tremorEnergy ?? 0) - dt * 0.95);
+    }
+  });
 
   for (const id of limbIds) {
     const limb = climber.limbs[id];
@@ -1068,6 +1175,39 @@ export function updateClimberPhysics(
       baseLoad *= 1.15;
     }
 
+    // Tremor Hold Resonance: builds vibration energy while stepped on or gripped, adding tactile tension
+    let tremorJitterBonus = 0;
+    if (hold.type === 'tremor' && !standingLedge) {
+      const rampRate = limb.isHand ? 0.36 : 0.56;
+      const nextEnergy = Math.min(1, (hold.tremorEnergy ?? 0) + dt * rampRate);
+      hold.tremorEnergy = nextEnergy;
+      baseLoad *= 1 + nextEnergy * 0.34;
+      tremorJitterBonus = 1.4 + nextEnergy * 3.1;
+
+      // Subtle unpredictable micro-jolt transmitted through body at higher tremor resonance
+      if (nextEnergy > 0.38) {
+        const joltStrength = (nextEnergy - 0.32) * (limb.isHand ? 26 : 38);
+        climber.torsoVel.x += (Math.random() - 0.5) * joltStrength * dt * 6;
+        climber.torsoVel.y += (Math.random() - 0.46) * joltStrength * dt * 4;
+      }
+
+      if (!activeTremor || nextEnergy > activeTremor.intensity || (!limb.isHand && !activeTremor.isFoot)) {
+        activeTremor = { hold, intensity: nextEnergy, isFoot: !limb.isHand };
+      }
+
+      // Prolonged stay at peak resonance can violently shake the limb loose (without destroying the hold)
+      if (!slippedLimb && nextEnergy >= 0.94 && limb.strain >= 0.56) {
+        hold.tremorEnergy = 0.35;
+        limb.holdId = null;
+        limb.strain = Math.min(0.58, limb.strain);
+        slippedLimb = id;
+        slipReason = 'tremor_shake';
+        slipHold = hold;
+        climber.torsoVel.y += 34;
+        climber.torsoVel.x += (limb.isLeft ? 24 : -24);
+      }
+    }
+
     const dirMult = computeGripDirectionMultiplier(
       hold,
       limb.isHand,
@@ -1108,15 +1248,20 @@ export function updateClimberPhysics(
 
     if (limb.load > 0.76 && !standingLedge) {
       limb.strain = Math.min(1, limb.strain + dt * (limb.load - 0.65) * 0.36);
+    } else if (hold.type === 'tremor' && (hold.tremorEnergy ?? 0) > 0.42 && !standingLedge) {
+      limb.strain = Math.min(1, limb.strain + dt * ((hold.tremorEnergy ?? 0) - 0.32) * 0.34);
     } else {
       const flowStrainEase = clampedFlow > 0 && !hold.isDecoy ? 1 + clampedFlow * 0.22 : 1;
       limb.strain = Math.max(0, limb.strain - dt * (isStemming ? 0.52 : 0.35) * flowStrainEase);
     }
 
     const shakeIntensity =
-      climber.stamina < 25 || limb.strain > 0.58
-        ? Math.max(limb.strain, (25 - climber.stamina) / 25) * 2.4
-        : 0;
+      Math.max(
+        climber.stamina < 25 || limb.strain > 0.58
+          ? Math.max(limb.strain, (25 - climber.stamina) / 25) * 2.4
+          : 0,
+        tremorJitterBonus
+      );
     limb.jitter = {
       x: (Math.random() - 0.5) * shakeIntensity,
       y: (Math.random() - 0.5) * shakeIntensity,
@@ -1285,5 +1430,6 @@ export function updateClimberPhysics(
     staminaSpentDelta,
     staminaRecoveredDelta,
     netStaminaRatePerSec,
+    activeTremor,
   };
 }

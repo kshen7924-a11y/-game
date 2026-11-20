@@ -27,6 +27,7 @@ import {
   PelvisDragState,
   Piton,
   Vec2,
+  WeatherIncidentState,
 } from './types';
 
 const INK = '#141820';
@@ -83,8 +84,11 @@ function computeHoldStaminaCostRatio(
 ): number {
   const baseCostByType: Record<MountainWorld['holds'][number]['type'], number> = {
     ledge: 0.1,
+    swing: 0.14,
+    spring: 0.16,
     jug: 0.22,
     crack: 0.4,
+    tremor: 0.56,
     crimp: 0.68,
     fragile: 0.74,
     ice: 0.84,
@@ -93,6 +97,8 @@ function computeHoldStaminaCostRatio(
   let cost = baseCostByType[h.type];
   if (h.type === 'fragile') {
     cost += h.crackProgress * 0.26;
+  } else if (h.type === 'tremor') {
+    cost += (h.tremorEnergy ?? 0) * 0.28;
   }
   if (h.chalked) {
     cost -= h.type === 'ice' ? 0.22 : 0.14;
@@ -189,6 +195,7 @@ export interface RenderParams {
   activePelvisDrag?: PelvisDragState | null;
   highlightPelvis?: boolean;
   isFreeSolo?: boolean;
+  weatherIncident?: WeatherIncidentState | null;
 }
 
 export function renderGameFrame(params: RenderParams) {
@@ -221,6 +228,7 @@ export function renderGameFrame(params: RenderParams) {
     activePelvisDrag = null,
     highlightPelvis = false,
     isFreeSolo = false,
+    weatherIncident = null,
   } = params;
 
   const mountainHeight = world.mountainHeight;
@@ -889,7 +897,29 @@ export function renderGameFrame(params: RenderParams) {
       let jitterY = 0;
       let jitterAngle = 0;
 
-      if (h.type === 'fragile') {
+      const isSteppedOn =
+        climber.limbs.leftFoot.holdId === h.id ||
+        climber.limbs.rightFoot.holdId === h.id ||
+        climber.limbs.leftHand.holdId === h.id ||
+        climber.limbs.rightHand.holdId === h.id;
+
+      if (h.type === 'tremor') {
+        // Tremor Hold: vibrates at its own resonant frequency when stepped on or energized
+        const freq = h.tremorFreq ?? 22;
+        const energy = h.tremorEnergy ?? 0;
+        if (isSteppedOn || energy > 0.03) {
+          const activeAmp = (isSteppedOn ? 1.55 : 0.45) + energy * 3.4;
+          const harmonic = Math.sin(timeSec * freq * 1.85 + seedPhase) * 0.35;
+          jitterX = (Math.sin(timeSec * freq + seedPhase) + harmonic) * activeAmp;
+          jitterY = Math.cos(timeSec * freq * 1.18 + seedPhase * 1.4) * activeAmp * 0.72;
+          jitterAngle = Math.sin(timeSec * freq * 1.3 + seedPhase) * (0.055 + energy * 0.14);
+        } else {
+          // Subtle idle micro-tremor so observant climbers can spot loose tremor holds
+          const idlePulse = Math.max(0, Math.sin(timeSec * 2.4 + seedPhase) - 0.55) * 2.2;
+          jitterX = Math.sin(timeSec * freq * 0.8 + seedPhase) * 0.55 * idlePulse;
+          jitterY = Math.cos(timeSec * freq * 0.9 + seedPhase) * 0.3 * idlePulse;
+        }
+      } else if (h.type === 'fragile') {
         // Fragile rock continuously trembles with crisp brittle bursts; escalates as cracks widen
         const burst = 0.45 + 0.55 * Math.max(0, Math.sin(timeSec * 2.9 + seedPhase));
         const amp = (0.5 + h.crackProgress * 2.1 + activeStrain * 1.1) * burst;
@@ -930,17 +960,23 @@ export function renderGameFrame(params: RenderParams) {
         const readColor =
           h.type === 'jug' || h.type === 'ledge'
             ? '#34D399'
-            : h.type === 'crack'
-              ? '#60A5FA'
-              : h.type === 'fragile'
-                ? '#F59E0B'
-                : h.type === 'ice'
-                  ? '#38BDF8'
-                  : '#CBD5E1';
+            : h.type === 'spring'
+              ? '#A3E635'
+              : h.type === 'swing'
+                ? '#22D3EE'
+                : h.type === 'tremor'
+                  ? '#E879F9'
+                  : h.type === 'crack'
+                    ? '#60A5FA'
+                    : h.type === 'fragile'
+                      ? '#F59E0B'
+                      : h.type === 'ice'
+                        ? '#38BDF8'
+                        : '#CBD5E1';
         ctx.save();
         ctx.strokeStyle = readColor;
         ctx.lineWidth = 2.1;
-        if (h.type === 'fragile' || h.type === 'ice') {
+        if (h.type === 'fragile' || h.type === 'ice' || h.type === 'tremor') {
           ctx.setLineDash([4, 3]);
         }
         ctx.beginPath();
@@ -1003,6 +1039,15 @@ export function renderGameFrame(params: RenderParams) {
       } else if (h.type === 'ledge') {
         baseMain = '#F2ECE1';
         baseEdge = '#948B7D';
+      } else if (h.type === 'spring') {
+        baseMain = '#BEF264';
+        baseEdge = '#4D7C0F';
+      } else if (h.type === 'swing') {
+        baseMain = '#67E8F9';
+        baseEdge = '#0E7490';
+      } else if (h.type === 'tremor') {
+        baseMain = '#D8B4FE';
+        baseEdge = '#6B21A8';
       }
 
       // Visual color lightness/depth tied to remaining grip / stamina cost:
@@ -1017,11 +1062,191 @@ export function renderGameFrame(params: RenderParams) {
       const strokeClr = isHovered
         ? hover?.reachable
           ? '#F59E0B'
-          : '#EF4444'
+          : hover?.dynoEligible
+            ? '#38BDF8'
+            : '#EF4444'
         : INK;
       const strokeW = isHovered ? 3 : 1.9;
 
-      if (h.type === 'crack') {
+      if (h.type === 'spring') {
+        // Dynamic Spring Kickoff Wedge with kinetic upward chevron ribs
+        const footLoaded =
+          climber.limbs.leftFoot.holdId === h.id || climber.limbs.rightFoot.holdId === h.id;
+        const pts: Vec2[] = [
+          { x: -r * 1.18, y: r * 0.48 },
+          { x: -r * 0.62, y: -r * 0.65 },
+          { x: r * 0.62, y: -r * 0.65 },
+          { x: r * 1.18, y: r * 0.48 },
+          { x: 0, y: r * 0.72 },
+        ];
+        if (footLoaded) {
+          const pulse = 1 + Math.sin(timeSec * 8) * 0.12;
+          ctx.strokeStyle = 'rgba(163, 230, 53, 0.82)';
+          ctx.lineWidth = 2.2;
+          ctx.beginPath();
+          ctx.arc(0, 0, (r + 7) * pulse, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        ctx.save();
+        ctx.translate(3, 4);
+        tracePoly(ctx, pts);
+        ctx.fillStyle = 'rgba(15, 19, 26, 0.52)';
+        ctx.fill();
+        ctx.restore();
+
+        tracePoly(ctx, pts);
+        ctx.fillStyle = mainColor;
+        ctx.fill();
+        ctx.save();
+        ctx.clip();
+        ctx.fillStyle = edgeColor;
+        ctx.fillRect(-r * 1.3, r * 0.12, r * 2.6, r);
+        ctx.restore();
+        tracePoly(ctx, pts);
+        ctx.strokeStyle = strokeClr;
+        ctx.lineWidth = strokeW;
+        ctx.stroke();
+
+        // Twin kinetic launch chevrons
+        ctx.strokeStyle = '#141820';
+        ctx.lineWidth = 1.7;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.beginPath();
+        ctx.moveTo(-4.2, 2.2);
+        ctx.lineTo(0, -2.5);
+        ctx.lineTo(4.2, 2.2);
+        ctx.moveTo(-3.2, -2.5);
+        ctx.lineTo(0, -5.8);
+        ctx.lineTo(3.2, -2.5);
+        ctx.stroke();
+      } else if (h.type === 'swing') {
+        // Dynamic Pendulum Swing Jug / Arched Momentum Rail
+        const pts: Vec2[] = [
+          { x: -r * 1.24, y: -r * 0.12 },
+          { x: -r * 0.68, y: -r * 0.72 },
+          { x: r * 0.68, y: -r * 0.72 },
+          { x: r * 1.24, y: -r * 0.12 },
+          { x: r * 0.92, y: r * 0.56 },
+          { x: -r * 0.92, y: r * 0.56 },
+        ];
+        ctx.save();
+        ctx.translate(3.2, 4.2);
+        tracePoly(ctx, pts);
+        ctx.fillStyle = 'rgba(15, 19, 26, 0.52)';
+        ctx.fill();
+        ctx.restore();
+
+        tracePoly(ctx, pts);
+        ctx.fillStyle = mainColor;
+        ctx.fill();
+        ctx.save();
+        ctx.clip();
+        ctx.fillStyle = edgeColor;
+        ctx.fillRect(-r * 1.4, r * 0.08, r * 2.8, r);
+        ctx.restore();
+        tracePoly(ctx, pts);
+        ctx.strokeStyle = strokeClr;
+        ctx.lineWidth = strokeW;
+        ctx.stroke();
+
+        // Inner sculpted swing-pocket arc highlight
+        ctx.strokeStyle = '#FFFFFF';
+        ctx.lineWidth = 1.9;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.arc(0, r * 0.08, r * 0.56, Math.PI * 1.15, Math.PI * 1.85);
+        ctx.stroke();
+      } else if (h.type === 'tremor') {
+        // Tremor Hold: loose wedged amethyst-slate block with seismic vibration arcs
+        const energy = h.tremorEnergy ?? 0;
+        const freq = h.tremorFreq ?? 22;
+        const wavePulse = 0.5 + 0.5 * Math.sin(timeSec * freq * 0.7 + seedPhase);
+
+        // Radiating seismic vibration arcs when stepped on or resonating
+        if (isSteppedOn || energy > 0.04) {
+          ctx.save();
+          const arcAlpha = Math.min(0.95, 0.42 + energy * 0.53);
+          const ringColor =
+            energy > 0.65
+              ? `rgba(244, 63, 94, ${arcAlpha.toFixed(2)})`
+              : `rgba(232, 121, 249, ${arcAlpha.toFixed(2)})`;
+          ctx.strokeStyle = ringColor;
+          ctx.lineWidth = 1.6 + energy * 1.1;
+          ctx.lineCap = 'round';
+
+          const spread1 = r + 4.5 + wavePulse * 3.5;
+          const spread2 = r + 8.5 + wavePulse * 5.2;
+          // Left & right comic vibration arcs
+          ctx.beginPath();
+          ctx.arc(0, 0, spread1, Math.PI * 0.78, Math.PI * 1.22);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.arc(0, 0, spread1, -Math.PI * 0.22, Math.PI * 0.22);
+          ctx.stroke();
+          if (energy > 0.35 || isSteppedOn) {
+            ctx.globalAlpha = 0.65;
+            ctx.beginPath();
+            ctx.arc(0, 0, spread2, Math.PI * 0.84, Math.PI * 1.16);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.arc(0, 0, spread2, -Math.PI * 0.16, Math.PI * 0.16);
+            ctx.stroke();
+          }
+          ctx.restore();
+        }
+
+        // Fractured dark stone socket rim behind the loose block
+        ctx.fillStyle = 'rgba(20, 24, 32, 0.55)';
+        ctx.beginPath();
+        ctx.ellipse(0, 1.5, r * 1.28, r * 0.88, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        const pts: Vec2[] = [
+          { x: -r * 1.14, y: -r * 0.22 },
+          { x: -r * 0.42, y: -r * 0.78 },
+          { x: r * 0.56, y: -r * 0.72 },
+          { x: r * 1.16, y: -r * 0.08 },
+          { x: r * 0.74, y: r * 0.68 },
+          { x: -r * 0.68, y: r * 0.64 },
+        ];
+        ctx.save();
+        ctx.translate(2.5, 3.5);
+        tracePoly(ctx, pts);
+        ctx.fillStyle = 'rgba(15, 19, 26, 0.55)';
+        ctx.fill();
+        ctx.restore();
+
+        tracePoly(ctx, pts);
+        ctx.fillStyle = energy > 0.68 ? '#F0ABFC' : mainColor;
+        ctx.fill();
+        ctx.save();
+        ctx.clip();
+        ctx.fillStyle = edgeColor;
+        ctx.fillRect(-r * 1.3, r * 0.08, r * 2.6, r);
+        ctx.restore();
+        tracePoly(ctx, pts);
+        ctx.strokeStyle = isSteppedOn && energy > 0.62 ? '#F43F5E' : strokeClr;
+        ctx.lineWidth = isSteppedOn ? Math.max(strokeW, 2.3) : strokeW;
+        ctx.stroke();
+
+        // Inner resonant zigzag fault line (brightens as tremor builds)
+        ctx.strokeStyle =
+          isSteppedOn || energy > 0.1
+            ? energy > 0.62
+              ? '#FFF1F2'
+              : '#FAE8FF'
+            : '#4A1D6B';
+        ctx.lineWidth = 1.6 + energy * 0.9;
+        ctx.lineJoin = 'round';
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(-r * 0.62, -r * 0.06);
+        ctx.lineTo(-r * 0.2, -r * 0.34);
+        ctx.lineTo(r * 0.16, r * 0.22);
+        ctx.lineTo(r * 0.58, -r * 0.14);
+        ctx.stroke();
+      } else if (h.type === 'crack') {
         // Rich angular rock fissures (lip brightness reflects stamina cost)
         ctx.strokeStyle = shadeHexColor('#9BA4B0', shadeShift);
         ctx.lineWidth = 3.5;
@@ -1450,8 +1675,8 @@ export function renderGameFrame(params: RenderParams) {
     }
   }
 
-  // 4E-2. Dyno Hold-to-Lunge Charge Indicator
-  if (dynoCharge && phase === 'PLAYING' && !climber.isFalling) {
+  // 4E-2. Dyno Hold-to-Lunge Charge Indicator (visible only after dwell debounce begins filling)
+  if (dynoCharge && dynoCharge.progress > 0.01 && phase === 'PLAYING' && !climber.isFalling) {
     const startLimb = climber.limbs[dynoCharge.limbId];
     const target = dynoCharge.hold;
     ctx.save();
@@ -1641,7 +1866,13 @@ export function renderGameFrame(params: RenderParams) {
       ctx.arc(0, 5, 4.5, 0, Math.PI * 2);
       ctx.stroke();
 
-      if (nearbyRecyclablePitonId === p.id && phase === 'PLAYING' && !isReadingRoute) {
+      if (
+        nearbyRecyclablePitonId === p.id &&
+        phase === 'PLAYING' &&
+        !isReadingRoute &&
+        !activeLimbDrag &&
+        !activePelvisDrag
+      ) {
         ctx.strokeStyle = '#34D399';
         ctx.lineWidth = 1.8;
         ctx.setLineDash([3, 3]);
@@ -1744,8 +1975,8 @@ export function renderGameFrame(params: RenderParams) {
         );
         ctx.stroke();
       }
-    } else if (activeLimbDrag.hasMovedOut) {
-      // Release cue in open air (shifted higher on touch to avoid fingertip occlusion)
+    } else if (activeLimbDrag.hasMovedOut && activeLimbDrag.originHoldId !== null) {
+      // Release cue in open air (only when detaching a previously anchored limb)
       const badgeY = activeLimbDrag.isTouch ? dragLimb.pos.y - 30 : dragLimb.pos.y - 22;
       ctx.fillStyle = 'rgba(20, 24, 32, 0.85)';
       ctx.strokeStyle = 'rgba(248, 250, 252, 0.45)';
@@ -1824,19 +2055,127 @@ export function renderGameFrame(params: RenderParams) {
     }
   }
 
-  // Airborne Dyno motion streaks behind climber
+  // Airborne Dyno / Spring Launch kinetic motion streaks & Combo Flow aura
   if (climber.dynoFlight && phase === 'PLAYING') {
+    const isSpring = !!climber.dynoFlight.isSpringLaunch;
     ctx.save();
-    ctx.strokeStyle = 'rgba(248, 250, 252, 0.65)';
-    ctx.lineWidth = 2.2;
+    ctx.strokeStyle = isSpring ? 'rgba(190, 242, 100, 0.88)' : 'rgba(125, 211, 252, 0.76)';
+    ctx.lineWidth = isSpring ? 3 : 2.2;
     ctx.lineCap = 'round';
-    for (let i = -1; i <= 1; i++) {
-      const sx = climber.torsoPos.x + i * 14;
-      const sy = climber.torsoPos.y + 18 + Math.abs(i) * 6;
+    const streakRange = isSpring ? 2 : 1;
+    for (let i = -streakRange; i <= streakRange; i++) {
+      const sx = climber.torsoPos.x + i * 12;
+      const sy = climber.torsoPos.y + 14 + Math.abs(i) * 5;
       ctx.beginPath();
       ctx.moveTo(sx, sy);
-      ctx.lineTo(sx, sy + 28);
+      ctx.lineTo(sx, sy + (isSpring ? 44 : 30));
       ctx.stroke();
+    }
+    ctx.restore();
+  } else if (
+    phase === 'PLAYING' &&
+    !climber.isFalling &&
+    ((climber.flowCombo ?? 0) >= 2 || (climber.swingBoostTimer ?? 0) > 0)
+  ) {
+    ctx.save();
+    const glowR = 34 + Math.sin(timeSec * 6.5) * 3;
+    const auraGrad = ctx.createRadialGradient(
+      climber.torsoPos.x,
+      climber.torsoPos.y,
+      6,
+      climber.torsoPos.x,
+      climber.torsoPos.y,
+      glowR
+    );
+    const isSwingGlow = (climber.swingBoostTimer ?? 0) > 0;
+    auraGrad.addColorStop(
+      0,
+      isSwingGlow ? 'rgba(34, 211, 238, 0.24)' : 'rgba(250, 204, 21, 0.18)'
+    );
+    auraGrad.addColorStop(1, 'rgba(34, 211, 238, 0)');
+    ctx.fillStyle = auraGrad;
+    ctx.beginPath();
+    ctx.arc(climber.torsoPos.x, climber.torsoPos.y, glowR, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // Master-Tier Weather Incident World-Space Hazard Telegraph & Falling Ice/Rock Projectiles
+  if (phase === 'PLAYING' && weatherIncident && weatherIncident.type === 'icefall') {
+    const viewTopY = camera.y - (height * 0.62) / Math.max(0.15, camera.zoom);
+    const viewBotY = camera.y + (height * 0.62) / Math.max(0.15, camera.zoom);
+    const laneLeft = weatherIncident.laneX - weatherIncident.laneWidth * 0.5;
+    const laneW = weatherIncident.laneWidth;
+    const pulse = 0.5 + 0.5 * Math.sin(timeSec * 14);
+
+    ctx.save();
+    // Danger corridor wash
+    ctx.fillStyle =
+      weatherIncident.phase === 'telegraph'
+        ? `rgba(239, 68, 68, ${(0.1 + pulse * 0.12).toFixed(3)})`
+        : 'rgba(239, 68, 68, 0.09)';
+    ctx.fillRect(laneLeft, viewTopY, laneW, viewBotY - viewTopY);
+
+    ctx.strokeStyle =
+      weatherIncident.phase === 'telegraph'
+        ? `rgba(251, 146, 60, ${(0.55 + pulse * 0.35).toFixed(3)})`
+        : 'rgba(251, 146, 60, 0.35)';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([8, 6]);
+    ctx.beginPath();
+    ctx.moveTo(laneLeft, viewTopY);
+    ctx.lineTo(laneLeft, viewBotY);
+    ctx.moveTo(laneLeft + laneW, viewTopY);
+    ctx.lineTo(laneLeft + laneW, viewBotY);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Warning chevron arrow near top of viewport inside danger lane
+    if (weatherIncident.phase === 'telegraph') {
+      const warnY = viewTopY + 54;
+      ctx.fillStyle = '#F97316';
+      ctx.strokeStyle = INK;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(weatherIncident.laneX, warnY + 18);
+      ctx.lineTo(weatherIncident.laneX - 13, warnY - 4);
+      ctx.lineTo(weatherIncident.laneX + 13, warnY - 4);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    }
+
+    // Active tumbling ice/rock boulders
+    for (const proj of weatherIncident.projectiles) {
+      // Motion streak trail
+      ctx.strokeStyle =
+        proj.kind === 'ice' ? 'rgba(186, 230, 253, 0.65)' : 'rgba(203, 213, 225, 0.58)';
+      ctx.lineWidth = proj.radius * 0.7;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(proj.x, proj.y);
+      ctx.lineTo(proj.x - proj.vx * 0.08, proj.y - proj.vy * 0.08);
+      ctx.stroke();
+
+      ctx.save();
+      ctx.translate(proj.x, proj.y);
+      ctx.rotate(proj.rotation);
+      const pr = proj.radius;
+      const pts: Vec2[] = [
+        { x: -pr, y: -pr * 0.3 },
+        { x: -pr * 0.25, y: -pr },
+        { x: pr * 0.85, y: -pr * 0.55 },
+        { x: pr, y: pr * 0.35 },
+        { x: pr * 0.2, y: pr * 0.95 },
+        { x: -pr * 0.8, y: pr * 0.65 },
+      ];
+      tracePoly(ctx, pts);
+      ctx.fillStyle = proj.kind === 'ice' ? '#E0F2FE' : '#64748B';
+      ctx.fill();
+      ctx.strokeStyle = INK;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.restore();
     }
     ctx.restore();
   }
@@ -1962,17 +2301,23 @@ export function renderGameFrame(params: RenderParams) {
   ctx.restore(); // End world-space transform
 
   // 5. Dynamic Screen-Space Weather Fog, Mist Ribbons & Visibility Cone
+  const squallBoost =
+    phase === 'PLAYING' &&
+    weatherIncident?.type === 'whiteout_squall' &&
+    weatherIncident.phase === 'active'
+      ? 0.26
+      : 0;
   const fogStrength =
     phase === 'SUMMIT'
       ? weather.fogOpacity * Math.max(0, 1 - summitProgress * 1.8)
-      : weather.fogOpacity;
+      : Math.min(0.86, weather.fogOpacity + squallBoost);
 
   if (fogStrength > 0.04) {
     // Soft ambient tint (cool rain slate vs icy blizzard white vs golden-grey valley mist)
     const fogTint =
       weather.type === 'rain'
         ? 'rgba(30, 44, 62,'
-        : weather.type === 'snowstorm'
+        : weather.type === 'snowstorm' || squallBoost > 0
           ? 'rgba(218, 232, 246,'
           : 'rgba(215, 224, 235,';
 
@@ -1980,8 +2325,9 @@ export function renderGameFrame(params: RenderParams) {
     const climberScreenX = width * 0.5 + (climber.torsoPos.x - camera.x) * camera.zoom;
     const climberScreenY = height * 0.52 + (climber.torsoPos.y - camera.y) * camera.zoom;
     const maxDim = Math.max(width, height);
-    const clearR = maxDim * weather.visibilityRadius * 0.34;
-    const outerR = maxDim * weather.visibilityRadius * 0.92;
+    const visRadius = Math.max(0.28, weather.visibilityRadius - (squallBoost > 0 ? 0.14 : 0));
+    const clearR = maxDim * visRadius * 0.34;
+    const outerR = maxDim * visRadius * 0.92;
 
     const visGrad = ctx.createRadialGradient(
       climberScreenX,
@@ -2008,6 +2354,31 @@ export function renderGameFrame(params: RenderParams) {
       ctx.beginPath();
       ctx.ellipse(bandX + width * 0.35, bandY, width * 0.42, 38 + i * 10, 0, 0, Math.PI * 2);
       ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // 5B. Master-Tier Crosswind Gust Screen-Space Sweeping Gale Streaks
+  if (phase === 'PLAYING' && weatherIncident && weatherIncident.type === 'crosswind_gust') {
+    const isActive = weatherIncident.phase === 'active';
+    const dir = weatherIncident.direction;
+    const count = isActive ? 14 : 6;
+    ctx.save();
+    ctx.strokeStyle = isActive
+      ? 'rgba(224, 242, 254, 0.52)'
+      : 'rgba(251, 191, 36, 0.38)';
+    ctx.lineWidth = isActive ? 2.4 : 1.8;
+    ctx.lineCap = 'round';
+    for (let i = 0; i < count; i++) {
+      const speed = isActive ? 980 : 380;
+      const offset = ((timeSec * speed + i * 197) % (width + 260)) - 130;
+      const sx = dir > 0 ? offset : width - offset;
+      const sy = ((i * 73 + 60) % (height * 0.84)) + height * 0.08;
+      const len = isActive ? 90 + (i % 3) * 35 : 44;
+      ctx.beginPath();
+      ctx.moveTo(sx, sy);
+      ctx.lineTo(sx + dir * len, sy + 10);
+      ctx.stroke();
     }
     ctx.restore();
   }

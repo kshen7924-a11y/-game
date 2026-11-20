@@ -293,6 +293,12 @@ export function TitleOverlay({
                             <span className="font-semibold text-sky-700">含路书读线</span>
                           </>
                         )}
+                        {activeRoute.tier >= 9 && (
+                          <>
+                            <span aria-hidden="true">·</span>
+                            <span className="font-bold text-red-700">含天气偶发事故</span>
+                          </>
+                        )}
                       </div>
                       <h2 className="font-display mt-0.5 text-2xl font-bold text-[#141820]">
                         {activeRoute.tierLabel} · {activeRoute.name}
@@ -302,6 +308,13 @@ export function TitleOverlay({
                     <p className="text-xs leading-relaxed text-slate-700 sm:text-sm">
                       {activeRoute.description}
                     </p>
+
+                    {activeRoute.tier >= 9 && (
+                      <div className="border border-red-300 bg-red-50/85 px-2.5 py-1.5 text-[11px] leading-relaxed text-red-900">
+                        <span className="font-bold">大师级偶发气象事故：</span>
+                        攀登途中将随机遭遇突发强横风、高空落冰与冻雨白毛风，请留意预警及时移位抗风。
+                      </div>
+                    )}
 
                     {activeRoute.tier >= 5 && (
                       <div className="border border-sky-300 bg-sky-50/80 px-2.5 py-1.5 text-[11px] leading-relaxed text-sky-900">
@@ -313,7 +326,7 @@ export function TitleOverlay({
                     {isFreeSolo && (
                       <div className="border border-red-300 bg-[#FEF2F2] px-2.5 py-2 text-[11px] leading-relaxed text-red-900">
                         <span className="font-bold text-[#B91C1C]">徒手攀登已启用：</span>
-                        体力消耗 -50%，全程无岩钉、无防滑粉与休息台存档（失败只能从头重攀），登顶直评{' '}
+                        体力消耗 -50%，全程无岩钉、无镁粉与休息台存档（失败只能从头重攀），登顶直评{' '}
                         <span className="font-bold text-[#B45309]">SSS</span> 致敬亚历克斯。
                       </div>
                     )}
@@ -323,8 +336,8 @@ export function TitleOverlay({
                         <dt className="text-[11px] text-slate-500">携带装备</dt>
                         <dd className="mt-0.5 font-semibold text-[#141820] font-mono-tabular">
                           {isFreeSolo
-                            ? '无岩钉防粉（徒手无保护）'
-                            : `岩钉 ×${effectivePitons} · 防粉 ×${effectiveChalk}`}
+                            ? '无岩钉镁粉（徒手无保护）'
+                            : `岩钉 ×${effectivePitons} · 镁粉 ×${effectiveChalk}`}
                         </dd>
                       </div>
                       <div>
@@ -381,7 +394,7 @@ export function TitleOverlay({
 
                     const gearParts: string[] = [];
                     if (opt.noProtection) {
-                      gearParts.push('无岩钉防粉 · 失败从头开始');
+                      gearParts.push('无岩钉镁粉 · 失败从头开始');
                     } else {
                       if (opt.pitonDelta !== 0) {
                         gearParts.push(
@@ -390,7 +403,7 @@ export function TitleOverlay({
                       }
                       if (opt.chalkDelta !== 0) {
                         gearParts.push(
-                          `防粉 ${opt.chalkDelta > 0 ? `+${opt.chalkDelta}` : opt.chalkDelta}`
+                          `镁粉 ${opt.chalkDelta > 0 ? `+${opt.chalkDelta}` : opt.chalkDelta}`
                         );
                       }
                       if (gearParts.length === 0) gearParts.push('默认补给');
@@ -533,7 +546,7 @@ export function TitleOverlay({
             <div className="truncate text-[11px] text-slate-600 font-mono-tabular">
               {isFreeSolo
                 ? `${activeRoute.heightM}m · ${activeLoadout.label} · 无保护 · 失败重头`
-                : `${activeRoute.heightM}m · ${activeLoadout.label} · 岩钉 ×${effectivePitons} · 防粉 ×${effectiveChalk}`}
+                : `${activeRoute.heightM}m · ${activeLoadout.label} · 岩钉 ×${effectivePitons} · 镁粉 ×${effectiveChalk}`}
             </div>
           </div>
 
