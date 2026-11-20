@@ -11,7 +11,9 @@ import {
   solveTwoBoneIK,
 } from './ik';
 import { drawArmPanels, drawClimberHand, drawClimberKit, drawClimberShoe, drawLegPanels } from './climberArt';
+import { drawGraniteHold } from './holdArt';
 import { MountainWorld } from './mountain';
+import { drawAlpineBackdrop, drawCliffMaterial, drawTalusForeground } from './mountainArt';
 import {
   ActiveWeather,
   CameraState,
@@ -212,6 +214,7 @@ export function renderGameFrame(params: RenderParams) {
   }
   ctx.fillStyle = skyGrad;
   ctx.fillRect(0, 0, width, height);
+  const paintedBackdrop = drawAlpineBackdrop(ctx, width, height, camera, altRatio, world.route.palette);
 
   // Subtle High-Altitude Stylized Aurora / Twilight Ribbon (glacial or high alpine twilight)
   if ((world.route.palette === 'glacial' || altRatio > 0.68) && weather.type !== 'rain') {
@@ -288,7 +291,7 @@ export function renderGameFrame(params: RenderParams) {
   ctx.restore();
 
   // 2. Parallax Distant Alpine Ranges (2.5D Split-Lit Comic Peaks + Atmospheric Depth Haze)
-  world.distantPeaks.forEach((peak, layerIdx) => {
+  if (!paintedBackdrop) world.distantPeaks.forEach((peak, layerIdx) => {
     ctx.save();
     ctx.translate(width * 0.5, height * 0.58);
     const pZoom = Math.max(0.22, camera.zoom * (0.36 + peak.parallax));
@@ -526,7 +529,13 @@ export function renderGameFrame(params: RenderParams) {
   const viewHalfH = (height / camera.zoom) * 0.72;
   const minVisY = camera.y - viewHalfH;
   const maxVisY = camera.y + viewHalfH;
+  const halfVisibleWidth = width / camera.zoom;
+  const hasCliffMaterial = drawCliffMaterial(
+    ctx, world, camera.x - halfVisibleWidth, camera.x + halfVisibleWidth, minVisY, maxVisY,
+  );
 
+  ctx.save();
+  if (hasCliffMaterial) ctx.globalAlpha = 0.23;
   for (const f of world.facets) {
     const fy = f.points[0].y;
     if (fy < minVisY - 260 || fy > maxVisY + 260) continue;
@@ -627,6 +636,8 @@ export function renderGameFrame(params: RenderParams) {
     }
   }
 
+  ctx.restore();
+
   // Painterly Directional Sunlight Wash across the Cliff Face (warm sunlit left -> cool shadowed right)
   const faceWash = ctx.createLinearGradient(-340, 0, 340, 0);
   faceWash.addColorStop(
@@ -678,6 +689,10 @@ export function renderGameFrame(params: RenderParams) {
   ctx.lineWidth = 3.2 * inkScale;
   ctx.stroke();
   ctx.restore();
+
+  if (world.route.palette !== 'glacial' && maxVisY > 40) {
+    drawTalusForeground(ctx, width / camera.zoom, camera.x * 0.2);
+  }
 
   // 4D. Rest / Bivouac Ledges & Summit Crown
   for (const ledge of world.ledges) {
@@ -982,7 +997,16 @@ export function renderGameFrame(params: RenderParams) {
         : INK;
       const strokeW = isHovered ? 3 : 1.9;
 
-      if (h.type === 'crack') {
+      const paintedHold = world.route.palette === 'granite' && drawGraniteHold(ctx, h);
+      if (paintedHold) {
+        if (isHovered && !isTutorialTarget) {
+          ctx.strokeStyle = strokeClr;
+          ctx.lineWidth = 2.3;
+          ctx.beginPath();
+          ctx.arc(0, 0, r + 3, Math.PI * 1.1, Math.PI * 1.9);
+          ctx.stroke();
+        }
+      } else if (h.type === 'crack') {
         // Rich angular rock fissures (lip brightness reflects stamina cost)
         ctx.strokeStyle = shadeHexColor('#9BA4B0', shadeShift);
         ctx.lineWidth = 3.5;
