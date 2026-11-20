@@ -74,7 +74,7 @@ export function AltitudeDifficultyChart({
           : 'text-emerald-300';
 
   return (
-    <div className="pointer-events-auto w-[166px] border border-white/15 bg-[#141820]/80 px-2 py-1 backdrop-blur-sm sm:w-[208px] sm:px-2.5 sm:py-1.5">
+    <div className="climb-panel climb-altitude-chart pointer-events-auto w-[166px] border border-white/15 bg-[#141820]/80 px-2 py-1 backdrop-blur-sm sm:w-[208px] sm:px-2.5 sm:py-1.5">
       <div className="flex items-center justify-between gap-1.5 text-[10px] leading-tight">
         <span className="font-medium text-slate-400 whitespace-nowrap">
           {isReadingRoute ? '点选段' : '坡度'}
@@ -103,6 +103,7 @@ export function AltitudeDifficultyChart({
                   onInspectBin(bin);
                 }
               }}
+              aria-pressed={isInspected}
               title={`${bin.startM}-${bin.endM}m · ${bin.challengeTag} (坡度 ${bin.difficulty})`}
               className="group relative flex h-full flex-1 flex-col items-center justify-end focus:outline-none"
             >

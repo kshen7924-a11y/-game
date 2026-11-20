@@ -10,6 +10,8 @@ import {
   RouteConfig,
 } from '../game/types';
 import { ClimbBadge } from './ClimbBadge';
+import { getRouteArt } from './routeArt';
+import './expedition.css';
 
 interface SummitOverlayProps {
   phase: GamePhase;
@@ -64,7 +66,8 @@ export function SummitOverlay({
   onBackToMenu,
 }: SummitOverlayProps) {
   const [hideForView, setHideForView] = useState(false);
-  const [imgFailed, setImgFailed] = useState(false);
+  const [failedArt, setFailedArt] = useState<string | null>(null);
+  const routeArt = getRouteArt(route.summitImage);
 
   const curIdx = ROUTES.findIndex((r) => r.id === route.id);
   const nextRoute = curIdx >= 0 && curIdx < ROUTES.length - 1 ? ROUTES[curIdx + 1] : null;
@@ -115,15 +118,15 @@ export function SummitOverlay({
 
     return (
       <div className="pointer-events-none fixed inset-0 z-20 flex items-end justify-center p-3 sm:items-center sm:justify-start sm:p-8">
-        <div className="pointer-events-auto flex max-h-[92dvh] w-full max-w-md flex-col overflow-y-auto border-2 border-[#141820] bg-[#F4F1EA] p-4 text-[#141820] shadow-[6px_6px_0px_#141820] sm:p-5">
+        <div className="expedition-result-paper pointer-events-auto flex max-h-[92dvh] w-full max-w-md flex-col overflow-y-auto border-2 border-[#141820] bg-[#F4F1EA] p-4 text-[#141820] shadow-[6px_6px_0px_#141820] sm:p-5">
           {/* Summit Graphic-Novel Illustration */}
-          <div className="relative aspect-video w-full overflow-hidden border-2 border-[#141820] bg-gradient-to-br from-slate-700 via-slate-800 to-amber-900">
-            {!imgFailed ? (
+          <div className="expedition-result-art relative aspect-video w-full overflow-hidden bg-gradient-to-br from-slate-700 via-slate-800 to-amber-900">
+            {failedArt !== routeArt ? (
               <img
-                src={route.summitImage}
+                src={routeArt}
                 alt={`${route.grade} ${route.name} 登顶插画`}
                 referrerPolicy="no-referrer"
-                onError={() => setImgFailed(true)}
+                onError={() => setFailedArt(routeArt)}
                 className="h-full w-full object-cover"
               />
             ) : (
@@ -308,7 +311,7 @@ export function SummitOverlay({
   if (phase === 'FALLEN') {
     return (
       <div className="fixed inset-0 z-20 flex items-center justify-center bg-[#141820]/70 p-4 backdrop-blur-xs">
-        <div className="w-full max-w-md border-2 border-[#141820] bg-[#F4F1EA] p-5 text-[#141820] shadow-[6px_6px_0px_#141820] sm:p-6">
+        <div className="expedition-result-paper w-full max-w-md border-2 border-[#141820] bg-[#F4F1EA] p-5 text-[#141820] shadow-[6px_6px_0px_#141820] sm:p-6">
           <div className="flex items-center gap-2 text-xs font-semibold text-red-700">
             <span>{isFreeSolo ? '徒手坠落 · 无保护' : '坠落重伤'}</span>
             <span aria-hidden="true">·</span>

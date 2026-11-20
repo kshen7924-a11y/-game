@@ -15,6 +15,8 @@ import {
 } from '../game/types';
 import { ClimbBadge } from './ClimbBadge';
 import { OutfitPreview, PackPreview } from './PackPreview';
+import { getRouteArt } from './routeArt';
+import './expedition.css';
 
 interface TitleOverlayProps {
   selectedRouteId: RouteId;
@@ -95,58 +97,50 @@ export function TitleOverlay({
   }, [activeRoute]);
 
   return (
-    <div className="fixed inset-0 z-20 flex items-center justify-center bg-[#141820]/68 p-3 backdrop-blur-[2px] sm:p-6">
-      <div className="flex max-h-[92dvh] w-full max-w-3xl flex-col overflow-hidden border-2 border-[#141820] bg-[#F4F1EA] text-[#141820] shadow-[6px_6px_0px_#141820]">
-        {/* Top Expedition Header + Clean 3-Tab Switcher */}
-        <header className="flex flex-col gap-3 border-b-2 border-[#141820] bg-[#EFECE3] px-4 py-3.5 sm:flex-row sm:items-center sm:justify-between sm:px-6">
-          <div className="flex items-baseline justify-between gap-3 sm:justify-start">
-            <h1 className="font-display text-2xl font-bold tracking-tight text-[#141820] sm:text-3xl">
-              孤山独影
-            </h1>
-            <span className="text-xs font-medium text-slate-600 font-mono-tabular">
-              完攀 {completedRoutes.size}/{ROUTES.length}
-            </span>
-          </div>
-
-          <nav
-            aria-label="主菜单导航"
-            className="grid grid-cols-3 gap-1 border border-[#141820]/25 bg-[#E4DFD3] p-1"
-          >
-            {(
-              [
-                { id: 'routes', label: '线路选择', icon: Compass },
-                { id: 'gear', label: '装备配装', icon: Shirt },
-                { id: 'badges', label: '成就徽章', icon: Medal },
-              ] as const
-            ).map((tab) => {
-              const Icon = tab.icon;
-              const active = activeTab === tab.id;
-              return (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => setActiveTab(tab.id)}
-                  className={`flex min-h-[38px] items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold whitespace-nowrap shrink-0 transition-colors ${
-                    active
-                      ? 'bg-[#141820] text-[#F4F1EA]'
-                      : 'text-slate-700 hover:bg-white/60 hover:text-[#141820]'
-                  }`}
-                >
-                  <Icon className="h-3.5 w-3.5" />
-                  <span>{tab.label}</span>
-                </button>
-              );
-            })}
-          </nav>
-        </header>
-
-        {/* Tab Workspace */}
-        <div className="flex-1 overflow-y-auto p-4 sm:p-6">
+    <div className="expedition-menu">
+      <header className="expedition-cover">
+        <img
+          src={getRouteArt(activeRoute.summitImage)}
+          className="expedition-cover-art"
+          alt=""
+          fetchPriority="high"
+        />
+        <span className="expedition-cover-progress">完攀 {completedRoutes.size}/{ROUTES.length}</span>
+        <div className="expedition-cover-title">
+          <h1>孤山独影</h1>
+          <span className="font-mono-tabular">{activeRoute.heightM}<small> m</small></span>
+        </div>
+      </header>
+      <div className="expedition-book">
+        <nav aria-label="主菜单导航" className="expedition-tabs">
+          {(
+            [
+              { id: 'routes', label: '线路选择', icon: Compass },
+              { id: 'gear', label: '装备配装', icon: Shirt },
+              { id: 'badges', label: '成就徽章', icon: Medal },
+            ] as const
+          ).map((tab) => {
+            const Icon = tab.icon;
+            const active = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveTab(tab.id)}
+                aria-pressed={active}
+              >
+                <Icon className="h-3.5 w-3.5" />
+                <span>{tab.label}</span>
+              </button>
+            );
+          })}
+        </nav>
+        <div className="expedition-pages">
           {activeTab === 'routes' && (
             <div className="space-y-4">
               {/* Compact Daily Challenge Strip + Tier Filter */}
-              <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex items-center gap-1 bg-[#E7E2D6] p-1">
+              <div className="expedition-route-tools">
+                <div className="expedition-filters">
                   {TIER_FILTERS.map((f) => {
                     const active = tierFilter === f.id;
                     return (
@@ -154,6 +148,7 @@ export function TitleOverlay({
                         key={f.id}
                         type="button"
                         onClick={() => setTierFilter(f.id)}
+                        aria-pressed={active}
                         className={`min-h-[34px] px-2.5 py-1 text-xs font-medium whitespace-nowrap shrink-0 transition-colors ${
                           active
                             ? 'bg-white text-[#141820] font-bold shadow-xs'
@@ -169,7 +164,7 @@ export function TitleOverlay({
                 <button
                   type="button"
                   onClick={() => onStart(dailyRoute)}
-                  className="flex min-h-[40px] items-center justify-between gap-2 border border-[#141820] bg-[#FEF3C7] px-3 py-1.5 text-left transition-colors hover:bg-[#FDE68A]"
+                  className="expedition-daily flex min-h-[40px] items-center justify-between gap-2 px-3 py-1.5 text-left transition-colors"
                 >
                   <div className="flex min-w-0 items-center gap-2">
                     <Calendar className="h-3.5 w-3.5 shrink-0 text-[#B45309]" />
@@ -187,72 +182,8 @@ export function TitleOverlay({
                 </button>
               </div>
 
-              {/* 2-Column Master-Detail Layout */}
-              <div className="grid grid-cols-1 gap-4 md:grid-cols-[1.2fr_0.8fr]">
-                {/* Left: Scannable Route List */}
-                <div className="grid grid-cols-2 gap-2 self-start">
-                  {filteredRoutes.map((route) => {
-                    const isSelected = route.id === selectedRouteId;
-                    const isDone = completedRoutes.has(route.id);
-                    const isSoloCleared = freeSoloRoutes.has(route.id);
-                    const style = bestStyles[route.id];
-                    const styleMark = isSoloCleared
-                      ? 'SSS'
-                      : style === 'onsight'
-                        ? '★'
-                        : style === 'redpoint'
-                          ? '◆'
-                          : isDone
-                            ? '✓'
-                            : '';
-
-                    return (
-                      <button
-                        key={route.id}
-                        type="button"
-                        onClick={() => onSelectRoute(route.id)}
-                        className={`flex min-h-[68px] flex-col justify-between border-2 p-2.5 text-left transition-all ${
-                          isSelected
-                            ? 'border-[#141820] bg-white shadow-[3px_3px_0px_#141820]'
-                            : 'border-slate-300/90 bg-[#EAE6DC] hover:border-[#141820] hover:bg-white/75'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between gap-1 text-[11px] font-mono-tabular">
-                          <span className="font-bold text-[#EA580C]">
-                            {String(route.tier).padStart(2, '0')} · {route.grade}
-                          </span>
-                          <span
-                            className={`font-semibold ${
-                              isSoloCleared
-                                ? 'font-extrabold text-[#B45309]'
-                                : style === 'onsight'
-                                  ? 'text-amber-600'
-                                  : style === 'redpoint'
-                                    ? 'text-[#EA580C]'
-                                    : isDone
-                                      ? 'text-emerald-700'
-                                      : 'text-slate-500'
-                            }`}
-                          >
-                            {styleMark ? `${styleMark} ` : ''}
-                            {route.heightM}m
-                          </span>
-                        </div>
-                        <div className="mt-1">
-                          <div className="truncate text-sm font-bold text-[#141820]">
-                            {route.tierLabel}
-                          </div>
-                          <div className="truncate text-[11px] text-slate-600">
-                            {route.name}
-                          </div>
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-
-                {/* Right: Active Route Dossier */}
-                <div className="flex flex-col justify-between border-2 border-[#141820] bg-white p-4">
+              <div className="expedition-route-workspace">
+                <div className="expedition-dossier">
                   <div className="space-y-3">
                     <div>
                       <div className="flex flex-wrap items-center gap-1.5 text-xs font-semibold text-[#EA580C] font-mono-tabular">
@@ -333,6 +264,43 @@ export function TitleOverlay({
                     </button>
                   </div>
                 </div>
+
+                <div className="expedition-route-list">
+                  {filteredRoutes.map((route) => {
+                    const isSelected = route.id === selectedRouteId;
+                    const isDone = completedRoutes.has(route.id);
+                    const isSoloCleared = freeSoloRoutes.has(route.id);
+                    const style = bestStyles[route.id];
+                    const styleMark = isSoloCleared
+                      ? 'SSS'
+                      : style === 'onsight'
+                        ? '★'
+                        : style === 'redpoint'
+                          ? '◆'
+                          : isDone
+                            ? '✓'
+                            : '';
+
+                    return (
+                      <button
+                        key={route.id}
+                        type="button"
+                        onClick={() => onSelectRoute(route.id)}
+                        aria-pressed={isSelected}
+                        className="expedition-route-card"
+                      >
+                        <span className="expedition-route-grade font-mono-tabular">{route.grade}</span>
+                        <span className="expedition-route-name">
+                          <strong>{route.name}</strong>
+                          <small>{route.tierLabel}</small>
+                        </span>
+                        <span className="expedition-route-height font-mono-tabular">
+                          {styleMark ? <b>{styleMark} </b> : null}{route.heightM}m
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             </div>
           )}
@@ -382,7 +350,7 @@ export function TitleOverlay({
                         type="button"
                         onClick={() => onSelectLoadout(opt.id)}
                         aria-pressed={active}
-                        className={`flex flex-col justify-between border-2 p-3.5 text-left transition-all ${
+                        className={`expedition-gear-card flex flex-col justify-between border p-3.5 text-left transition-all ${
                           active
                             ? opt.noProtection
                               ? 'border-[#141820] bg-[#FFF7ED] shadow-[4px_4px_0px_#141820]'
@@ -439,7 +407,7 @@ export function TitleOverlay({
                         disabled={!unlocked}
                         onClick={() => onSelectSkin(skin.id)}
                         aria-pressed={active}
-                        className={`flex flex-col items-center justify-between border-2 p-3 text-center transition-all disabled:cursor-not-allowed disabled:opacity-60 ${
+                        className={`expedition-gear-card flex flex-col items-center justify-between border p-3 text-center transition-all disabled:cursor-not-allowed disabled:opacity-60 ${
                           active
                             ? 'border-[#141820] bg-white shadow-[4px_4px_0px_#141820]'
                             : 'border-slate-300 bg-[#EAE6DC] hover:border-[#141820] hover:bg-white/75'
@@ -504,7 +472,7 @@ export function TitleOverlay({
         </div>
 
         {/* Clean Persistent Action Footer */}
-        <footer className="flex items-center justify-between gap-3 border-t-2 border-[#141820] bg-[#EFECE3] px-4 py-3 sm:px-6">
+        <footer className="expedition-footer">
           <div className="min-w-0">
             <div className="truncate text-xs font-bold text-[#141820] sm:text-sm">
               {activeRoute.tierLabel}（{activeRoute.grade}）· {activeRoute.name}
@@ -519,10 +487,10 @@ export function TitleOverlay({
           <button
             type="button"
             onClick={() => onStart(activeRoute)}
-            className={`min-h-[46px] shrink-0 border-2 border-[#141820] px-6 py-2.5 text-sm font-bold text-white shadow-[3px_3px_0px_#141820] whitespace-nowrap transition-transform active:translate-x-0.5 active:translate-y-0.5 ${
+            className={`expedition-start min-h-[46px] shrink-0 px-4 py-2.5 text-sm font-bold whitespace-nowrap transition-colors ${
               isFreeSolo
-                ? 'bg-[#B91C1C] hover:bg-[#991B1B]'
-                : 'bg-[#EA580C] hover:bg-[#DC4C06]'
+                ? 'bg-[#852f28] hover:bg-[#6c231e]'
+                : 'bg-[#984228] hover:bg-[#78311f]'
             }`}
           >
             {isFreeSolo ? '开始徒手攀登' : '开始攀登'}
