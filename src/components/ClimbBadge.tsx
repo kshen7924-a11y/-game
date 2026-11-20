@@ -1,4 +1,5 @@
 import { BadgeInfo, ClimbStyle } from '../game/types';
+import './expedition.css';
 
 interface ClimbBadgeProps {
   badge: BadgeInfo;
@@ -124,7 +125,9 @@ export function ClimbBadge({
   if (compact) {
     return (
       <div
-        className={`flex min-w-[144px] shrink-0 items-center gap-2 border px-2.5 py-2 ${
+        data-unlocked={unlocked}
+        data-style={bestStyle}
+        className={`expedition-badge flex min-w-[144px] shrink-0 items-center gap-2 border px-2.5 py-2 ${
           unlocked
             ? bestStyle === 'onsight'
               ? 'border-[#B45309] bg-[#FFFBEB]'
@@ -153,7 +156,9 @@ export function ClimbBadge({
 
   return (
     <div
-      className={`flex items-center gap-3 border-2 p-3 transition-colors ${
+      data-unlocked={unlocked}
+      data-style={bestStyle}
+      className={`expedition-badge flex items-center gap-3 border p-3 transition-colors ${
         unlocked
           ? bestStyle === 'onsight'
             ? 'border-[#141820] bg-[#FFFBEB] shadow-[3px_3px_0px_#141820]'

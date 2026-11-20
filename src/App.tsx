@@ -2837,6 +2837,7 @@ export default function App() {
           tutorialRef.current.variant === 'advanced' &&
           tutorialRef.current.step === 1,
         isFreeSolo: selectedLoadoutRef.current === 'free-solo',
+        loadout: selectedLoadoutRef.current,
       });
       ctx.restore();
 

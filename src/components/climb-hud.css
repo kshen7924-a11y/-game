@@ -1,0 +1,108 @@
+.climb-hud {
+  --climb-paper: #e8deca;
+  --climb-ink: #202826;
+  --climb-panel: rgb(33 41 38 / 94%);
+  --climb-edge: rgb(232 222 202 / 26%);
+  --climb-shadow: 0 5px 16px rgb(13 18 16 / 32%);
+  padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right))
+    max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+}
+
+.climb-hud button {
+  touch-action: manipulation;
+}
+
+.climb-hud button:focus-visible {
+  outline: 2px solid #f9cb94;
+  outline-offset: -2px;
+}
+
+.climb-route-stack,
+.climb-route-details {
+  min-width: 0;
+}
+
+.climb-route-plate {
+  max-width: 100%;
+  border: 1px solid #fff3dcb9;
+  background: var(--climb-paper);
+  color: var(--climb-ink);
+  box-shadow: var(--climb-shadow);
+}
+
+.climb-route-plate button {
+  flex: none;
+  color: inherit;
+  border-color: #30291e45;
+  background: rgb(255 255 255 / 17%);
+}
+
+.climb-route-plate button:hover {
+  background: #fbf1dc;
+}
+
+.climb-route-metric,
+.climb-route-conditions {
+  flex-wrap: wrap;
+}
+
+.climb-route-tier { color: #883d28; }
+.climb-route-grade,
+.climb-route-conditions { color: #4c554c; }
+.climb-top-danger { color: #8e382f; }
+.climb-top-read { color: #255567; }
+
+.climb-panel {
+  border-color: var(--climb-edge);
+  background: var(--climb-panel);
+  box-shadow: var(--climb-shadow);
+}
+
+.climb-meter-stack {
+  width: clamp(76px, 25vw, 148px);
+}
+
+.climb-stamina-fill {
+  transition: width 130ms linear, background-color 130ms linear;
+}
+
+.climb-altitude-chart {
+  max-width: 100%;
+}
+
+.climb-roadbook {
+  max-height: min(51dvh, 360px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+.climb-action-deck {
+  flex: none;
+}
+
+@media (min-width: 640px) {
+  .climb-hud {
+    padding: max(14px, env(safe-area-inset-top)) max(14px, env(safe-area-inset-right))
+      max(14px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left));
+  }
+}
+
+@media (orientation: landscape) and (max-height: 500px) {
+  .climb-hud { padding-block: max(6px, env(safe-area-inset-top)) max(6px, env(safe-area-inset-bottom)); }
+  .climb-hud-bottom[data-reading="true"] {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
+  }
+
+  .climb-roadbook { max-height: 38dvh; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .climb-hud .climb-stamina-fill,
+  .climb-hud button,
+  .climb-altitude-chart button > div {
+    transition: none;
+  }
+}

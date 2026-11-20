@@ -28,6 +28,7 @@ import {
   TutorialState,
 } from '../game/types';
 import { AltitudeDifficultyChart } from './AltitudeDifficultyChart';
+import './climb-hud.css';
 
 interface GameHUDProps {
   route: RouteConfig;
@@ -180,12 +181,12 @@ export function GameHUD({
           : Sun;
 
   return (
-    <div className="pointer-events-none fixed inset-0 z-10 flex flex-col justify-between p-2 sm:p-4">
+    <div className="climb-hud pointer-events-none fixed inset-0 z-10 flex flex-col justify-between">
       {/* Slim Top Bar */}
-      <div className="flex items-start justify-between gap-2">
+      <div className="climb-hud-top flex items-start justify-between gap-2">
         {/* Top-Left: Route + Altitude + Slim Slope Chart */}
-        <div className="flex flex-col items-start gap-1">
-          <div className="pointer-events-auto flex items-center gap-2 border border-white/15 bg-[#141820]/82 px-2 py-1 backdrop-blur-sm sm:px-2.5 sm:py-1.5">
+        <div className="climb-route-stack flex flex-col items-start gap-1">
+          <div className="climb-route-plate pointer-events-auto flex items-center gap-2 px-1.5 py-1">
             <button
               type="button"
               onClick={onBackToMenu}
@@ -195,28 +196,28 @@ export function GameHUD({
               <ChevronLeft className="h-4 w-4" />
             </button>
 
-            <div className="leading-tight">
-              <div className="flex items-baseline gap-1.5 whitespace-nowrap">
-                <span className="text-xs font-bold text-[#F59E0B]">
+            <div className="climb-route-details leading-tight">
+              <div className="climb-route-metric flex items-baseline gap-x-1.5">
+                <span className="climb-route-tier text-xs font-bold">
                   {route.isDailyChallenge ? '今日神山' : route.tierLabel}
                 </span>
-                <span className="font-display text-sm font-bold text-amber-200/90 font-mono-tabular sm:text-base">
+                <span className="climb-route-grade text-xs font-bold font-mono-tabular">
                   {route.grade}
                 </span>
-                <span className="font-display text-sm font-bold text-[#F4F1EA] font-mono-tabular sm:text-base">
+                <span className="climb-route-height text-sm font-bold font-mono-tabular">
                   {stats.altitudeM.toFixed(1)}/{route.heightM}m
                 </span>
               </div>
-              <div className="flex items-center gap-1 text-[10px] text-slate-300">
-                <WeatherIcon className="h-3 w-3 text-sky-300" />
+              <div className="climb-route-conditions flex items-center gap-x-1 text-[10px]">
+                <WeatherIcon className="h-3 w-3 shrink-0" />
                 <span>{weather.label}</span>
                 {isFreeSolo && (
-                  <span className="font-semibold text-red-300">
+                  <span className="climb-top-danger font-semibold">
                     <span aria-hidden="true">· </span>徒手无保护
                   </span>
                 )}
                 {supportsRouteBook && isReadingRoute && (
-                  <span className="inline-flex items-center gap-0.5 font-semibold text-sky-300">
+                  <span className="climb-top-read inline-flex items-center gap-0.5 font-semibold">
                     <span aria-hidden="true">·</span>
                     <Pause className="h-2.5 w-2.5" />
                     <span>{isPreClimbReading ? '开攀前读线' : '路书暂停'}</span>
@@ -236,8 +237,8 @@ export function GameHUD({
         </div>
 
         {/* Top-Right: Compact Survival Bars + Quick Actions */}
-        <div className="pointer-events-auto flex items-center gap-1.5 border border-white/15 bg-[#141820]/82 px-2 py-1 backdrop-blur-sm sm:gap-2.5 sm:px-2.5 sm:py-1.5">
-          <div className="w-[108px] space-y-1 sm:w-[148px]">
+        <div className="climb-panel pointer-events-auto flex items-center gap-1.5 border border-white/15 bg-[#141820]/82 px-2 py-1 backdrop-blur-sm sm:gap-2.5 sm:px-2.5 sm:py-1.5">
+          <div className="climb-meter-stack space-y-1">
             <div>
               <div className="flex items-center justify-between gap-1 text-[10px] leading-none">
                 <span className="truncate text-slate-200">耐力·{staminaStatus}</span>
@@ -260,7 +261,7 @@ export function GameHUD({
               </div>
               <div className="mt-1 h-1.5 w-full bg-slate-800">
                 <div
-                  className={`h-full transition-[width] duration-150 ${
+                  className={`climb-stamina-fill h-full transition-[width] duration-150 ${
                     staminaPct <= 25
                       ? 'bg-red-500'
                       : staminaPct <= 55
@@ -343,15 +344,15 @@ export function GameHUD({
       </div>
 
       {/* Bottom Ergonomic Thumb Zones */}
-      <div className="flex flex-col gap-1.5 pb-[env(safe-area-inset-bottom)]">
+      <div className="climb-hud-bottom flex flex-col gap-1.5" data-reading={isReadingRoute}>
         {/* Single Concise Context Hint Line */}
-        <div className="flex justify-center">
+        <div className="climb-context flex justify-center">
           {dynoProgress !== null ? (
             <div className="border border-amber-400/80 bg-[#141820]/90 px-3 py-1 text-xs font-bold text-amber-300">
               蓄力跃抓 {Math.round(dynoProgress * 100)}% · 松手腾跃
             </div>
           ) : supportsRouteBook && isReadingRoute ? (
-            <div className="pointer-events-auto flex w-full max-w-md flex-col gap-1.5 border border-sky-400/70 bg-[#141820]/94 p-2 text-[11px] text-slate-200 shadow-lg backdrop-blur-sm">
+            <div className="climb-panel climb-roadbook pointer-events-auto flex w-full max-w-md flex-col gap-1.5 border border-sky-400/70 bg-[#141820]/94 p-2 text-[11px] text-slate-200 shadow-lg backdrop-blur-sm">
               <div className="flex flex-wrap items-center justify-between gap-1.5">
                 <span className="font-bold text-sky-300">
                   {isPreClimbReading ? '开攀前路书读线' : '暂停路书规划'}
@@ -533,11 +534,11 @@ export function GameHUD({
           ) : null}
         </div>
 
-        <div className="flex items-end justify-between gap-2">
+        <div className="climb-controls flex items-end justify-between gap-2">
           {/* Left Thumb: Contextual Selected-Limb Independent Release (Old Joystick Removed) */}
           <div className="pointer-events-auto flex items-center gap-1.5">
             {lockedLimb && !climber.isFalling && !isReadingRoute && (
-              <div className="flex items-center gap-1 border border-white/15 bg-[#141820]/86 p-1 backdrop-blur-sm">
+              <div className="climb-panel flex items-center gap-1 border border-white/15 bg-[#141820]/86 p-1 backdrop-blur-sm">
                 <span className="px-1.5 text-[11px] font-bold text-amber-300">
                   已选{LIMB_ITEMS.find((l) => l.id === lockedLimb)?.label}
                 </span>
@@ -562,7 +563,7 @@ export function GameHUD({
           </div>
 
           {/* Right Thumb: Streamlined Action Deck */}
-          <div className="pointer-events-auto flex w-[148px] flex-col gap-1 border border-white/15 bg-[#141820]/84 p-1.5 backdrop-blur-sm sm:w-[168px]">
+          <div className="climb-panel climb-action-deck pointer-events-auto flex w-[148px] flex-col gap-1 border border-white/15 bg-[#141820]/84 p-1.5 backdrop-blur-sm sm:w-[168px]">
             {/* Segmented Weight Bias Control */}
             <div
               className="grid w-full grid-cols-3 border border-white/15 bg-white/5"
