@@ -7,7 +7,6 @@ import {
   ROUTES,
 } from '../game/mountain';
 import {
-  ClimberSkinConfig,
   ClimberSkinId,
   ClimbStyle,
   LoadoutId,
@@ -15,6 +14,7 @@ import {
   RouteId,
 } from '../game/types';
 import { ClimbBadge } from './ClimbBadge';
+import { OutfitPreview, PackPreview } from './PackPreview';
 
 interface TitleOverlayProps {
   selectedRouteId: RouteId;
@@ -46,26 +46,6 @@ function matchesTierFilter(route: RouteConfig, filter: TierFilter): boolean {
   if (filter === 'entry') return route.tier <= 4;
   if (filter === 'mid') return route.tier >= 5 && route.tier <= 8;
   return route.tier >= 9;
-}
-
-function SkinMiniPreview({ skin }: { skin: ClimberSkinConfig }) {
-  return (
-    <svg viewBox="0 0 48 52" className="h-12 w-11 shrink-0" aria-hidden="true">
-      {/* Head & Beanie */}
-      <circle cx="24" cy="14" r="6.5" fill="#332924" stroke="#141820" strokeWidth="1.8" />
-      <path d="M17.5 13 A6.5 6.5 0 0 1 30.5 13 Z" fill={skin.beanie} stroke="#141820" strokeWidth="1.8" />
-      {/* Scarf */}
-      <path d="M21 20 Q13 22 10 27" fill="none" stroke="#141820" strokeWidth="4.2" strokeLinecap="round" />
-      <path d="M21 20 Q13 22 10 27" fill="none" stroke={skin.scarf} strokeWidth="2.4" strokeLinecap="round" />
-      {/* Jacket Torso */}
-      <rect x="14" y="21" width="20" height="23" rx="5" fill={skin.jacket} stroke="#141820" strokeWidth="1.8" />
-      <path d="M24 22 H30 Q33 22 33 25 V40 Q33 43 30 43 H24 Z" fill={skin.jacketShadow} />
-      {/* Pack Accent */}
-      <rect x="16" y="24" width="16" height="5" rx="2" fill={skin.accent} stroke="#141820" strokeWidth="1.5" />
-      {/* Harness Belt */}
-      <rect x="14" y="38" width="20" height="5" rx="1.5" fill="#1F2937" stroke="#141820" strokeWidth="1.5" />
-    </svg>
-  );
 }
 
 export function TitleOverlay({
@@ -401,6 +381,7 @@ export function TitleOverlay({
                         key={opt.id}
                         type="button"
                         onClick={() => onSelectLoadout(opt.id)}
+                        aria-pressed={active}
                         className={`flex flex-col justify-between border-2 p-3.5 text-left transition-all ${
                           active
                             ? opt.noProtection
@@ -409,20 +390,17 @@ export function TitleOverlay({
                             : 'border-slate-300 bg-[#EAE6DC] hover:border-[#141820] hover:bg-white/75'
                         }`}
                       >
-                        <div>
-                          <div className="flex items-center justify-between gap-2">
-                            <span
-                              className={`text-sm font-bold ${
-                                opt.noProtection ? 'text-[#B91C1C]' : 'text-[#141820]'
-                              }`}
-                            >
-                              {opt.label}
-                            </span>
-                            {active && <Check className="h-4 w-4 text-[#EA580C]" />}
+                        <div className="flex items-start gap-2">
+                          {!opt.noProtection && <PackPreview loadout={opt.id} trim={activeSkin.accent} />}
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className={opt.noProtection ? 'text-sm font-bold text-[#B91C1C]' : 'text-sm font-bold text-[#141820]'}>
+                                {opt.label}
+                              </span>
+                              {active && <Check className="h-4 w-4 shrink-0 text-[#EA580C]" />}
+                            </div>
+                            <p className="mt-1.5 text-xs leading-relaxed text-slate-600">{opt.subtitle}</p>
                           </div>
-                          <p className="mt-1.5 text-xs leading-relaxed text-slate-600">
-                            {opt.subtitle}
-                          </p>
                         </div>
 
                         <div className="mt-3 flex flex-wrap items-center gap-1.5 border-t border-slate-200 pt-2 text-[11px] font-semibold font-mono-tabular text-slate-700">
@@ -460,13 +438,14 @@ export function TitleOverlay({
                         type="button"
                         disabled={!unlocked}
                         onClick={() => onSelectSkin(skin.id)}
+                        aria-pressed={active}
                         className={`flex flex-col items-center justify-between border-2 p-3 text-center transition-all disabled:cursor-not-allowed disabled:opacity-60 ${
                           active
                             ? 'border-[#141820] bg-white shadow-[4px_4px_0px_#141820]'
                             : 'border-slate-300 bg-[#EAE6DC] hover:border-[#141820] hover:bg-white/75'
                         }`}
                       >
-                        <SkinMiniPreview skin={skin} />
+                        <OutfitPreview skin={skin} loadout={selectedLoadout} />
 
                         <div className="mt-2 w-full">
                           <div className="flex items-center justify-center gap-1 text-xs font-bold text-[#141820]">
