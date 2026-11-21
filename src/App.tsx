@@ -44,7 +44,7 @@ import { renderGameFrame } from './game/renderer';
 import {
   ArtPackId,
   HoldOverlayUrls,
-  preloadArtPackForPalette,
+  preloadArtPackForRoute,
   SpecialHoldUrls,
   VisualAtmosphereGrade,
 } from './visual/artPackAssets';
@@ -68,11 +68,13 @@ import {
   LimbDragState,
   LimbId,
   LoadoutId,
+  OverallRatingGrade,
   Particle,
   PelvisDragState,
   Piton,
   RouteConfig,
   RouteId,
+  SummitSequenceStage,
   TutorialState,
   Vec2,
   WeatherIncidentState,
@@ -184,11 +186,69 @@ export type WorldPropSpriteMap = Record<WorldPropSpriteKey, string | undefined>;
 export type CharacterGenderPreviewMap = Partial<Record<ClimberGender, string>>;
 export type CharacterShowcasePreviewMap = Record<ClimberSkinId, CharacterGenderPreviewMap>;
 
+/** Ceremonial route summit medal artwork (512x512 PNG-32) keyed by RouteId */
+export type BadgeSpriteMap = Partial<Record<RouteId, string>>;
+
+/** In-game HUD tactical action icon slots */
+export type UiHudIconKey =
+  | 'piton'
+  | 'chalk'
+  | 'shake'
+  | 'roadbook'
+  | 'altitude'
+  | 'lean';
+
+/** Complete UI chrome, backdrop, emblem, loadout & rating stamp art slots */
+export interface UiArtAssetMap {
+  /** Hand-drawn game title wordmark/logo rendered in the hub header */
+  titleLogo?: string;
+  /** Seamless subtle parchment / watercolor paper background tile for cards & panels */
+  parchmentTexture?: string;
+  /** Daily Challenge banner background & emblem */
+  dailyBanner?: string;
+  dailyEmblem?: string;
+  /** Alpine rock-ledge stage backdrop behind the back-standing character preview */
+  characterStageBackdrop?: string;
+  /** 4 bespoke hand-drawn loadout icons (light / balanced / heavy / free-solo) */
+  loadoutIcons?: Partial<Record<LoadoutId, string>>;
+  /** 6 bespoke HUD icon sprites */
+  hudIcons?: Partial<Record<UiHudIconKey, string>>;
+  /** 6 alpine wax-seal / metallic settlement rating stamps (SSS / S+ / S / A / B / C) */
+  ratingStamps?: Partial<Record<OverallRatingGrade, string>>;
+}
+
+/** Weather, particle & climbing feedback VFX texture slots */
+export type VfxSpriteKey =
+  | 'chalkPuff'
+  | 'sparkPiton'
+  | 'rockDebris'
+  | 'iceShard'
+  | 'snowFlake'
+  | 'rainStreak'
+  | 'mistVeil'
+  | 'windStreak'
+  | 'dynoRing';
+
+export type VfxArtAssetMap = Partial<Record<VfxSpriteKey, string>>;
+
+/**
+ * Per-level art override enabling progressive, route-by-route art replacement.
+ * Any omitted field automatically inherits from the route's base biome pack.
+ */
+export interface RouteArtOverride {
+  walls?: Partial<WallBackgroundSpriteMap>;
+  holds?: Partial<Omit<HoldSpriteMap, 'overlays' | 'special'>> & {
+    overlays?: Partial<HoldOverlayUrls>;
+    special?: Partial<SpecialHoldUrls>;
+  };
+  atmosphere?: VisualAtmosphereGrade;
+}
+
 /**
  * Centralized Art Asset Manifest consumed by AssetRegistry.
- * Replace any character limb, back-standing showcase artwork, biome wall background,
- * rock hold, overlay, or world prop by updating this manifest and passing it to
- * AssetRegistry.applyManifest() or AssetRegistry.patchManifest().
+ * Replace any character limb, back-standing showcase artwork, ceremonial route badge,
+ * per-level route override, biome wall background, rock hold, overlay, world prop,
+ * UI chrome/icon, or VFX texture by passing a patch to AssetRegistry.
  */
 export interface ArtAssetManifest {
   version: string;
@@ -205,7 +265,15 @@ export interface ArtAssetManifest {
   };
   walls: Record<ArtPackId, WallBackgroundSpriteMap>;
   holds: Record<ArtPackId, HoldSpriteMap>;
+  /** Per-route independent art overrides for gradual level-by-level art upgrades */
+  routeOverrides: Partial<Record<RouteId, RouteArtOverride>>;
+  /** Ceremonial summit medal artwork per real-world climbing route */
+  badges: BadgeSpriteMap;
   worldProps: Partial<WorldPropSpriteMap>;
+  /** Dedicated UI surfaces, logos, loadout icons, HUD icons & rating stamps */
+  ui: UiArtAssetMap;
+  /** Weather, chalk, debris, icefall & Dyno VFX sprite textures */
+  vfx: VfxArtAssetMap;
   atmosphere: Partial<Record<ArtPackId, VisualAtmosphereGrade>>;
 }
 
@@ -242,18 +310,12 @@ const DYNO_MIN_RELEASE_PROGRESS = 1.0;
 const DYNO_MIN_UPPER_DELTA_Y = 20;
 const DYNO_AIM_DRIFT_LIMIT_PX = 48;
 
-// Grounded climbing move impulses (subtle tactile feel, zero catapult or upward hop)
-const HIGH_STEP_IMPULSE_Y = -6;
-const HIGH_STEP_MAX_UP_VEL = -24;
+// Grounded climbing move tuning (strictly zero upward Impulse Y; climbing relies on CoM translation & limb constraints)
 const HIGH_STEP_MIN_LIFT_PX = 20;
 const HIGH_STEP_COOLDOWN_SEC = 2.2;
 
 const SWING_IMPULSE_X = 8;
-const SWING_IMPULSE_Y = 0;
 const SWING_MAX_VEL_X = 48;
-const SWING_MAX_UP_VEL = -24;
-
-const NORMAL_GRAB_MAX_UP_VEL = -24;
 
 // Mandatory pointer-move physical impulse threshold & airborne torsoVel.y mutation guards
 const POINTER_IMPULSE_MAX_DELTA_Y = 0; // Vertical velocity increments are absorbed by physics constraints
@@ -750,6 +812,8 @@ export default function App() {
   const tutorialAutoHideTimerRef = useRef<number | null>(null);
 
   const summitProgressRef = useRef(0);
+  const summitStageRef = useRef<SummitSequenceStage>('PAN_REVEAL');
+  const summitCamStartRef = useRef<{ x: number; y: number; zoom: number } | null>(null);
   const fallStartYRef = useRef(0);
   const pointerDownPosRef = useRef<Vec2 | null>(null);
   const peekPointerIdRef = useRef<number | null>(null);
@@ -772,6 +836,7 @@ export default function App() {
   const [isPlayingTrail, setIsPlayingTrail] = useState(false);
   const [statusBanner, setStatusBanner] = useState<string | null>(null);
   const [summitProgress, setSummitProgress] = useState(0);
+  const [summitStage, setSummitStage] = useState<SummitSequenceStage>('PAN_REVEAL');
   const [betaPins, setBetaPins] = useState<string[]>([]);
   const [fallDiagnosis, setFallDiagnosis] = useState<string | null>(null);
   const [climbAssessment, setClimbAssessment] = useState<ClimbAssessment | null>(null);
@@ -836,7 +901,7 @@ export default function App() {
   }, [climberGender]);
 
   useEffect(() => {
-    preloadArtPackForPalette(worldRef.current.route.palette);
+    preloadArtPackForRoute(worldRef.current.route);
     const map = new Map<string, Hold>();
     worldRef.current.holds.forEach((h) => map.set(h.id, h));
     holdsMapRef.current = map;
@@ -1077,7 +1142,11 @@ export default function App() {
       isPlayingTrailRef.current = false;
       setIsPlayingTrail(false);
       summitProgressRef.current = 0;
-      preloadArtPackForPalette(route.palette);
+      summitStageRef.current = 'PAN_REVEAL';
+      summitCamStartRef.current = null;
+      setSummitProgress(0);
+      setSummitStage('PAN_REVEAL');
+      preloadArtPackForRoute(route);
       const supportsBook = isRouteBookSupported(route);
       isReadingRouteRef.current = supportsBook;
       peekOffsetYRef.current = 0;
@@ -1753,8 +1822,21 @@ export default function App() {
     climber.isStemming = false;
     climber.dynoFlight = null;
     weatherIncidentRef.current = null;
+    if (bannerTimerRef.current) {
+      window.clearTimeout(bannerTimerRef.current);
+      bannerTimerRef.current = null;
+    }
+    setStatusBanner(null);
+    // Snapshot live camera coordinates so the summit pan begins with zero jump
+    summitCamStartRef.current = {
+      x: cameraRef.current.x,
+      y: cameraRef.current.y,
+      zoom: cameraRef.current.zoom,
+    };
     summitProgressRef.current = 0;
+    summitStageRef.current = 'PAN_REVEAL';
     setSummitProgress(0);
+    setSummitStage('PAN_REVEAL');
     phaseRef.current = 'SUMMIT';
     setPhase('SUMMIT');
     const style = recordSummitSuccess(world.route, statsRef.current.fallsCaught);
@@ -1779,8 +1861,15 @@ export default function App() {
     soundEngine.playSummitChord();
     soundEngine.playBreath(0.36, 'recovery');
     triggerHapticPreset('summit');
-    showBanner('登顶成功！站上最高点', 3200);
-  }, [recordSummitSuccess, showBanner, spawnParticles]);
+  }, [recordSummitSuccess, spawnParticles]);
+
+  const handleAdvanceSummitStage = useCallback(() => {
+    if (phaseRef.current !== 'SUMMIT') return;
+    if (summitStageRef.current === 'QUOTE_REVEAL') {
+      summitStageRef.current = 'MODAL_READY';
+      setSummitStage('MODAL_READY');
+    }
+  }, []);
 
   const markRoadbookProgress = useCallback(
     (hold: Hold) => {
@@ -1970,9 +2059,9 @@ export default function App() {
         soundEngine.playBreath(grabExertion, 'exertion');
       }
 
-      // Clamp any residual upward velocity on grab so rapid sequential moves never stack into a hop
-      if (climber.torsoVel.y < NORMAL_GRAB_MAX_UP_VEL) {
-        climber.torsoVel.y = NORMAL_GRAB_MAX_UP_VEL;
+      // Strip any residual upward velocity on grab so climbing never stacks into an unnatural hop
+      if (climber.torsoVel.y < 0) {
+        climber.torsoVel.y = 0;
       }
 
       limb.startPos = { x: limb.pos.x, y: limb.pos.y };
@@ -1994,7 +2083,7 @@ export default function App() {
         soundEngine.playComboChime(flowComboRef.current);
       }
 
-      // Dynamic Move 1: Subtle High-Step Assist (strict high foot + real upward lift + cooldown, minimal hip nudge)
+      // Dynamic Move 1: High-Step Technique (pure stamina & hand-strain relief, zero upward Impulse Y)
       const isHighStepSurge =
         !limb.isHand &&
         hold.y <= climber.torsoPos.y + 4 &&
@@ -2004,10 +2093,6 @@ export default function App() {
 
       if (isHighStepSurge) {
         lastHighStepElapsedRef.current = nowElapsed;
-        climber.torsoVel.y = Math.max(
-          HIGH_STEP_MAX_UP_VEL,
-          climber.torsoVel.y + HIGH_STEP_IMPULSE_Y
-        );
         climber.limbs.leftHand.strain *= 0.8;
         climber.limbs.rightHand.strain *= 0.8;
         const prevS = climber.stamina;
@@ -2016,9 +2101,9 @@ export default function App() {
         soundEngine.playSpringLaunch();
         spawnParticles(hold.x, hold.y, 6, 'spark', '#4ADE80', 52);
         spawnParticles(hold.x, hold.y, 1, 'ring', '#4ADE80', 0);
-        showBanner('高脚挂蹬 · 顺势送髋 +3耐', 1100);
+        showBanner('高脚挂蹬 · 省力回耐 +3耐', 1100);
       } else if (hold.type === 'swing' && limb.isHand) {
-        // Dynamic Move 2: Swing Hold Catch (gentle lateral sway + stamina recovery, no upward bounce)
+        // Dynamic Move 2: Swing Hold Catch (gentle lateral sway + stamina recovery, strictly zero upward Impulse Y)
         const prevS = climber.stamina;
         climber.stamina = Math.min(climber.maxStamina, climber.stamina + 5);
         statsRef.current.staminaRecovered += Math.max(0, climber.stamina - prevS);
@@ -2028,7 +2113,6 @@ export default function App() {
           -SWING_MAX_VEL_X,
           Math.min(SWING_MAX_VEL_X, climber.torsoVel.x + swingDir * SWING_IMPULSE_X)
         );
-        climber.torsoVel.y = Math.max(SWING_MAX_UP_VEL, climber.torsoVel.y + SWING_IMPULSE_Y);
         spawnParticles(hold.x, hold.y, 7, 'spark', '#38BDF8', 56);
         spawnParticles(hold.x, hold.y, 1, 'ring', '#22D3EE', 0);
         showBanner('摆荡抓点 · 回耐 +5', 1150);
@@ -3910,7 +3994,7 @@ export default function App() {
         cam.targetY = climber.torsoPos.y - 42 + peekOffsetYRef.current + dragLeadY;
         cam.targetZoom = responsiveZoom * readZoomMult;
       } else if (curPhase === 'SUMMIT') {
-        summitProgressRef.current = Math.min(1, summitProgressRef.current + dt * 0.135);
+        summitProgressRef.current = Math.min(1, summitProgressRef.current + dt * 0.14);
         const sp = summitProgressRef.current;
         const summitLedge = world.ledges.find((l) => l.isSummit);
         const peakX = summitLedge?.x ?? 0;
@@ -3938,7 +4022,8 @@ export default function App() {
           y: peakTopY - (86 + 42 * smoothRise) - cheerWave * 0.5,
         };
 
-        // Continuous quintic + exponential camera pull-back revealing the full mountain silhouette
+        // Stage 1 (PAN_REVEAL): Smooth crest beat followed by panoramic pan & exponential optical pull-back
+        // unveiling the full mountain silhouette before transitioning to the inspirational quote.
         const responsiveSummitZoom = Math.min(1.04, Math.max(0.68, width / 440));
         const fitHeightZoom = (height * 0.72) / (mountainHeight + 240);
         const fitWidthZoom = (width * 0.72) / 560;
@@ -3946,27 +4031,41 @@ export default function App() {
 
         if (isPlayingTrailRef.current) {
           // Explicit post-summit route trail replay zooms out to display the full climbed path
-          cam.targetX = peakX * 0.25;
-          cam.targetY = -mountainHeight * 0.52;
+          cam.targetX = peakX * 0.22;
+          cam.targetY = -mountainHeight * 0.5;
           cam.targetZoom = fullMountainZoom;
         } else {
-          // Single continuous quintic curve (zero velocity/accel jump at 0.14 and 0.80)
-          const pullRaw = Math.max(0, Math.min(1, (sp - 0.14) / 0.66));
-          const pullU = pullRaw * pullRaw * pullRaw * (pullRaw * (pullRaw * 6 - 15) + 10);
+          const snap = summitCamStartRef.current ?? {
+            x: peakX,
+            y: peakTopY - 56,
+            zoom: Math.min(0.96, responsiveSummitZoom * 0.92),
+          };
+          const crestTargetX = peakX;
+          const crestTargetY = peakTopY - 56;
+          const crestTargetZoom = Math.min(0.96, responsiveSummitZoom * 0.92);
 
-          const startZoom = Math.min(0.96, responsiveSummitZoom * 0.92);
-          // Pull out deeply enough to unveil the whole mountain flank & ridge silhouette
-          const endZoom = Math.max(
+          // Beat A (0.00 -> 0.14): Gentle framing glide onto the climber standing on the summit crest
+          const crestRaw = Math.max(0, Math.min(1, sp / 0.14));
+          const crestU = crestRaw * crestRaw * crestRaw * (crestRaw * (crestRaw * 6 - 15) + 10);
+          const framedX = snap.x + (crestTargetX - snap.x) * crestU;
+          const framedY = snap.y + (crestTargetY - snap.y) * crestU;
+          const framedZoom = snap.zoom * Math.pow(crestTargetZoom / Math.max(0.1, snap.zoom), crestU);
+
+          // Beat B (0.14 -> 0.86): Continuous quintic panoramic pan + exponential zoom-out
+          // revealing the full mountain face & silhouette before settling cleanly.
+          const panRaw = Math.max(0, Math.min(1, (sp - 0.14) / 0.72));
+          const panU = panRaw * panRaw * panRaw * (panRaw * (panRaw * 6 - 15) + 10);
+
+          const panoramicZoom = Math.max(
             fullMountainZoom,
-            Math.min(startZoom * 0.56, Math.max(0.32, responsiveSummitZoom * 0.44))
+            Math.min(crestTargetZoom * 0.48, Math.max(0.24, responsiveSummitZoom * 0.36))
           );
+          const panoramicY = Math.max(crestTargetY + 140, -mountainHeight * 0.46);
+          const panoramicArcX = Math.sin(panU * Math.PI) * (-peakX * 0.18);
 
-          cam.targetX = peakX * (1 - pullU * 0.72);
-          const startCamY = peakTopY - 58;
-          const endCamY = Math.max(startCamY + 120, -mountainHeight * 0.48);
-          cam.targetY = startCamY + (endCamY - startCamY) * pullU;
-          // Exponential optical zoom gives uniform perceived pull-back velocity
-          cam.targetZoom = startZoom * Math.pow(endZoom / startZoom, pullU);
+          cam.targetX = framedX * (1 - panU) + panoramicArcX;
+          cam.targetY = framedY + (panoramicY - framedY) * panU;
+          cam.targetZoom = framedZoom * Math.pow(panoramicZoom / Math.max(0.1, framedZoom), panU);
         }
 
         if (isPlayingTrailRef.current && trailPlaybackProgressRef.current !== null) {
@@ -3988,13 +4087,13 @@ export default function App() {
 
       const summitPullBlend =
         curPhase === 'SUMMIT'
-          ? Math.max(0, Math.min(1, (summitProgressRef.current - 0.14) / 0.35))
+          ? Math.max(0, Math.min(1, (summitProgressRef.current - 0.14) / 0.36))
           : 0;
       const camLerp =
         curPhase === 'SUMMIT'
           ? isPlayingTrailRef.current
             ? 2.2
-            : 2.6 - summitPullBlend * 0.65
+            : 2.8 - summitPullBlend * 0.55
           : isDraggingPeekRef.current
             ? 14
             : 4.6;
@@ -4002,12 +4101,26 @@ export default function App() {
         curPhase === 'SUMMIT'
           ? isPlayingTrailRef.current
             ? 2.0
-            : 2.4 - summitPullBlend * 0.65
+            : 2.6 - summitPullBlend * 0.55
           : 4.2;
       cam.x += (cam.targetX - cam.x) * Math.min(1, dt * camLerp);
       cam.y += (cam.targetY - cam.y) * Math.min(1, dt * camLerp);
       cam.zoom += (cam.targetZoom - cam.zoom) * Math.min(1, dt * zoomLerp);
       cam.shake = Math.max(0, cam.shake - dt * 28);
+
+      // Promote Summit sequence PAN_REVEAL -> QUOTE_REVEAL strictly after the panoramic pan
+      // has completed and the camera has settled onto the full mountain silhouette.
+      if (curPhase === 'SUMMIT' && summitStageRef.current === 'PAN_REVEAL') {
+        const sp = summitProgressRef.current;
+        const cameraSettled =
+          Math.abs(cam.targetX - cam.x) < 16 &&
+          Math.abs(cam.targetY - cam.y) < 18 &&
+          Math.abs(cam.targetZoom - cam.zoom) < 0.02;
+        if ((sp >= 0.86 && cameraSettled) || sp >= 0.94) {
+          summitStageRef.current = 'QUOTE_REVEAL';
+          setSummitStage('QUOTE_REVEAL');
+        }
+      }
 
       if (!isPausedReading) {
         for (let i = particlesRef.current.length - 1; i >= 0; i--) {
@@ -4411,7 +4524,7 @@ export default function App() {
           onSelectRoute={(id) => {
             setSelectedRouteId(id);
             const r = getRouteById(id);
-            preloadArtPackForPalette(r.palette);
+            preloadArtPackForRoute(r);
             worldRef.current = generateMountain(r);
           }}
           onSelectLoadout={setSelectedLoadout}
@@ -4431,6 +4544,8 @@ export default function App() {
           stats={statsRef.current}
           climbStyle={achievedStyle}
           summitProgress={summitProgress}
+          summitStage={summitStage}
+          onAdvanceSummitStage={handleAdvanceSummitStage}
           hasCheckpoint={hasCheckpoint}
           newlyUnlockedBadge={newlyUnlockedBadge}
           isPlayingTrail={isPlayingTrail}
@@ -4445,7 +4560,10 @@ export default function App() {
             isPlayingTrailRef.current = false;
             trailPlaybackProgressRef.current = null;
             summitProgressRef.current = 0;
+            summitStageRef.current = 'PAN_REVEAL';
+            summitCamStartRef.current = null;
             setSummitProgress(0);
+            setSummitStage('PAN_REVEAL');
             setIsPlayingTrail(false);
             setStatusBanner(null);
             dynoFullNotifiedRef.current = false;

@@ -15,6 +15,7 @@
 
 import type {
   ArtAssetManifest,
+  BadgeSpriteMap,
   CharacterGenderPreviewMap,
   CharacterLimbKey,
   CharacterLimbSpriteMap,
@@ -22,13 +23,25 @@ import type {
   HoldOverlayKey,
   HoldSpriteKey,
   HoldSpriteMap,
+  RouteArtOverride,
   SpecialHoldSpriteKey,
+  UiArtAssetMap,
+  UiHudIconKey,
+  VfxArtAssetMap,
+  VfxSpriteKey,
   WallBackgroundLayerKey,
   WallBackgroundSpriteMap,
   WorldPropSpriteKey,
   WorldPropSpriteMap,
 } from '../App';
-import type { ClimberGender, ClimberSkinId, RouteConfig } from '../game/types';
+import type {
+  ClimberGender,
+  ClimberSkinId,
+  LoadoutId,
+  OverallRatingGrade,
+  RouteConfig,
+  RouteId,
+} from '../game/types';
 import type {
   ArtPackId,
   HoldOverlayUrls,
@@ -196,12 +209,28 @@ export function createDefaultArtAssetManifest(): ArtAssetManifest {
         special: {},
       },
     },
+    routeOverrides: {},
+    badges: {},
     worldProps: {},
+    ui: {
+      loadoutIcons: {},
+      hudIcons: {},
+      ratingStamps: {},
+    },
+    vfx: {},
     atmosphere: {},
   };
 }
 
-export type AssetRegistryChangeScope = 'all' | 'walls' | 'holds' | 'character' | 'worldProps';
+export type AssetRegistryChangeScope =
+  | 'all'
+  | 'walls'
+  | 'holds'
+  | 'character'
+  | 'worldProps'
+  | 'badges'
+  | 'ui'
+  | 'vfx';
 type AssetRegistryListener = (scope: AssetRegistryChangeScope) => void;
 
 export interface ArtAssetManifestPatch {
@@ -225,8 +254,28 @@ export interface ArtAssetManifestPatch {
       }
     >
   >;
+  routeOverrides?: Partial<Record<RouteId, RouteArtOverride>>;
+  badges?: BadgeSpriteMap;
   worldProps?: Partial<WorldPropSpriteMap>;
+  ui?: UiArtAssetMap;
+  vfx?: VfxArtAssetMap;
   atmosphere?: Partial<Record<ArtPackId, VisualAtmosphereGrade>>;
+}
+
+function cloneRouteOverride(override: RouteArtOverride): RouteArtOverride {
+  return {
+    ...(override.walls ? { walls: { ...override.walls } } : {}),
+    ...(override.holds
+      ? {
+          holds: {
+            ...override.holds,
+            ...(override.holds.overlays ? { overlays: { ...override.holds.overlays } } : {}),
+            ...(override.holds.special ? { special: { ...override.holds.special } } : {}),
+          },
+        }
+      : {}),
+    ...(override.atmosphere ? { atmosphere: { ...override.atmosphere } } : {}),
+  };
 }
 
 function cloneManifest(m: ArtAssetManifest): ArtAssetManifest {
@@ -266,6 +315,12 @@ function cloneManifest(m: ArtAssetManifest): ArtAssetManifest {
     };
   });
 
+  const routeOverrides: Partial<Record<RouteId, RouteArtOverride>> = {};
+  (Object.keys(m.routeOverrides ?? {}) as RouteId[]).forEach((routeId) => {
+    const ov = m.routeOverrides?.[routeId];
+    if (ov) routeOverrides[routeId] = cloneRouteOverride(ov);
+  });
+
   const atmosphere: Partial<Record<ArtPackId, VisualAtmosphereGrade>> = {};
   (Object.keys(m.atmosphere) as ArtPackId[]).forEach((packId) => {
     const grade = m.atmosphere[packId];
@@ -283,7 +338,16 @@ function cloneManifest(m: ArtAssetManifest): ArtAssetManifest {
     },
     walls,
     holds,
+    routeOverrides,
+    badges: { ...(m.badges ?? {}) },
     worldProps: { ...m.worldProps },
+    ui: {
+      ...(m.ui ?? {}),
+      loadoutIcons: { ...(m.ui?.loadoutIcons ?? {}) },
+      hudIcons: { ...(m.ui?.hudIcons ?? {}) },
+      ratingStamps: { ...(m.ui?.ratingStamps ?? {}) },
+    },
+    vfx: { ...(m.vfx ?? {}) },
     atmosphere,
   };
 }
@@ -329,6 +393,9 @@ class AssetRegistryStore {
     let changedHolds = false;
     let changedCharacter = false;
     let changedProps = false;
+    let changedBadges = false;
+    let changedUi = false;
+    let changedVfx = false;
 
     if (patch.character) {
       changedCharacter = true;
@@ -408,11 +475,78 @@ class AssetRegistryStore {
       });
     }
 
+    if (patch.routeOverrides) {
+      changedWalls = true;
+      changedHolds = true;
+      (Object.keys(patch.routeOverrides) as RouteId[]).forEach((routeId) => {
+        const ovPatch = patch.routeOverrides?.[routeId];
+        if (!ovPatch) return;
+        const prev = this.manifest.routeOverrides[routeId] ?? {};
+        this.manifest.routeOverrides[routeId] = {
+          walls: ovPatch.walls ? { ...(prev.walls ?? {}), ...ovPatch.walls } : prev.walls,
+          holds: ovPatch.holds
+            ? {
+                ...(prev.holds ?? {}),
+                ...ovPatch.holds,
+                overlays: {
+                  ...(prev.holds?.overlays ?? {}),
+                  ...(ovPatch.holds.overlays ?? {}),
+                },
+                special: {
+                  ...(prev.holds?.special ?? {}),
+                  ...(ovPatch.holds.special ?? {}),
+                },
+              }
+            : prev.holds,
+          atmosphere: ovPatch.atmosphere
+            ? { ...(prev.atmosphere ?? {}), ...ovPatch.atmosphere }
+            : prev.atmosphere,
+        };
+      });
+    }
+
+    if (patch.badges) {
+      changedBadges = true;
+      this.manifest.badges = {
+        ...this.manifest.badges,
+        ...patch.badges,
+      };
+    }
+
     if (patch.worldProps) {
       changedProps = true;
       this.manifest.worldProps = {
         ...this.manifest.worldProps,
         ...patch.worldProps,
+      };
+    }
+
+    if (patch.ui) {
+      changedUi = true;
+      const prevUi = this.manifest.ui ?? {};
+      this.manifest.ui = {
+        ...prevUi,
+        ...patch.ui,
+        loadoutIcons: {
+          ...(prevUi.loadoutIcons ?? {}),
+          ...(patch.ui.loadoutIcons ?? {}),
+        },
+        hudIcons: {
+          ...(prevUi.hudIcons ?? {}),
+          ...(patch.ui.hudIcons ?? {}),
+        },
+        ratingStamps: {
+          ...(prevUi.ratingStamps ?? {}),
+          ...(patch.ui.ratingStamps ?? {}),
+        },
+      };
+    }
+
+    if (patch.vfx) {
+      changedVfx = true;
+      this.manifest.vfx = {
+        ...(this.manifest.vfx ?? {}),
+        ...patch.vfx,
       };
     }
 
@@ -425,16 +559,23 @@ class AssetRegistryStore {
       });
     }
 
-    if (
-      (changedWalls || changedHolds) &&
-      (changedCharacter || changedProps)
-    ) {
+    const changeGroups =
+      Number(changedWalls || changedHolds) +
+      Number(changedCharacter) +
+      Number(changedProps) +
+      Number(changedBadges) +
+      Number(changedUi) +
+      Number(changedVfx);
+    if (changeGroups > 1) {
       this.emit('all');
     } else {
       if (changedWalls) this.emit('walls');
       if (changedHolds) this.emit('holds');
       if (changedCharacter) this.emit('character');
       if (changedProps) this.emit('worldProps');
+      if (changedBadges) this.emit('badges');
+      if (changedUi) this.emit('ui');
+      if (changedVfx) this.emit('vfx');
     }
   }
 
@@ -521,45 +662,92 @@ class AssetRegistryStore {
   }
 
   // --------------------------------------------------------------------------
-  // Wall Background & Scene Plate Sprite Lookups
+  // Wall Background & Scene Plate Sprite Lookups (with optional Per-Route Overrides)
   // --------------------------------------------------------------------------
 
-  getWallBackgroundMap(packId: ArtPackId): WallBackgroundSpriteMap {
-    return this.manifest.walls[packId] ?? this.manifest.walls['snow-ridge-granite'];
+  getRouteOverride(routeId: RouteId): RouteArtOverride | undefined {
+    return this.manifest.routeOverrides[routeId];
+  }
+
+  hasRouteOverride(routeId: RouteId): boolean {
+    const ov = this.manifest.routeOverrides[routeId];
+    if (!ov) return false;
+    return Boolean(
+      (ov.walls && Object.values(ov.walls).some(Boolean)) ||
+        (ov.holds &&
+          (ORDERED_HOLD_KEYS.some((k) => Boolean(ov.holds?.[k])) ||
+            (ov.holds.overlays && Object.values(ov.holds.overlays).some(Boolean)) ||
+            (ov.holds.special && Object.values(ov.holds.special).some(Boolean)))) ||
+        ov.atmosphere
+    );
+  }
+
+  getWallBackgroundMap(packId: ArtPackId, routeId?: RouteId): WallBackgroundSpriteMap {
+    const base = this.manifest.walls[packId] ?? this.manifest.walls['snow-ridge-granite'];
+    const ovWalls = routeId ? this.manifest.routeOverrides[routeId]?.walls : undefined;
+    if (!ovWalls) return base;
+    return {
+      startLedge: ovWalls.startLedge ?? base.startLedge,
+      climbingWall: ovWalls.climbingWall ?? base.climbingWall,
+      wallDetailOverlay: ovWalls.wallDetailOverlay ?? base.wallDetailOverlay,
+      summitNear: ovWalls.summitNear ?? base.summitNear,
+      wideEnding: ovWalls.wideEnding ?? base.wideEnding,
+    };
   }
 
   getWallBackgroundPath(
     packId: ArtPackId,
-    layer: WallBackgroundLayerKey
+    layer: WallBackgroundLayerKey,
+    routeId?: RouteId
   ): string | undefined {
-    return this.getWallBackgroundMap(packId)[layer];
+    return this.getWallBackgroundMap(packId, routeId)[layer];
   }
 
-  getWideEndingPath(palette: RouteConfig['palette']): string {
-    return this.getWallBackgroundMap(this.resolveBiomePackId(palette)).wideEnding;
+  getWideEndingPath(palette: RouteConfig['palette'], routeId?: RouteId): string {
+    return this.getWallBackgroundMap(this.resolveBiomePackId(palette), routeId).wideEnding;
   }
 
-  getAtmosphereGrade(packId: ArtPackId): VisualAtmosphereGrade | undefined {
-    return this.manifest.atmosphere[packId];
+  getAtmosphereGrade(packId: ArtPackId, routeId?: RouteId): VisualAtmosphereGrade | undefined {
+    const base = this.manifest.atmosphere[packId];
+    const ovAtmos = routeId ? this.manifest.routeOverrides[routeId]?.atmosphere : undefined;
+    if (!ovAtmos) return base;
+    return { ...(base ?? {}), ...ovAtmos };
   }
 
   // --------------------------------------------------------------------------
   // Rock Hold Sprite Lookups (jug, crimp, pinch, sloper, crack, overlays, etc.)
   // --------------------------------------------------------------------------
 
-  getHoldSpriteMap(packId: ArtPackId): HoldSpriteMap {
-    return this.manifest.holds[packId] ?? this.manifest.holds['snow-ridge-granite'];
+  getHoldSpriteMap(packId: ArtPackId, routeId?: RouteId): HoldSpriteMap {
+    const base = this.manifest.holds[packId] ?? this.manifest.holds['snow-ridge-granite'];
+    const ovHolds = routeId ? this.manifest.routeOverrides[routeId]?.holds : undefined;
+    if (!ovHolds) return base;
+    return {
+      jug: ovHolds.jug ?? base.jug,
+      crimp: ovHolds.crimp ?? base.crimp,
+      pinch: ovHolds.pinch ?? base.pinch,
+      horn: ovHolds.horn ?? base.horn,
+      sloper: ovHolds.sloper ?? base.sloper,
+      undercling: ovHolds.undercling ?? base.undercling,
+      ledge: ovHolds.ledge ?? base.ledge,
+      sidepull: ovHolds.sidepull ?? base.sidepull,
+      pocket: ovHolds.pocket ?? base.pocket,
+      crack: ovHolds.crack ?? base.crack,
+      overlays: { ...(base.overlays ?? {}), ...(ovHolds.overlays ?? {}) },
+      special: { ...(base.special ?? {}), ...(ovHolds.special ?? {}) },
+    };
   }
 
-  getHoldSpritePath(packId: ArtPackId, holdKey: HoldSpriteKey): string {
-    return this.getHoldSpriteMap(packId)[holdKey];
+  getHoldSpritePath(packId: ArtPackId, holdKey: HoldSpriteKey, routeId?: RouteId): string {
+    return this.getHoldSpriteMap(packId, routeId)[holdKey];
   }
 
   /** Returns the calibrated 10-sprite tuple aligned 1:1 with HOLD_SPRITE_SPECS[0..9] */
   getOrderedHoldPaths(
-    packId: ArtPackId
+    packId: ArtPackId,
+    routeId?: RouteId
   ): readonly [string, string, string, string, string, string, string, string, string, string] {
-    const map = this.getHoldSpriteMap(packId);
+    const map = this.getHoldSpriteMap(packId, routeId);
     return [
       map.jug,
       map.crimp,
@@ -574,20 +762,48 @@ class AssetRegistryStore {
     ];
   }
 
-  getHoldOverlayPaths(packId: ArtPackId): HoldOverlayUrls {
-    return this.getHoldSpriteMap(packId).overlays ?? {};
+  getHoldOverlayPaths(packId: ArtPackId, routeId?: RouteId): HoldOverlayUrls {
+    return this.getHoldSpriteMap(packId, routeId).overlays ?? {};
   }
 
-  getHoldOverlayPath(packId: ArtPackId, overlayKey: HoldOverlayKey): string | undefined {
-    return this.getHoldOverlayPaths(packId)[overlayKey];
+  getHoldOverlayPath(
+    packId: ArtPackId,
+    overlayKey: HoldOverlayKey,
+    routeId?: RouteId
+  ): string | undefined {
+    return this.getHoldOverlayPaths(packId, routeId)[overlayKey];
   }
 
-  getSpecialHoldPaths(packId: ArtPackId): SpecialHoldUrls {
-    return this.getHoldSpriteMap(packId).special ?? {};
+  getSpecialHoldPaths(packId: ArtPackId, routeId?: RouteId): SpecialHoldUrls {
+    return this.getHoldSpriteMap(packId, routeId).special ?? {};
   }
 
-  getSpecialHoldPath(packId: ArtPackId, specialKey: SpecialHoldSpriteKey): string | undefined {
-    return this.getSpecialHoldPaths(packId)[specialKey];
+  getSpecialHoldPath(
+    packId: ArtPackId,
+    specialKey: SpecialHoldSpriteKey,
+    routeId?: RouteId
+  ): string | undefined {
+    return this.getSpecialHoldPaths(packId, routeId)[specialKey];
+  }
+
+  // --------------------------------------------------------------------------
+  // Ceremonial Route Summit Badge Lookups
+  // --------------------------------------------------------------------------
+
+  getBadgeSpriteMap(): BadgeSpriteMap {
+    return this.manifest.badges;
+  }
+
+  getBadgeSpritePath(routeId: RouteId): string | undefined {
+    return this.manifest.badges[routeId];
+  }
+
+  setBadgeSpritePath(routeId: RouteId, url: string | undefined): void {
+    this.patchManifest({
+      badges: {
+        [routeId]: url,
+      },
+    });
   }
 
   // --------------------------------------------------------------------------
@@ -600,6 +816,44 @@ class AssetRegistryStore {
 
   getWorldPropPath(propKey: WorldPropSpriteKey): string | undefined {
     return this.manifest.worldProps[propKey];
+  }
+
+  // --------------------------------------------------------------------------
+  // UI Chrome, Stage Backdrops, Loadout Icons, HUD Icons & Rating Stamps
+  // --------------------------------------------------------------------------
+
+  getUiAssetMap(): UiArtAssetMap {
+    return this.manifest.ui;
+  }
+
+  getUiAssetPath(
+    key: 'titleLogo' | 'parchmentTexture' | 'dailyBanner' | 'dailyEmblem' | 'characterStageBackdrop'
+  ): string | undefined {
+    return this.manifest.ui[key];
+  }
+
+  getLoadoutIconPath(loadoutId: LoadoutId): string | undefined {
+    return this.manifest.ui.loadoutIcons?.[loadoutId];
+  }
+
+  getHudIconPath(key: UiHudIconKey): string | undefined {
+    return this.manifest.ui.hudIcons?.[key];
+  }
+
+  getRatingStampPath(grade: OverallRatingGrade): string | undefined {
+    return this.manifest.ui.ratingStamps?.[grade];
+  }
+
+  // --------------------------------------------------------------------------
+  // Weather, Particle & Climbing Feedback VFX Textures
+  // --------------------------------------------------------------------------
+
+  getVfxAssetMap(): VfxArtAssetMap {
+    return this.manifest.vfx;
+  }
+
+  getVfxAssetPath(key: VfxSpriteKey): string | undefined {
+    return this.manifest.vfx[key];
   }
 }
 

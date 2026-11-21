@@ -395,9 +395,10 @@ export function drawArtPackWorldScene(
 
 /**
  * Computes the dissolve alpha (0..1) from Near-Summit close-up into Static Wide Ending Painting.
- * - 0.00..0.32: Climber stands triumphantly on near-summit crest as camera begins smooth pull-back
- * - 0.32..0.72: Quintic crossfade into wide full-mountain panorama (04-广角结尾) while both glide outward
- * - 0.72..1.00: Full mountain panorama settles gently as poetic quote fades in (waits for player tap)
+ * - 0.00..0.34: Climber stands on near-summit crest as camera smoothly glides and begins panoramic pull-back
+ * - 0.34..0.76: Quintic crossfade into wide full-mountain panorama (04-广角结尾) while both pan outward
+ * - 0.76..0.86: Full panoramic mountain silhouette finishes settling unobstructed
+ * - 0.86+: App.tsx promotes PAN_REVEAL -> QUOTE_REVEAL so the inspirational quote fades in over settled panorama
  */
 export function computeSummitWideDissolveAlpha(
   phase: GamePhase,
@@ -407,7 +408,7 @@ export function computeSummitWideDissolveAlpha(
   if (phase !== 'SUMMIT') return 0;
   // When player explicitly triggers post-summit route trail playback, reveal the climbed wall trail
   if (trailPlaybackProgress !== null) return 0;
-  return smootherstep((summitProgress - 0.32) / 0.4);
+  return smootherstep((summitProgress - 0.34) / 0.42);
 }
 
 /**
@@ -427,9 +428,10 @@ export function drawSummitWideEndingOverlay(
   const alpha = computeSummitWideDissolveAlpha(phase, summitProgress, trailPlaybackProgress);
   const wideImg = pack.wideEndingImg;
   const hasWideImg = Boolean(wideImg && wideImg.naturalWidth > 0 && wideImg.naturalHeight > 0);
+  // Keep full mountain panorama bright and unobstructed during PAN_REVEAL; bloom veil as QUOTE_REVEAL enters
   const quoteVeilT =
     phase === 'SUMMIT' && trailPlaybackProgress === null
-      ? smootherstep((summitProgress - 0.66) / 0.24)
+      ? smootherstep((summitProgress - 0.8) / 0.16)
       : 0;
 
   if ((!hasWideImg || alpha <= 0.004) && quoteVeilT <= 0.004) return;
@@ -451,9 +453,8 @@ export function drawSummitWideEndingOverlay(
       baseDrawW = height * imgAspect;
     }
 
-    // Exponential optical pull-back (0.22 -> 0.90) so the painting glides smoothly into full panorama
-    // without linear speed distortion or an abrupt stop when dissolve completes
-    const settleT = smootherstep((summitProgress - 0.22) / 0.68);
+    // Exponential optical pull-back (0.24 -> 0.86) settles right as PAN_REVEAL finishes
+    const settleT = smootherstep((summitProgress - 0.24) / 0.62);
     const startScale = Math.max(1.36, wideDissolveStartScale * 1.14);
     const scale = startScale * Math.pow(1 / startScale, settleT);
     const drawW = baseDrawW * scale;

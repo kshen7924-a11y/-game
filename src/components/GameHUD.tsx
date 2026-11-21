@@ -223,24 +223,25 @@ export function GameHUD({
             <ChevronLeft className="h-4 w-4" />
           </button>
 
-          {/* Top-Center: Route Tier + Difficulty Grade + Weather */}
+          {/* Top-Center: Route Name (Primary) + Difficulty, Length & Weather (Secondary) */}
           <div className="flex justify-center">
             <div className="inline-flex flex-col items-center border border-white/15 bg-[#141820]/82 px-3 py-1 backdrop-blur-sm sm:px-4">
               <div className="flex items-baseline gap-1.5 whitespace-nowrap leading-tight">
-                <span className="text-xs font-bold text-[#F59E0B] sm:text-sm">
-                  {route.isDailyChallenge ? '今日神山' : route.tierLabel}
+                <span className="font-display text-sm font-bold text-[#F4F1EA] sm:text-base">
+                  {route.isDailyChallenge ? '今日神山' : route.name}
                 </span>
-                <span aria-hidden="true" className="text-[10px] text-slate-500">
-                  ·
-                </span>
-                <span className="font-display text-sm font-bold text-[#F4F1EA] font-mono-tabular sm:text-base">
-                  {route.grade}
+                <span className="text-[11px] font-semibold text-[#F59E0B] font-mono-tabular">
+                  {route.grade} · {route.heightM}m
                 </span>
               </div>
               <div className="mt-0.5 flex items-center gap-1 text-[10px] leading-none text-slate-300 whitespace-nowrap">
                 <span className="max-w-[84px] truncate font-semibold text-amber-200/95">
                   {climberName}
                 </span>
+                <span aria-hidden="true" className="text-slate-500">
+                  ·
+                </span>
+                <span className="text-slate-400">{route.tierLabel}</span>
                 <span aria-hidden="true" className="text-slate-500">
                   ·
                 </span>

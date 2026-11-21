@@ -1,8 +1,24 @@
-# 《孤山独影》最终美术资源规范与交付制作需求表
+# 《孤山独影》美术资产制作需求说明书（完整版）
 
-> **版本**：v1.1（最终交付版 · 同步男女角色、默认两套穿搭及背面站立展示效果图）  
+> **版本**：v2.1（全模块资产交付与命名规范总表 · 100% 对齐 `ArtAssetManifest` 与 `AssetRegistry`）  
 > **风格基准**：*Cairn* 法比清线连环画风（Franco-Belgian Ligne Claire）—— 冷青灰岩壁阴影、清晰深墨勾线（`#141820`）、硬边塞璐璐投影、高辨识度户外装备轮廓、自然粉笔痕迹与克制的场景化提示。  
-> **接入架构**：`src/App.tsx`（`ArtAssetManifest` 接口） + `src/visual/AssetRegistry.ts`（`AssetRegistry` 唯一资源注册中心）。所有渲染器与角色设定 UI 均动态读取 `AssetRegistry` 映射，**零硬编码路径、零物理逻辑耦合**。
+> **接入架构**：`src/App.tsx`（`ArtAssetManifest` 接口） + `src/visual/AssetRegistry.ts`（`AssetRegistry` 唯一资源注册中心）。游戏中**每一块视觉呈现**均已预留独立槽位，支持分批次、逐模块、逐关卡整体替换，**零硬编码路径、零物理逻辑耦合**。
+
+---
+
+## 〇、全游戏 9 大美术模块总量与排期总览
+
+| 模块 | Manifest 槽位 | 独立设计内容与数量 | 当前状态 | 推荐替换顺序 |
+| :--- | :--- | :--- | :--- | :--- |
+| **模块 1 · 角色设定背面立绘与展示舞台** | `character.previews` + `ui.characterStageBackdrop` | **4 张** 背面全身效果图（2穿搭×男女）+ **1 张** 角色岩台背景 | 程序 SVG 回退 | **第 1 批（P0）** |
+| **模块 2 · 局内攀爬角色骨骼与四肢部件** | `character.skins` + `genderSkinOverrides` | **24 件** P0 核心部件（2套×12件）+ **16 件** P1/P2 状态/镜像件 | 程序矢量 IK 回退 | **第 1 批（P0）** |
+| **模块 3 · 11 条真实线路仪式感徽章** | `badges[routeId]` | **11 枚** 独立山体地标珐琅金属勋章（`512×512`） | 11 枚定制 SVG 回退 | **第 1 批（P0）** |
+| **模块 4 · 公共地貌岩壁与大场景** | `walls[packId]` | **4 套地貌 × 4 大场景** = 16 张 + `wallDetailOverlay` 肌理层 | 2 套初版占位 | **第 2 批（P0）** |
+| **模块 5 · 语义岩点与状态叠加层** | `holds[packId]` | **4 套 × 10 基础岩点** + **5 张状态叠层** + **4 张特殊点** | 2 套初版占位 | **第 2 批（P0/P1）** |
+| **模块 6 · 世界交互道具与山岳地标** | `worldProps` | **8 张**（新/锈岩钉、Climbot、宿营帐、营地旗、玛尼堆、峰顶旗、峭壁草木） | 程序矢量回退 | **第 2 批（P0/P1）** |
+| **模块 7 · UI 全套件视觉（整体换皮）** | `ui.*` | **21 张**（主标题 Logo、羊皮纸底纹、今日神山横幅/印章、4 套配装图标、6 枚 HUD 图标、6 枚评级印章） | 字体/Lucide/纯色回退 | **第 3 批（P1）** |
+| **模块 8 · 气象与攀爬特效 VFX 贴图** | `vfx.*` | **9 张**（镁粉扬尘、岩钉火星、脆岩碎石、落冰冰锥、雪片、冻雨丝、流云雾霭、横风风痕、Dyno 蓄力环） | 程序粒子回退 | **第 3 批（P1）** |
+| **模块 9 · 11 关卡逐关独立精修覆写** | `routeOverrides[routeId]` | **11 关按需逐关精修**（每关独立 4 场景 + 特色岩点 + 氛围调色） | 自动继承地貌包 | **第 4 批（渐进精修）** |
 
 ---
 
@@ -17,6 +33,7 @@
 | **画布留白与裁切** | 角色部件、岩点、道具均保持透明底，四周预留 **8–12% 安全留白**（防止旋转抗锯齿裁切） |
 | **镜像复用规则** | 人物右侧四肢（`RightUpperArm`/`RightForearm`/`RightThigh`/`RightCalf`/`RightHand`/`RightFoot`）若未单独出图，引擎会自动水平镜像左侧部件；需要左右非对称装备细节时再单独提供右侧贴图 |
 | **骨骼方向约定** | 所有**骨骼驱动四肢部件**（大臂/小臂/大腿/小腿）必须**垂直朝下绘制**：起点关节（肩/肘/髋/膝）位于画布垂直 **14%** 处，终点关节位于 **86%** 处 |
+| **全局文件命名规范** | 全部采用**全小写 ASCII + 短横线（kebab-case）**，禁止中文、空格及大写字母（避免跨平台/CDN 大小写敏感错误）：<br>• 角色背面立绘：`char-preview-<skinId>-<gender>.png`<br>• 角色局内部件：`char-<skinId>-<limb-kebab>[ -<gender> ].png`<br>• 公共岩壁场景：`wall-<packId>-<layer>.png`<br>• 单关覆写场景：`route-<routeId>-wall-<layer>.png`<br>• 语义岩点：`hold-<packId>-<holdKey>.png` / `hold-overlay-<overlayKey>.png` / `hold-special-<specialKey>.png`<br>• 世界道具：`prop-<prop-kebab>.png`<br>• 线路徽章：`badge-<routeId>.png`<br>• UI 组件：`ui-<group>-<key>.png`<br>• 气象/反馈特效：`vfx-<effect-kebab>.png` |
 
 ---
 
@@ -29,16 +46,16 @@
 
 ### 2.0 角色设定页 · 背面站立美术效果图（`ArtAssetManifest.character.previews[skinId][gender]`，P0 必做）
 
-> **展示位置**：主菜单「角色设定」界面左侧角色档案展示区。  
-> **姿势规范**：**默认背面站立**（人物背对镜头、面向远山岩壁自然站立，双脚稳踩岩台，双臂自然垂于体侧或轻搭装备，清晰展示背包、外挂登山杖/冰镐、盘绕主绳、腰后镁粉袋、冲锋衣剪裁与发型背影轮廓）。  
+> **展示位置**：主菜单「角色设定」界面左侧主视觉画幅（占整屏宽度的 **61%–62%**，手机端人物显示高 `248px` / 桌面端 `336px`；攀登者名称位于人物正上方，身高/臂展/体重负重测绘标尺贴边融入画幅四周）。  
+> **姿势规范**：**默认背面站立**（人物背对镜头、面向远山岩壁自然站立，双脚稳踩岩台，双臂自然垂于体侧或轻搭装备，清晰展示背包、外挂登山杖/冰镐、盘绕主绳、腰后镁粉袋、冲锋衣剪裁与发型背影轮廓；左右各留 **10%–12%** 安全边距以便与测绘标尺错开不遮挡）。  
 > **自动替换机制**：UI 自动调用 `AssetRegistry.getCharacterPreviewPath(skinId, gender)`；填入 PNG 路径后直接渲染高清美术效果图，未提供或加载失败时平滑回退至程序背面站立剪影。
 
-| Manifest 路径 | 推荐文件名 | 性别 | 穿搭方案 | 推荐分辨率 (px) | 画幅比例 | 构图与美术要求 | 优先级 |
+| Manifest 路径 | 标准文件名 | 性别 | 穿搭方案 | 推荐分辨率 (px) | 画幅比例 | 构图与美术要求 | 优先级 |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `character.previews['alpine-orange'].male` | `alpine-orange-male-back.png` | 男 | 山脊经典（默认一） | **512 × 768**（或 **768 × 1152**） | 2:3 透明底 | 背面直立全身；蓝橙冲锋衣、高山针织帽+风镜、经典户外背包+橙色盘绳、腰后镁粉袋、攀岩鞋踩地；左上 45° 受光，深墨清线 `#141820`，底部留白 6% | **P0** |
-| `character.previews['alpine-orange'].female` | `alpine-orange-female-back.png` | 女 | 山脊经典（默认一） | **512 × 768**（或 **768 × 1152**） | 2:3 透明底 | 背面直立全身；同色系收腰冲锋衣剪裁、脑后高山编发/马尾（带强调色发绳）、修身登山轮廓、背包与盘绳比例协调；左上 45° 受光，深墨清线 `#141820` | **P0** |
-| `character.previews['glacier-cyan'].male` | `glacier-cyan-male-back.png` | 男 | 极光冰青（默认二） | **512 × 768**（或 **768 × 1152**） | 2:3 透明底 | 背面直立全身；冰青冲锋衣、头灯防撞头盔、冰镐技术登山包、青色主绳与冷灰攀岩裤；清线硬边塞璐璐阴影 | **P0** |
-| `character.previews['glacier-cyan'].female` | `glacier-cyan-female-back.png` | 女 | 极光冰青（默认二） | **512 × 768**（或 **768 × 1152**） | 2:3 透明底 | 背面直立全身；冰青收腰冲锋衣、头盔下垂高山编发、冰镐技术包与青色主绳、攀岩鞋稳立；与男版保持同一地平线与镜头机位 | **P0** |
+| `character.previews['alpine-orange'].male` | `char-preview-alpine-orange-male.png` | 男 | 山脊经典（默认一） | **512 × 768**（或 **768 × 1152**） | 2:3 透明底 | 背面直立全身；蓝橙冲锋衣、高山针织帽+风镜、经典户外背包+橙色盘绳、腰后镁粉袋、攀岩鞋踩地；左上 45° 受光，深墨清线 `#141820`，底部留白 6% | **P0** |
+| `character.previews['alpine-orange'].female` | `char-preview-alpine-orange-female.png` | 女 | 山脊经典（默认一） | **512 × 768**（或 **768 × 1152**） | 2:3 透明底 | 背面直立全身；同色系收腰冲锋衣剪裁、脑后高山编发/马尾（带强调色发绳）、修身登山轮廓、背包与盘绳比例协调；左上 45° 受光，深墨清线 `#141820` | **P0** |
+| `character.previews['glacier-cyan'].male` | `char-preview-glacier-cyan-male.png` | 男 | 极光冰青（默认二） | **512 × 768**（或 **768 × 1152**） | 2:3 透明底 | 背面直立全身；冰青冲锋衣、头灯防撞头盔、冰镐技术登山包、青色主绳与冷灰攀岩裤；清线硬边塞璐璐阴影 | **P0** |
+| `character.previews['glacier-cyan'].female` | `char-preview-glacier-cyan-female.png` | 女 | 极光冰青（默认二） | **512 × 768**（或 **768 × 1152**） | 2:3 透明底 | 背面直立全身；冰青收腰冲锋衣、头盔下垂高山编发、冰镐技术包与青色主绳、攀岩鞋稳立；与男版保持同一地平线与镜头机位 | **P0** |
 
 ### 2.1 局内核心躯干与四肢（`ArtAssetManifest.character.skins[skinId]`，P0 必做）
 
@@ -91,7 +108,7 @@
 | `climbingWall` | 02-主攀爬岩壁（循环底图） | **1080 × 1920** | 9:16 竖屏 | **必须支持垂直无缝循环**（顶部与底部 16% 纹理明暗、裂隙密度一致），左右边缘避免强对比孤立大块以免横向镜像穿帮；整体中灰不过曝，确保前景角色与岩点层次突出 | **P0** |
 | `wallDetailOverlay` | 岩壁清线排线/肌理叠层 | **1024 × 1024** | 1:1 透明循环 | 透明底黑色/冷青墨线排线与细碎岩纹，四方连续，叠加在 `climbingWall` 上强化 Cairn 版画质感 | **P1** |
 | `summitNear` | 03-登顶近景与天空 | **1080 × 1920** | 9:16 竖屏 | 上部为高空苍穹与远峰，峰顶站立平面位于 `Y ≈ 33%~43%`（依主题指标对齐），底部 18% 为实岩平滑过渡至主岩壁 | **P0** |
-| `wideEnding` | 04-登顶广角山体全貌 | **1080 × 1920**（或 **1440 × 2560**） | 9:16 竖屏 | 登顶镜头丝滑拉远后的完整山体全景插画；需与 `summitNear` 共享峰顶核心地标形状，底部预留干净山谷/云海暗区承托励志诗句排版 | **P0** |
+| `wideEnding` | 04-登顶广角山体全貌 | **1080 × 1920**（或 **1440 × 2560**） | 9:16 竖屏 | **一图三用（请重点控制构图焦点）**：① 登顶镜头拉远全屏山体全貌；② 登顶结算弹窗顶图（焦点 `50% / 34%`）；③ **关卡详情弹窗顶部风貌横幅**（焦点 `50% / 32%`）。请将山峰主体轮廓置于纵向 **`25%–45%`** 黄金带，底部预留干净山谷/云海暗区承托励志诗句排版 | **P0** |
 
 ---
 
@@ -150,50 +167,155 @@
 
 ---
 
-## 六、目录结构与交付验收清单
+## 六、真实攀登线路仪式感徽章系统需求表（`ArtAssetManifest.badges[routeId]`）
 
-### 6.1 推荐目录结构
+> **设计理念**：对应游戏中 11 条现实世界经典攀登线路，每枚徽章采用**欧式高山俱乐部珐琅金属勋章（Alpine Club Enamel Medallion）**与 *Cairn* 法比清线结合的仪式感设计：
+> - **统一规格**：**512 × 512 px**（透明底 PNG-32，安全留白 8%，居中构图，带顶部挂环或绶带扣结构）。
+> - **外框分级仪式感**：
+>   - **01–04 启蒙/初级线**：暖古铜 / 砂岩银圆形或圆角盾章，明快日光底色；
+>   - **05–08 中级/高级线**：锻钢 / 琥珀金八角章与尖底纹章盾，深岩午夜底色；
+>   - **09–11 大师绝巅线**：冷铂金 / 耀金皇冠菱盾与多角星章，深寒星夜底色配高光金属浮雕。
+> - **自动替换与锁定态**：`ClimbBadge.tsx` 自动调用 `AssetRegistry.getBadgeSpritePath(routeId)`；未解锁时前端自动施加去色与暗化浮雕滤镜，**美术只需交付点亮后的彩色完成稿即可**。
+
+| `RouteId` | 推荐文件名 | 现实线路名（中 / 英） | 难度 · 长度 | 徽章名称 | 专属仪式感地标纹样与工艺要点 | 优先级 |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `kids` | `badge-kids.png` | **天鹅岩缓壁** / Swan Slab（优胜美地山谷） | `5.4 · 24m` | **天鹅初翼** | 圆形古铜暖金章；朝阳升起于温润花岗岩缓坡之上，展翼天鹅弧线与晨光放射线 | **P0** |
+| `intro` | `badge-intro.png` | **白马岩脊** / Whitehorse Ledge（新罕布什尔） | `5.6 · 35m` | **白马踏云** | 圆形银白珐琅章；流线花岗穹壁上跃起的白马剪影，底部绕以层叠晨雾丝带 | **P0** |
+| `beginner` | `badge-beginner.png` | **皇家拱门** / Royal Arches（优胜美地山谷） | `5.7 · 45m` | **拱壁冠冕** | 圆角石盾章；层叠半圆花岗岩天然巨拱，拱顶镶嵌三尖小金冠拱心石 | **P0** |
+| `beginner-plus` | `badge-beginner-plus.png` | **高危悬廊** / High Exposure（肖旺根克山脉） | `5.8 · 52m` | **绝崖飞檐** | 棱角石英盾章；经典向右探出的高空石英岩屋檐横梁，下方为深谷云隙与飘动护绳 | **P0** |
+| `intermediate` | `badge-intermediate.png` | **蛇脊壁** / Snake Dike（半穹顶西南壁） | `5.9 · 62m` | **蛇纹磐石** | 八角深蓝金边章；半穹顶浑圆剪影表面蜿蜒向上的金色石英脉岩脊（Dike），如游蛇盘壁 | **P0** |
+| `intermediate-plus` | `badge-intermediate-plus.png` | **月光拱壁** / Moonlight Buttress（锡安大峡谷） | `5.10b · 75m` | **月照砂壁** | 竖盾赤砂岩章；通体笔直劈裂的纳瓦霍红砂岩垂直指缝，顶端悬一轮冷银弯月照亮裂隙 | **P0** |
+| `advanced` | `badge-advanced.png` | **魔鬼塔裂隙** / Durrance Route（怀俄明魔鬼塔） | `5.10d · 88m` | **玄柱擎天** | 六角玄武岩棱柱章；垂直并列的深青柱状节理玄武岩与平顶塔冠，中轴一道锋利金线贯穿裂隙 | **P0** |
+| `advanced-crux` | `badge-advanced-crux.png` | **莲花塔南壁** / Lotus Flower Tower（不可攀登峰群） | `5.11c · 100m` | **冰谷青莲** | 尖峰纹章盾；雪原冰谷中拔地而起的锐利花岗岩尖塔，塔身绽放几何清线青莲花瓣与双雪星 | **P0** |
+| `master-1` | `badge-master-1.png` | **艾格峰北壁** / Heckmair Route（瑞士伯尔尼高地） | `5.12a · 112m` | **白蛛霜刃** | 暗银皇冠盾章；陡峭阴冷的北壁岩面中央盘踞著名的“白色蜘蛛（White Spider）”放射冰场，双交叉冰镐镇底 | **P0** |
+| `master-2` | `badge-master-2.png` | **马特洪峰北壁** / Schmid Route（瑞士/意大利边境） | `5.12d · 128m` | **寒锋金字塔** | 铂金菱形雪刃章；极具辨识度的三棱锥孤峰金字塔剪影（右倾刃脊），配旗云与寒星 | **P0** |
+| `master-3` | `badge-master-3.png` | **黎明之墙** / The Dawn Wall（酋长岩东壁） | `5.13c · 145m` | **黎明神冕** | 终极耀金星芒皇冠章；近乎绝对垂直的酋长岩东壁在破晓第一缕万丈金光中苏醒，顶端桂冠星冕 | **P0** |
+
+---
+
+## 七、单关卡独立美术覆写与逐步替换规范（`ArtAssetManifest.routeOverrides[routeId]`）
+
+> **渐进式逐关优化机制**：  
+> 引擎现已内置 `ArtAssetManifest.routeOverrides[routeId]` 逐关覆写层。后续团队可以**一次只打磨 1 个关卡**（例如先做 `kids` 天鹅岩缓壁，再做 `master-3` 黎明之墙）：
+> - 某关卡配置了 `routeOverrides[routeId]` 中的任意子项（`walls` / `holds` / `overlays` / `special` / `atmosphere`）时，渲染器与登顶广角插画会自动加载该关卡专属贴图，并按 `${packId}::${routeId}` 独立缓存；
+> - 未配置的关卡或未覆写的子字段，自动无缝回退到该关卡所属的地貌主题包（`ArtPackId`），**互不干扰、随时可灰度上线**。
+
+| 序号 | `RouteId` | 现实攀登线路 | 难度 · 长度 | 默认地貌回退包 | 逐关美术优化方向（供单关精修参考） |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| 01 | `kids` | **天鹅岩缓壁**（Swan Slab） | `5.4 · 24m` | `snow-ridge-granite` | 温暖浅灰优胜美地花岗岩、针叶松远景与明亮清晨日光，平缓大摩擦面与清晰粉笔印 |
+| 02 | `intro` | **白马岩脊**（Whitehorse Ledge） | `5.6 · 35m` | `snow-ridge-granite` | 乳白略带淡青条纹的冰川磨蚀花岗岩穹顶，山谷云带与新英格兰秋色林线 |
+| 03 | `beginner` | **皇家拱门**（Royal Arches） | `5.7 · 45m` | `snow-ridge-granite` | 大尺度层叠弧形剥落岩层、拱形屋檐阴影与优胜美地谷底远眺 |
+| 04 | `beginner-plus` | **高危悬廊**（High Exposure） | `5.8 · 52m` | `snow-ridge-granite` | 乳白/淡赭色石英砾岩横层、标志性高空突出巨型屋檐与开阔河谷暴露感 |
+| 05 | `intermediate` | **蛇脊壁**（Snake Dike） | `5.9 · 62m` | `ridge-alpine` | 光滑浅灰花岗岩底面上斜穿而上的粗粝暗色突出石英脉（Dike）与宽广云海 |
+| 06 | `intermediate-plus` | **月光拱壁**（Moonlight Buttress） | `5.10b · 75m` | `slate-cliff` | 锡安峡谷标志性赭红/铁锈橙垂直纳瓦霍砂岩壁，细长笔直裂隙与深邃冷紫投影 |
+| 07 | `advanced` | **魔鬼塔裂隙**（Durrance Route） | `5.10d · 88m` | `slate-cliff` | 极具雕塑感的深青灰六角玄武岩垂直石柱群与柱间深缝，顶部草原平地天际线 |
+| 08 | `advanced-crux` | **莲花塔南壁**（Lotus Flower Tower） | `5.11c · 100m` | `frost-crown-ice` | 极地荒原金色/冷灰高耸花岗岩尖塔、冰川U型谷底与洁净高纬度冷光 |
+| 09 | `master-1` | **艾格峰北壁**（Heckmair Route） | `5.12a · 112m` | `frost-crown-ice` | 阴暗石灰岩湿黑岩面夹杂坚冰与雪坡、“白色蜘蛛”冰场与暴风雪雾气层 |
+| 10 | `master-2` | **马特洪峰北壁**（Schmid Route） | `5.12d · 128m` | `frost-crown-ice` | 凌厉黑灰混合岩冰壁、锐角刃脊、高空旗云与极寒宝石蓝阴影 |
+| 11 | `master-3` | **黎明之墙**（The Dawn Wall） | `5.13c · 145m` | `ridge-alpine` | 酋长岩东壁近乎镜面般的巨幅浅金花岗岩微抠点壁面，随高度由冷夜蓝渐变为破晓炽金 |
+
+---
+
+## 八、UI 全套件整体换新需求表（`ArtAssetManifest.ui`）
+
+> 为实现整体 UI 脱离通用网页感、与 *Cairn* 登山手账 / 法比清线画风完全统一，以下每一块界面元素均已独立拆出槽位并接入 `AssetRegistry.getUiAssetPath` / `getLoadoutIconPath` / `getHudIconPath` / `getRatingStampPath`：
+
+### 8.1 品牌主视觉、面板底纹与场景舞台（5 张）
+| Manifest 字段名 | 推荐文件名 | 推荐分辨率 (px) | 画幅 / 格式 | 美术设计要求 | 优先级 |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `ui.titleLogo` | `title-logo.png` | **960 × 240** | 4:1 透明 PNG-32 | 《孤山独影》手绘版画/清线主标题文字标，融入山脊折线与冰镐/岩缝笔触，深墨 `#141820` 为主 | **P0** |
+| `ui.parchmentTexture` | `parchment-tile.png` | **512 × 512** | 1:1 四方连续 | 极轻微粗糙水彩纸/登山路书纸纹（低对比度 3%–5%，浅暖灰 `#F4F1EA` 基准，不可影响正文阅读） | **P1** |
+| `ui.characterStageBackdrop` | `character-stage-bg.png` | **640 × 960** | 2:3 PNG | 角色设定页左侧背面人物身后的高空岩台与淡墨等高线远山静景（低饱和度，保证前景人物剪影清晰） | **P0** |
+| `ui.dailyBanner` | `daily-banner.png` | **1200 × 360** | 横幅 PNG | 「今日神山」专属破晓云海岩壁横幅底图，暖琥珀金与冷岩影对比，右侧留干净文字可读区 | **P1** |
+| `ui.dailyEmblem` | `daily-emblem.png` | **256 × 256** | 1:1 透明 PNG-32 | 「今日神山」日晷/太阳山峰火漆徽记，替换通用日历小图标 | **P1** |
+
+### 8.2 四套负重配装手绘插画图标（`ui.loadoutIcons`，4 张）
+| Manifest 字段名 | 推荐文件名 | 推荐分辨率 (px) | 美术设计要点 | 优先级 |
+| :--- | :--- | :--- | :--- | :--- |
+| `ui.loadoutIcons.light` | `loadout-light.png` | **256 × 256** | 轻装速攀：紧凑轻量登山包 + 少量快挂，轻盈动感线条 | **P1** |
+| `ui.loadoutIcons.balanced` | `loadout-balanced.png` | **256 × 256** | 标准均衡：经典主绳盘卷 + 岩钉锤 + 镁粉袋组合静物 | **P1** |
+| `ui.loadoutIcons.heavy` | `loadout-heavy.png` | **256 × 256** | 重装稳健：满挂机械塞/岩钉/多组快挂与双绳的大岩壁装备架 | **P1** |
+| `ui.loadoutIcons['free-solo']` | `loadout-free-solo.png` | **256 × 256** | 徒手独攀：仅一双攀岩鞋与缠白胶布的双手剪影（朱红/暗金强调，致敬纯粹孤勇） | **P0** |
+
+### 8.3 局内 HUD 战术功能图标（`ui.hudIcons`，6 张）
+| Manifest 字段名 | 推荐文件名 | 推荐分辨率 (px) | 用途与绘制要求 | 优先级 |
+| :--- | :--- | :--- | :--- | :--- |
+| `ui.hudIcons.piton` | `hud-piton.png` | **128 × 128** | 打岩钉按钮图标：清线钢制岩钉与岩锤 | **P1** |
+| `ui.hudIcons.chalk` | `hud-chalk.png` | **128 × 128** | 涂镁粉按钮图标：束口镁粉袋与扬起的白色粉尘 | **P1** |
+| `ui.hudIcons.shake` | `hud-shake.png` | **128 × 128** | 甩手排酸按钮图标：自然下垂抖动放松的前臂与动势线 | **P1** |
+| `ui.hudIcons.roadbook` | `hud-roadbook.png` | **128 × 128** | 路书读线按钮图标：手绘折页登山地形图与红线轨迹 | **P1** |
+| `ui.hudIcons.altitude` | `hud-altitude.png` | **128 × 128** | 海拔/进度标尺图标：双峰三角标与高度刻度 | **P2** |
+| `ui.hudIcons.lean` | `hud-lean.png` | **128 × 128** | 重心左右倾微调图标：登山者髋部重心双向箭头示意 | **P2** |
+
+### 8.4 登顶结算评级金属/火漆印章（`ui.ratingStamps`，6 张）
+| Manifest 字段名 | 推荐文件名 | 推荐分辨率 (px) | 视觉分级设计 | 优先级 |
+| :--- | :--- | :--- | :--- | :--- |
+| `ui.ratingStamps.SSS` | `rating-sss.png` | **256 × 256** | 耀金星芒皇冠火漆章（徒手独攀最高荣耀，双环桂冠+高光浮雕） | **P0** |
+| `ui.ratingStamps['S+']` | `rating-s-plus.png` | **256 × 256** | 鎏金双翼山峰章 | **P1** |
+| `ui.ratingStamps.S` | `rating-s.png` | **256 × 256** | 翠玉松绿登山俱乐部印章 | **P1** |
+| `ui.ratingStamps.A` | `rating-a.png` | **256 × 256** | 冰川天蓝钢印章 | **P1** |
+| `ui.ratingStamps.B` | `rating-b.png` | **256 × 256** | 冷岩铁灰印章 | **P2** |
+| `ui.ratingStamps.C` | `rating-c.png` | **256 × 256** | 粗陶岩褐印章 | **P2** |
+
+---
+
+## 九、气象、粒子与攀爬特效 VFX 需求表（`ArtAssetManifest.vfx`）
+
+> 替换引擎内现有程序几何粒子，使拍粉、砸钉、脆岩碎落、大师级落冰与暴风雪都具备统一的手绘清线版画质感：
+
+| Manifest 字段名 | 推荐文件名 | 推荐分辨率 (px) | 触发场景与绘制规范 | 优先级 |
+| :--- | :--- | :--- | :--- | :--- |
+| `vfx.chalkPuff` | `vfx-chalk-puff.png` | **256 × 256** | 涂镁粉/强抓点时的白色干擦粉尘烟雾团（边缘带微细粉粒，柔和透明过渡） | **P1** |
+| `vfx.sparkPiton` | `vfx-spark-piton.png` | **128 × 128** | 锤入岩钉刹那迸发的锐利暖橙/白金清线火星 | **P1** |
+| `vfx.rockDebris` | `vfx-rock-debris.png` | **256 × 256** | 脆岩崩裂下坠的 4 块不规则多面体碎石贴图（深墨描边+冷灰受光面） | **P1** |
+| `vfx.iceShard` | `vfx-ice-shard.png` | **128 × 256** | 大师级偶发事故「高空落冰」的锋利半透明冰锥投射物（深青墨线+白高光） | **P0** |
+| `vfx.snowFlake` | `vfx-snow-flake.png` | **128 × 128** | 高海拔暴风雪/白毛风飘雪颗粒（手绘不规则粉雪团，非机械圆点） | **P1** |
+| `vfx.rainStreak` | `vfx-rain-streak.png` | **64 × 256** | 冻雨斜落雨丝贴图（带细微青白高光） | **P2** |
+| `vfx.mistVeil` | `vfx-mist-veil.png` | **1024 × 512** | 高空流动云海与雾霭层次叠层（柔和横向云带，无缝左右循环） | **P1** |
+| `vfx.windStreak` | `vfx-wind-streak.png` | **512 × 128** | 强横风预警与阵风爆发时的法比清线空气流线丝带 | **P1** |
+| `vfx.dynoRing` | `vfx-dyno-ring.png` | **256 × 256** | Dyno 动态跃抓蓄力满格与蹬腿爆发时的手绘张力冲击环 | **P1** |
+
+---
+
+## 十、完整目录结构与零侵入替换示例
+
+### 10.1 推荐目录结构
 ```text
 src/visual/
-├── AssetRegistry.ts                  # 全局唯一资源注册中心
-├── art-packs/
-│   ├── snow-ridge-granite/           # 雪脊花岗岩（4张大场景 + 10张岩点）
-│   ├── frost-crown-ice/              # 霜冠冰岩（4张大场景 + 10张岩点）
-│   ├── ridge-alpine/                 # 高山刃脊（待交付）
-│   ├── slate-cliff/                  # 青灰板岩绝壁（待交付）
-│   └── shared-overlays/              # chalk.png / wet.png / crack1~3.png
+├── AssetRegistry.ts                  # 全局唯一资源注册中心（角色/岩壁/岩点/道具/徽章/单关/UI/VFX）
+├── art-packs/                        # 4 套公共地貌回退主题包
+│   ├── snow-ridge-granite/           # 雪脊花岗岩（4张大场景 + 1张肌理 + 10张岩点）
+│   ├── frost-crown-ice/              # 霜冠冰岩（4张大场景 + 1张肌理 + 10张岩点）
+│   ├── ridge-alpine/                 # 高山刃脊
+│   ├── slate-cliff/                  # 青灰板岩绝壁
+│   └── shared-overlays/              # chalk.png / wet.png / crack1~3.png + special/
+├── route-packs/                      # 11 关单关卡独立精修资源包（按 RouteId 逐关替换）
+│   ├── kids/                         # 01 天鹅岩缓壁
+│   ├── ...                           # 02–10
+│   └── master-3/                     # 11 黎明之墙
+├── badges/                           # 11 枚真实攀登线路仪式感徽章（512×512 PNG-32）
+│   └── badge-<routeId>.png
 ├── character-packs/
-│   ├── previews/                     # 角色设定页背面站立效果图（4张：2穿搭 × 男女）
-│   │   ├── alpine-orange-male-back.png
-│   │   ├── alpine-orange-female-back.png
-│   │   ├── glacier-cyan-male-back.png
-│   │   └── glacier-cyan-female-back.png
-│   ├── alpine-orange/                # 默认穿搭一局内部件（torso.png, head.png, left_hand.png ...）
+│   ├── previews/                     # 4 张角色设定页背面站立效果图（2穿搭 × 男女）
+│   ├── alpine-orange/                # 默认穿搭一局内部件
 │   └── glacier-cyan/                 # 默认穿搭二局内部件
-└── world-props/                      # piton_fresh.png, climbot.png, summit_cairn.png, cliff_flora.png ...
+├── world-props/                      # 8 张世界交互道具与地标
+├── ui-kit/                           # 21 张 UI 全套件（title-logo / parchment / stage-bg / loadout / hud / rating）
+└── vfx/                              # 9 张气象与动态特效贴图
 ```
 
-### 6.2 零侵入替换接入示例
-美术交付新资源后，**无需修改任何游戏逻辑或渲染器代码**，只需将新资源路径填入 `ArtAssetManifest` 并调用 `AssetRegistry.patchManifest(...)` 或 `AssetRegistry.applyManifest(...)`：
-
+### 10.2 全模块零侵入替换接入示例
 ```ts
 import { AssetRegistry } from './visual/AssetRegistry';
 import { CAIRN_REFERENCE_ATMOSPHERE_GRADE } from './visual/artRegistry';
 
 AssetRegistry.patchManifest({
+  // 1. 角色背面效果图 & 局内四肢部件
   character: {
-    // 1. 角色设定页：背面站立美术效果图（替换即生效）
     previews: {
-      'alpine-orange': {
-        male: alpineOrangeMaleBackPng,
-        female: alpineOrangeFemaleBackPng,
-      },
-      'glacier-cyan': {
-        male: glacierCyanMaleBackPng,
-        female: glacierCyanFemaleBackPng,
-      },
+      'alpine-orange': { male: alpineOrangeMaleBackPng, female: alpineOrangeFemaleBackPng },
+      'glacier-cyan': { male: glacierCyanMaleBackPng, female: glacierCyanFemaleBackPng },
     },
-    // 2. 局内攀爬骨骼与四肢部件
     skins: {
       'alpine-orange': {
         Torso: torsoPng,
@@ -210,29 +332,79 @@ AssetRegistry.patchManifest({
       },
     },
   },
-  holds: {
-    'snow-ridge-granite': {
-      jug: cairnJugPng,
-      crimp: cairnCrimpPng,
-      overlays: { chalk: chalkPng, wet: wetPng, crack1: crack1Png },
+  // 2. 11 枚真实线路仪式感徽章
+  badges: {
+    kids: badgeKidsPng,
+    'master-3': badgeDawnWallPng,
+  },
+  // 3. 单关卡独立覆写（先做任意一关即可上线）
+  routeOverrides: {
+    'master-3': {
+      walls: {
+        startLedge: dawnWallStartPng,
+        climbingWall: dawnWallMainPng,
+        summitNear: dawnWallSummitPng,
+        wideEnding: dawnWallWidePng,
+      },
+      holds: { crimp: dawnWallCrimpPng, sloper: dawnWallSloperPng },
+      atmosphere: CAIRN_REFERENCE_ATMOSPHERE_GRADE,
     },
   },
+  // 4. 世界交互道具
   worldProps: {
     pitonFresh: pitonFreshPng,
     climbot: climbotPng,
     summitCairn: summitCairnPng,
     cliffFlora: cliffFloraPng,
   },
-  atmosphere: {
-    'snow-ridge-granite': CAIRN_REFERENCE_ATMOSPHERE_GRADE,
+  // 5. UI 全套件（标题 Logo、纸纹、角色舞台背景、今日神山、配装/HUD/评级印章）
+  ui: {
+    titleLogo: titleLogoPng,
+    parchmentTexture: parchmentTilePng,
+    characterStageBackdrop: characterStageBgPng,
+    dailyBanner: dailyBannerPng,
+    dailyEmblem: dailyEmblemPng,
+    loadoutIcons: {
+      light: loadoutLightPng,
+      balanced: loadoutBalancedPng,
+      heavy: loadoutHeavyPng,
+      'free-solo': loadoutFreeSoloPng,
+    },
+    hudIcons: { piton: hudPitonPng, chalk: hudChalkPng, shake: hudShakePng },
+    ratingStamps: { SSS: ratingSssPng, 'S+': ratingSPlusPng, S: ratingSPng },
+  },
+  // 6. 气象与特效 VFX
+  vfx: {
+    chalkPuff: vfxChalkPuffPng,
+    sparkPiton: vfxSparkPitonPng,
+    rockDebris: vfxRockDebrisPng,
+    iceShard: vfxIceShardPng,
+    snowFlake: vfxSnowFlakePng,
+    windStreak: vfxWindStreakPng,
+    dynoRing: vfxDynoRingPng,
   },
 });
 ```
 
-### 6.3 交付前 6 项必检清单
+### 10.3 交付前 10 项必检清单
 1. **透明边缘无白边/黑边杂色**：所有 PNG 在浅色与深色岩壁底图上均干净无毛边。
-2. **角色设定效果图背面站立统一**：4 张背面站立效果图保持同一脚底地平线、同一缩放比例与左上 45° 受光，切换男女/穿搭时画面不跳动。
+2. **角色设定效果图背面站立统一**：4 张背面站立效果图保持同一脚底地平线、同一缩放比例与左上 45° 受光，在手机端左右分栏下头部与鞋底均不被裁切。
 3. **四肢垂直朝下 + 14%/86% 关节对齐**：检验肘/膝大幅弯曲时无错位、无露白。
 4. **岩点锚点对准抓握面**：手掌/脚尖落点刚好扣在 `anchorX/anchorY` 所示受力棱线上。
 5. **主岩壁上下无缝拼接**：上下叠放两张 `climbingWall` 检查接缝完全不可见。
-6. **色彩与光照一致性**：人物、岩点、道具、岩壁共享左上 45° 受光与冷青灰投影体系。
+6. **徽章轮廓清晰可缩读**：11 枚 `512×512` 徽章在缩小至 **`44×44 px`（单行关卡列表）**、`48×48 px`（关卡详情弹窗）与 `56×56 px`（徽章墙卡片）时仍清晰辨识。
+7. **`wideEnding` 一图三用构图校验**：主峰轮廓位于纵向 `25%–45%`，在全屏登顶全景、登顶结算顶图与关卡详情横幅中均不裁切主峰。
+8. **UI 纸纹与舞台底图低干扰**：`parchmentTexture` 与 `characterStageBackdrop` 不抢前景文字或人物轮廓对比度（满足 WCAG AA 可读性）。
+9. **VFX 粒子与清线风格统一**：雪片、碎石、冰锥与风痕保持硬边/干擦手绘质感，避免模糊高斯光晕破坏法比清线画风。
+10. **全局光照统一**：角色、岩点、道具、岩壁、徽章与 UI 图标共享左上 45° 主光与冷青灰阴影体系。
+
+---
+
+## 十一、近期版本更新核对清单（GitHub 同步参考）
+
+- **全模块美术注册中心（v2.1）**：`ArtAssetManifest` 与 `AssetRegistry` 完整覆盖 **9 大视觉模块**（角色立绘/骨骼、公共地貌岩壁、语义岩点与叠层、11 枚徽章、11 关独立覆写、世界道具、**UI 全套件**、**气象/攀爬 VFX**），统一 kebab-case 命名规范，整体换皮零硬编码。
+- **角色设定页主视觉聚焦 + 嵌入式测绘标尺**：左侧背面站立人物画幅扩张至 **61%–62%**（手机端 `248px` / 桌面端 `336px`），姓名置于人物正上方，身高 / 臂展（+臂展差）/ 体重与实时装备负重 / 力量体重比以无框测绘标尺融入画幅四周；右侧收敛为紧凑控制栏（名称+随机、性别、2 套默认穿搭、负重快捷跳转），手机端零滚动一屏完整呈现。
+- **物理抓握零向上冲量重构（根治“莫名上跳”）**：移除 `updateClimberPhysics` 与 `attemptGrabHold` 中所有抓握额外向上冲量（Impulse Y）及垂直弹簧过冲，改用连续重心平移与渐进式肢体几何约束解算，并在开发模式透明调试层中实时监控 `vy` 波形。
+- **登顶三段式沉浸序列**：`PAN_REVEAL`（镜头丝滑拉远展露山体全貌）→ `QUOTE_REVEAL`（唯美登山励志诗句）→ 点击屏幕进入 `MODAL_READY`（战绩结算弹窗）。
+- **11 条现实世界攀登线路与仪式感徽章**：全面升级为现实世界 11 条经典线路（大字线路名 + 小字难度与全长，兼容旧存档），重绘 11 枚地标仪式感徽章。
+- **关卡页交互重构**：预览页无开始按钮、单列「一行一关」卡片；点击弹出含山体头图、徽章预览与快捷配装的详情弹窗，下方居中展示「开始攀登」按钮。

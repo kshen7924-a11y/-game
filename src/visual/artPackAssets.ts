@@ -1,4 +1,4 @@
-import { RouteConfig } from '../game/types';
+import { RouteConfig, RouteId } from '../game/types';
 import { AssetRegistry } from './AssetRegistry';
 
 export type ArtPackId =
@@ -194,14 +194,15 @@ const ART_PACK_METADATA: Record<ArtPackId, ArtPackStaticMetadata> = {
 };
 
 /**
- * Resolves the complete ArtPackUrls for a biome purely from AssetRegistry (zero hardcoded PNG paths).
+ * Resolves the complete ArtPackUrls for a biome (optionally merged with per-route art overrides)
+ * purely from AssetRegistry (zero hardcoded PNG paths).
  */
-export function resolveArtPackUrls(packId: ArtPackId): ArtPackUrls {
-  const walls = AssetRegistry.getWallBackgroundMap(packId);
-  const holds = AssetRegistry.getOrderedHoldPaths(packId);
-  const holdOverlays = AssetRegistry.getHoldOverlayPaths(packId);
-  const specialHolds = AssetRegistry.getSpecialHoldPaths(packId);
-  const atmosphereGrade = AssetRegistry.getAtmosphereGrade(packId);
+export function resolveArtPackUrls(packId: ArtPackId, routeId?: RouteId): ArtPackUrls {
+  const walls = AssetRegistry.getWallBackgroundMap(packId, routeId);
+  const holds = AssetRegistry.getOrderedHoldPaths(packId, routeId);
+  const holdOverlays = AssetRegistry.getHoldOverlayPaths(packId, routeId);
+  const specialHolds = AssetRegistry.getSpecialHoldPaths(packId, routeId);
+  const atmosphereGrade = AssetRegistry.getAtmosphereGrade(packId, routeId);
   const meta = ART_PACK_METADATA[packId] ?? ART_PACK_METADATA['snow-ridge-granite'];
 
   return {
@@ -238,8 +239,8 @@ export function resolveArtPackId(palette: RouteConfig['palette']): ArtPackId {
   return AssetRegistry.resolveBiomePackId(palette);
 }
 
-export function getWideEndingImageUrl(palette: RouteConfig['palette']): string {
-  return AssetRegistry.getWideEndingPath(palette);
+export function getWideEndingImageUrl(palette: RouteConfig['palette'], routeId?: RouteId): string {
+  return AssetRegistry.getWideEndingPath(palette, routeId);
 }
 
 /**
@@ -299,8 +300,8 @@ export function overrideHoldOverlay(
   AssetRegistry.patchManifest({ holds: holdsPatch });
 }
 
-const packCache = new Map<ArtPackId, DecodedArtPack>();
-const loadingStarted = new Set<ArtPackId>();
+const packCache = new Map<string, DecodedArtPack>();
+const loadingStarted = new Set<string>();
 
 AssetRegistry.subscribe((scope) => {
   if (scope === 'all' || scope === 'walls' || scope === 'holds') {
@@ -436,10 +437,12 @@ function loadAndDecodeImage(
   }
 }
 
-export function getDecodedArtPack(packId: ArtPackId): DecodedArtPack {
-  let pack = packCache.get(packId);
+export function getDecodedArtPack(packId: ArtPackId, routeId?: RouteId): DecodedArtPack {
+  const activeRouteId = routeId && AssetRegistry.hasRouteOverride(routeId) ? routeId : undefined;
+  const cacheKey = activeRouteId ? `${packId}::${activeRouteId}` : packId;
+  let pack = packCache.get(cacheKey);
   if (!pack) {
-    const urls = resolveArtPackUrls(packId);
+    const urls = resolveArtPackUrls(packId, activeRouteId);
     const overlayCount = Object.values(urls.holdOverlays ?? {}).filter(Boolean).length;
     const specialCount = Object.values(urls.specialHolds ?? {}).filter(Boolean).length;
     const detailCount = urls.wallDetailOverlay ? 1 : 0;
@@ -461,11 +464,11 @@ export function getDecodedArtPack(packId: ArtPackId): DecodedArtPack {
       totalCount: 14 + overlayCount + specialCount + detailCount,
       wideReady: false,
     };
-    packCache.set(packId, pack);
+    packCache.set(cacheKey, pack);
   }
 
-  if (!loadingStarted.has(packId)) {
-    loadingStarted.add(packId);
+  if (!loadingStarted.has(cacheKey)) {
+    loadingStarted.add(cacheKey);
     const targetPack = pack;
     const urls = targetPack.urls;
 
@@ -537,6 +540,14 @@ export function getDecodedArtPack(packId: ArtPackId): DecodedArtPack {
   }
 
   return pack;
+}
+
+export function getDecodedArtPackForRoute(route: RouteConfig): DecodedArtPack {
+  return getDecodedArtPack(resolveArtPackId(route.palette), route.id);
+}
+
+export function preloadArtPackForRoute(route: RouteConfig): DecodedArtPack {
+  return getDecodedArtPackForRoute(route);
 }
 
 export function preloadArtPackForPalette(palette: RouteConfig['palette']): DecodedArtPack {

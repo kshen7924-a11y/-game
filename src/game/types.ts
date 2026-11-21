@@ -1,5 +1,13 @@
 export type GamePhase = 'TITLE_MENU' | 'PLAYING' | 'SUMMIT' | 'FALLEN';
 
+/**
+ * Staged Summit cinematic sequence ensuring full immersion:
+ * 1. PAN_REVEAL  — Camera smoothly pans & zooms out to reveal full panoramic mountain silhouette
+ * 2. QUOTE_REVEAL — Settled panorama displays the inspirational quote and awaits player acknowledgement
+ * 3. MODAL_READY  — Final end-game settlement modal is presented
+ */
+export type SummitSequenceStage = 'PAN_REVEAL' | 'QUOTE_REVEAL' | 'MODAL_READY';
+
 export type LimbId = 'leftHand' | 'rightHand' | 'leftFoot' | 'rightFoot';
 
 export type HoldType =
@@ -156,9 +164,13 @@ export interface BadgeInfo {
   tier: number;
   tierLabel: string;
   title: string;
+  routeName: string;
+  realName: string;
+  heightM: number;
   subtitle: string;
   grade: string;
   accentColor: string;
+  emblemMotto?: string;
 }
 
 export interface RouteConfig {
@@ -167,6 +179,10 @@ export interface RouteConfig {
   tierLabel: string;
   grade: string;
   name: string;
+  /** Original real-world route name (e.g. "Moonlight Buttress") */
+  realName?: string;
+  /** Real-world mountain / crag location (e.g. "美国锡安峡谷") */
+  location?: string;
   subtitle: string;
   description: string;
   heightM: number;

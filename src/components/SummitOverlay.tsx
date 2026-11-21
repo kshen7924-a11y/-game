@@ -9,6 +9,7 @@ import {
   GamePhase,
   OverallRatingGrade,
   RouteConfig,
+  SummitSequenceStage,
 } from '../game/types';
 import { AssetRegistry } from '../visual/AssetRegistry';
 import { ClimbBadge } from './ClimbBadge';
@@ -19,6 +20,8 @@ interface SummitOverlayProps {
   stats: ClimbStats;
   climbStyle: ClimbStyle;
   summitProgress: number;
+  summitStage?: SummitSequenceStage;
+  onAdvanceSummitStage?: () => void;
   hasCheckpoint: boolean;
   newlyUnlockedBadge: boolean;
   isPlayingTrail: boolean;
@@ -115,6 +118,8 @@ export function SummitOverlay({
   stats,
   climbStyle,
   summitProgress,
+  summitStage,
+  onAdvanceSummitStage,
   hasCheckpoint,
   newlyUnlockedBadge,
   isPlayingTrail,
@@ -132,36 +137,72 @@ export function SummitOverlay({
   const genderLabel = climberGender === 'female' ? '女' : '男';
   const [hideForView, setHideForView] = useState(false);
   const [imgFailed, setImgFailed] = useState(false);
-  const [quoteAcknowledged, setQuoteAcknowledged] = useState(false);
-  const wideArtSrc = AssetRegistry.getWideEndingPath(route.palette);
+  const [fallbackAcknowledged, setFallbackAcknowledged] = useState(false);
+  const [quoteEntered, setQuoteEntered] = useState(false);
+  const [canDismissQuote, setCanDismissQuote] = useState(false);
+  const wideArtSrc = AssetRegistry.getWideEndingPath(route.palette, route.id);
+
+  // Authoritative summit sequence stage driven by App.tsx (with graceful standalone fallback)
+  const resolvedStage: SummitSequenceStage =
+    summitStage ??
+    (summitProgress < 0.86
+      ? 'PAN_REVEAL'
+      : fallbackAcknowledged
+        ? 'MODAL_READY'
+        : 'QUOTE_REVEAL');
 
   useEffect(() => {
     setImgFailed(false);
     setHideForView(false);
-    setQuoteAcknowledged(false);
+    setFallbackAcknowledged(false);
+    setQuoteEntered(false);
+    setCanDismissQuote(false);
   }, [route.id, phase]);
 
-  // Reset quote acknowledgement if a fresh summit animation starts
+  // Smoothly animate the inspirational quote entrance once App.tsx enters QUOTE_REVEAL,
+  // and guard against accidental premature taps during the first 850ms of the fade-in.
   useEffect(() => {
-    if (phase === 'SUMMIT' && summitProgress < 0.15) {
-      setQuoteAcknowledged(false);
+    if (phase !== 'SUMMIT' || resolvedStage !== 'QUOTE_REVEAL') {
+      setQuoteEntered(false);
+      setCanDismissQuote(false);
+      return;
     }
-  }, [phase, summitProgress]);
+    const rafId = window.requestAnimationFrame(() => {
+      setQuoteEntered(true);
+    });
+    const dismissTimer = window.setTimeout(() => {
+      setCanDismissQuote(true);
+    }, 850);
+    return () => {
+      window.cancelAnimationFrame(rafId);
+      window.clearTimeout(dismissTimer);
+    };
+  }, [phase, resolvedStage]);
 
-  const isQuoteStageVisible = phase === 'SUMMIT' && summitProgress >= 0.74 && !quoteAcknowledged;
-  const canDismissQuote = phase === 'SUMMIT' && summitProgress >= 0.82 && !quoteAcknowledged;
+  const handleConfirmQuote = () => {
+    if (!canDismissQuote) return;
+    if (onAdvanceSummitStage) {
+      onAdvanceSummitStage();
+    } else {
+      setFallbackAcknowledged(true);
+    }
+  };
 
   useEffect(() => {
-    if (!canDismissQuote) return;
+    if (phase !== 'SUMMIT' || resolvedStage !== 'QUOTE_REVEAL' || !canDismissQuote) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === ' ' || e.key === 'Enter' || e.key === 'Escape') {
         e.preventDefault();
-        setQuoteAcknowledged(true);
+        if (onAdvanceSummitStage) {
+          onAdvanceSummitStage();
+        } else {
+          setFallbackAcknowledged(true);
+        }
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [canDismissQuote]);
+  }, [phase, resolvedStage, canDismissQuote, onAdvanceSummitStage]);
 
   const curIdx = ROUTES.findIndex((r) => r.id === route.id);
   const nextRoute = curIdx >= 0 && curIdx < ROUTES.length - 1 ? ROUTES[curIdx + 1] : null;
@@ -175,15 +216,16 @@ export function SummitOverlay({
         : '完攀登顶';
 
   if (phase === 'SUMMIT') {
-    // Stage 1 (0.00 -> 0.74): Pure unobstructed camera pull-back revealing the full mountain silhouette
-    if (summitProgress < 0.74) {
-      // Whisper-light crest caption only during initial arrival (fades out cleanly before wide panorama)
+    // Stage 1 (PAN_REVEAL): Unobstructed panoramic camera pan revealing the full mountain silhouette
+    if (resolvedStage === 'PAN_REVEAL') {
+      // Whisper-light arrival caption only during the initial summit crest beat, fading out
+      // completely before the wide mountain silhouette unfolds.
       const introAlpha =
-        summitProgress < 0.06
-          ? summitProgress / 0.06
-          : summitProgress < 0.24
+        summitProgress < 0.05
+          ? summitProgress / 0.05
+          : summitProgress < 0.18
             ? 1
-            : Math.max(0, 1 - (summitProgress - 0.24) / 0.16);
+            : Math.max(0, 1 - (summitProgress - 0.18) / 0.12);
       if (introAlpha <= 0.01) return null;
       return (
         <div
@@ -202,44 +244,41 @@ export function SummitOverlay({
       );
     }
 
-    // Stage 2 (0.74+ until player taps/clicks): Poetic mountaineering verse over the full mountain panorama
-    if (isQuoteStageVisible) {
+    // Stage 2 (QUOTE_REVEAL): Full mountain silhouette has settled; present inspirational quote
+    // and wait for the player's click/tap/keypress before opening the final end-game modal.
+    if (resolvedStage === 'QUOTE_REVEAL') {
       const quote = selectSummitQuote(route, climbStyle, isFreeSolo || Boolean(assessment?.isFreeSolo));
-      const fadeRaw = Math.max(0, Math.min(1, (summitProgress - 0.74) / 0.16));
-      const quoteAlpha = fadeRaw * fadeRaw * (3 - 2 * fadeRaw);
-      const promptRaw = Math.max(0, Math.min(1, (summitProgress - 0.84) / 0.12));
-      const promptAlpha = promptRaw * promptRaw * (3 - 2 * promptRaw);
 
       return (
         <button
           type="button"
-          onClick={() => {
-            if (canDismissQuote) {
-              setQuoteAcknowledged(true);
-            }
-          }}
+          onClick={handleConfirmQuote}
           aria-label="轻触屏幕查看登顶战绩"
-          className="fixed inset-0 z-20 flex cursor-pointer flex-col items-center justify-between px-6 py-12 text-center focus:outline-none sm:py-16"
-          style={{ opacity: quoteAlpha }}
+          className={`fixed inset-0 z-20 flex flex-col items-center justify-between px-6 py-12 text-center transition-opacity duration-1000 ease-out focus:outline-none sm:py-16 ${
+            canDismissQuote ? 'cursor-pointer' : 'cursor-default'
+          }`}
+          style={{ opacity: quoteEntered ? 1 : 0 }}
         >
           {/* Subtle summit inscription at upper sky */}
-          <div className="flex flex-col items-center gap-2 pt-2">
-            <div className="flex items-center gap-2.5 text-[11px] font-medium tracking-[0.26em] text-amber-100/90 drop-shadow-[0_1px_6px_rgba(0,0,0,0.85)]">
+          <div className="flex flex-col items-center gap-1.5 pt-2">
+            <div className="font-display text-lg font-bold tracking-[0.14em] text-white drop-shadow-[0_2px_10px_rgba(0,0,0,0.9)]">
+              {route.name}
+            </div>
+            <div className="flex items-center gap-2 text-[11px] font-medium tracking-[0.22em] text-amber-100/90 drop-shadow-[0_1px_6px_rgba(0,0,0,0.85)]">
               <span>{route.isDailyChallenge ? '今日神山' : route.tierLabel}</span>
               <span className="opacity-55">·</span>
               <span className="font-mono-tabular">{route.grade}</span>
               <span className="opacity-55">·</span>
               <span className="font-mono-tabular">{route.heightM}m</span>
             </div>
-            <div className="h-px w-12 bg-gradient-to-r from-transparent via-amber-200/70 to-transparent" />
+            <div className="mt-0.5 h-px w-12 bg-gradient-to-r from-transparent via-amber-200/70 to-transparent" />
           </div>
 
           {/* Poetic Mountaineering Verse anchored cleanly over lower-middle panorama */}
           <div
-            className="mt-auto mb-10 flex max-w-lg flex-col items-center sm:mb-14"
+            className="mt-auto mb-10 flex max-w-lg flex-col items-center transition-transform duration-1000 ease-out sm:mb-14"
             style={{
-              transform: `translateY(${(1 - quoteAlpha) * 14}px)`,
-              transition: 'transform 600ms cubic-bezier(0.22, 1, 0.36, 1)',
+              transform: quoteEntered ? 'translateY(0px)' : 'translateY(16px)',
             }}
           >
             <p className="font-display text-xl leading-[1.85] font-semibold tracking-[0.1em] text-white drop-shadow-[0_2px_16px_rgba(8,12,20,0.92)] sm:text-2xl sm:leading-[1.9]">
@@ -256,10 +295,10 @@ export function SummitOverlay({
             </div>
           </div>
 
-          {/* Breathing tap-to-continue cue */}
+          {/* Breathing tap-to-continue cue appearing once the quote has settled */}
           <div
-            className="pb-1 text-xs tracking-[0.24em] text-white/85 drop-shadow-[0_1px_8px_rgba(8,12,20,0.95)]"
-            style={{ opacity: promptAlpha }}
+            className="pb-1 text-xs tracking-[0.24em] text-white/85 drop-shadow-[0_1px_8px_rgba(8,12,20,0.95)] transition-opacity duration-700 ease-out"
+            style={{ opacity: canDismissQuote ? 1 : 0 }}
           >
             <span className="animate-pulse">轻触屏幕任意位置，查看登顶战绩</span>
           </div>
@@ -327,9 +366,16 @@ export function SummitOverlay({
           </div>
 
           <div className="mt-0.5 flex flex-wrap items-baseline justify-between gap-2">
-            <h2 className="font-display text-2xl font-bold tracking-tight text-[#141820] sm:text-3xl">
-              {route.name}
-            </h2>
+            <div>
+              <h2 className="font-display text-2xl font-bold tracking-tight text-[#141820] sm:text-3xl">
+                {route.name}
+              </h2>
+              {(route.realName || route.location) && (
+                <div className="text-[11px] font-medium text-slate-500">
+                  {[route.realName, route.location].filter(Boolean).join(' · ')}
+                </div>
+              )}
+            </div>
             <span className="border border-[#141820]/30 bg-[#EAE6DC] px-2 py-0.5 text-[11px] font-bold text-[#141820]">
               攀登者：{climberName}（{genderLabel}）
             </span>
@@ -392,16 +438,33 @@ export function SummitOverlay({
               }`}
             >
               <div className="flex items-center gap-3">
-                <div
-                  className={`flex h-14 w-14 shrink-0 flex-col items-center justify-center border-2 border-[#141820] shadow-[2px_2px_0px_#141820] ${RATING_BADGE_STYLE[assessment.ratingGrade]}`}
-                >
-                  <span className="font-display text-xl font-extrabold leading-none">
-                    {assessment.ratingGrade}
-                  </span>
-                  <span className="mt-0.5 font-mono-tabular text-[10px] font-bold opacity-90">
-                    {assessment.overallScore}分
-                  </span>
-                </div>
+                {(() => {
+                  const stampUrl = AssetRegistry.getRatingStampPath(assessment.ratingGrade);
+                  if (stampUrl) {
+                    return (
+                      <div className="relative flex h-14 w-14 shrink-0 items-center justify-center">
+                        <img
+                          src={stampUrl}
+                          alt={`评级 ${assessment.ratingGrade}`}
+                          referrerPolicy="no-referrer"
+                          className="h-14 w-14 object-contain drop-shadow-[0_2px_4px_rgba(20,24,32,0.28)]"
+                        />
+                      </div>
+                    );
+                  }
+                  return (
+                    <div
+                      className={`flex h-14 w-14 shrink-0 flex-col items-center justify-center border-2 border-[#141820] shadow-[2px_2px_0px_#141820] ${RATING_BADGE_STYLE[assessment.ratingGrade]}`}
+                    >
+                      <span className="font-display text-xl font-extrabold leading-none">
+                        {assessment.ratingGrade}
+                      </span>
+                      <span className="mt-0.5 font-mono-tabular text-[10px] font-bold opacity-90">
+                        {assessment.overallScore}分
+                      </span>
+                    </div>
+                  );
+                })()}
 
                 <div className="min-w-0 flex-1 space-y-1">
                   <div className="flex flex-wrap items-baseline justify-between gap-1">
@@ -451,7 +514,7 @@ export function SummitOverlay({
                 onClick={() => onNextRoute(nextRoute)}
                 className="min-h-[44px] w-full border-2 border-[#141820] bg-[#EA580C] px-4 py-2 text-sm font-bold text-white shadow-[3px_3px_0px_#141820] whitespace-nowrap hover:bg-[#DC4C06]"
               >
-                挑战下一线 · {nextRoute.tierLabel}（{nextRoute.grade}）
+                挑战下一线 · {nextRoute.name}（{nextRoute.grade} · {nextRoute.heightM}m）
               </button>
             )}
             <div className="grid grid-cols-3 gap-2">
@@ -632,10 +695,10 @@ export function SummitOverlay({
             <span aria-hidden="true">·</span>
             <span className="text-[#141820]">{climberName}（{genderLabel}）</span>
             <span aria-hidden="true">·</span>
-            <span>{route.isDailyChallenge ? '今日神山' : route.tierLabel}</span>
+            <span className="font-bold text-[#141820]">{route.name}</span>
             <span aria-hidden="true">·</span>
             <span className="font-mono-tabular">
-              {route.grade} / {route.heightM}m
+              {route.grade} · {route.heightM}m
             </span>
           </div>
 

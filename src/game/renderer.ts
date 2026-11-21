@@ -32,7 +32,7 @@ import {
 } from './types';
 import { AssetRegistry } from '../visual/AssetRegistry';
 import {
-  getDecodedArtPack,
+  getDecodedArtPackForRoute,
   VisualAtmosphereGrade,
 } from '../visual/artPackAssets';
 import { drawArtPackHold } from '../visual/holdSprites';
@@ -210,8 +210,8 @@ export function renderGameFrame(params: RenderParams) {
   const altRatio = Math.max(0, Math.min(1, -climber.torsoPos.y / mountainHeight));
   const inkScale = Math.max(1.05, Math.min(2.4, 1.75 / Math.sqrt(camera.zoom)));
 
-  // Visual presentation art pack, Cairn world-props pack & smooth transition factors
-  const artPack = getDecodedArtPack(AssetRegistry.resolveBiomePackId(world.route.palette));
+  // Visual presentation art pack (supports per-route overrides via AssetRegistry), Cairn world-props pack & smooth transition factors
+  const artPack = getDecodedArtPackForRoute(world.route);
   const worldPropsPack = getDecodedWorldPropsPack();
   const atmosphereGrade = artPack.urls.atmosphereGrade;
   const routeReadFade = advanceRouteReadFade(isReadingRoute && phase === 'PLAYING', timeSec);
