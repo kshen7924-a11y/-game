@@ -22,6 +22,7 @@ import {
 import {
   ActiveWeather,
   AltitudeDifficultyBin,
+  ClimberGender,
   ClimberState,
   ClimbStats,
   HoverInfo,
@@ -31,11 +32,10 @@ import {
   TutorialState,
   WeatherIncidentState,
 } from '../game/types';
-import { AltitudeDifficultyChart } from './AltitudeDifficultyChart';
 
 interface GameHUDProps {
   route: RouteConfig;
-  difficultyProfile: AltitudeDifficultyBin[];
+  difficultyProfile?: AltitudeDifficultyBin[];
   weather: ActiveWeather;
   weatherIncident?: WeatherIncidentState | null;
   climber: ClimberState;
@@ -52,7 +52,6 @@ interface GameHUDProps {
   betaPinsCount: number;
   nextBetaHoldHint?: string | null;
   canShakeOut: boolean;
-  statusBanner: string | null;
   onPlacePiton: () => void;
   onApplyChalk: () => void;
   onToggleRouteRead: () => void;
@@ -73,6 +72,8 @@ interface GameHUDProps {
   roadbookEstimate?: RoadbookStaminaEstimate | null;
   roadbookFlowActive?: boolean;
   onSpringHold?: boolean;
+  climberName?: string;
+  climberGender?: ClimberGender;
 }
 
 const LIMB_ITEMS: { id: LimbId; label: string }[] = [
@@ -82,17 +83,13 @@ const LIMB_ITEMS: { id: LimbId; label: string }[] = [
   { id: 'rightFoot', label: '右脚' },
 ];
 
-const getTutorialText = (
-  tutorial: TutorialState,
-  heightM: number,
-  isFreeSolo = false
-): string => {
+const getTutorialText = (tutorial: TutorialState, isFreeSolo = false): string => {
   if (tutorial.variant === 'advanced') {
     const advTexts: Record<number, string> = {
       0: '进阶教学 1/4 · 双击手脚关节或将其拖至空处，可独立松开支点',
       1: '进阶教学 2/4 · 拖动腰部安全带环可手动移重心，轻点腰部恢复智能回中',
       2: '进阶教学 3/4 · 遇侧拉点可拖腰反向倾压；三点稳固可点「甩臂回耐」',
-      3: `进阶教学 4/4 · 已掌握进阶操作，继续向 ${heightM}m 顶峰攀登！`,
+      3: '进阶教学 4/4 · 已掌握进阶操作，继续向顶峰攀登！',
     };
     return advTexts[tutorial.step] ?? advTexts[3];
   }
@@ -102,15 +99,14 @@ const getTutorialText = (
     2: '教学 3/5 · 点击右下「岩钉」固定保护点',
     3: '教学 4/5 · 点击「镁粉」擦粉，提升湿滑岩点抓力',
     4: isFreeSolo
-      ? `基础完成 · 徒手无岩钉镁粉，向 ${heightM}m 顶峰攀登！`
-      : `教学 5/5 · 已掌握基础攀登，向 ${heightM}m 顶峰攀登！`,
+      ? '基础完成 · 徒手无岩钉镁粉，向顶峰攀登！'
+      : '教学 5/5 · 已掌握基础攀登，向顶峰攀登！',
   };
   return basicTexts[tutorial.step] ?? basicTexts[4];
 };
 
 export function GameHUD({
   route,
-  difficultyProfile,
   weather,
   weatherIncident = null,
   climber,
@@ -127,7 +123,6 @@ export function GameHUD({
   betaPinsCount,
   nextBetaHoldHint,
   canShakeOut,
-  statusBanner,
   onPlacePiton,
   onApplyChalk,
   onToggleRouteRead,
@@ -135,7 +130,6 @@ export function GameHUD({
   onUndoBetaPin,
   onAutoSuggestBetaPins,
   onJumpReadCamera,
-  onInspectBin,
   onShakeOutHand,
   onToggleMute,
   onRestart,
@@ -148,6 +142,7 @@ export function GameHUD({
   roadbookEstimate = null,
   roadbookFlowActive = false,
   onSpringHold = false,
+  climberName = '孤影',
 }: GameHUDProps) {
   const staminaPct = Math.round((climber.stamina / climber.maxStamina) * 100);
   const rateRounded = Math.round(staminaRatePerSec * 10) / 10;
@@ -159,6 +154,10 @@ export function GameHUD({
   const recoveredTotal = Math.round(stats.staminaRecovered);
   const healthPct = Math.round(climber.health);
   const chalkPct = Math.round(climber.chalk);
+  const progressPct = Math.max(
+    0,
+    Math.min(100, Math.round((stats.altitudeM / Math.max(1, route.heightM)) * 100))
+  );
   const flowCombo = climber.flowCombo ?? 0;
   const hasSwingBoost = (climber.swingBoostTimer ?? 0) > 0.25;
 
@@ -210,36 +209,42 @@ export function GameHUD({
   }
 
   return (
-    <div className="pointer-events-none fixed inset-0 z-10 flex flex-col justify-between p-2 sm:p-4">
-      {/* Top Safe Zone: Header Row + Single-Line Arbitrated Status Strip (Center Viewport 100% Unobstructed) */}
+    <div className="pointer-events-none fixed inset-0 z-10 flex flex-col justify-between p-2 pt-[max(0.5rem,env(safe-area-inset-top))] sm:p-4">
+      {/* Top Safe Zone: Route Difficulty Header + Compact Stamina/Health/Chalk Bar + Status Strip */}
       <div className="flex flex-col gap-1.5">
-        <div className="flex items-start justify-between gap-2">
-        {/* Top-Left: Route + Altitude + Top Roadbook Toggle + Slim Slope Chart */}
-        <div className="flex flex-col items-start gap-1">
-          <div className="pointer-events-auto flex items-center gap-2 border border-white/15 bg-[#141820]/82 px-2 py-1 backdrop-blur-sm sm:px-2.5 sm:py-1.5">
-            <button
-              type="button"
-              onClick={onBackToMenu}
-              title="返回选线"
-              className="flex min-h-[38px] min-w-[38px] items-center justify-center border border-white/15 bg-white/5 text-slate-200 hover:bg-white/15"
-            >
-              <ChevronLeft className="h-4 w-4" />
-            </button>
+        {/* Row 1: Back | Route & Difficulty (Center) | Audio & Restart */}
+        <div className="grid grid-cols-[auto_1fr_auto] items-center gap-2">
+          <button
+            type="button"
+            onClick={onBackToMenu}
+            title="返回选线"
+            className="pointer-events-auto flex min-h-[38px] min-w-[38px] items-center justify-center border border-white/15 bg-[#141820]/82 text-slate-200 backdrop-blur-sm hover:bg-white/15"
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </button>
 
-            <div className="leading-tight">
-              <div className="flex items-baseline gap-1.5 whitespace-nowrap">
-                <span className="text-xs font-bold text-[#F59E0B]">
+          {/* Top-Center: Route Tier + Difficulty Grade + Weather */}
+          <div className="flex justify-center">
+            <div className="inline-flex flex-col items-center border border-white/15 bg-[#141820]/82 px-3 py-1 backdrop-blur-sm sm:px-4">
+              <div className="flex items-baseline gap-1.5 whitespace-nowrap leading-tight">
+                <span className="text-xs font-bold text-[#F59E0B] sm:text-sm">
                   {route.isDailyChallenge ? '今日神山' : route.tierLabel}
                 </span>
-                <span className="font-display text-sm font-bold text-amber-200/90 font-mono-tabular sm:text-base">
-                  {route.grade}
+                <span aria-hidden="true" className="text-[10px] text-slate-500">
+                  ·
                 </span>
                 <span className="font-display text-sm font-bold text-[#F4F1EA] font-mono-tabular sm:text-base">
-                  {stats.altitudeM.toFixed(1)}/{route.heightM}m
+                  {route.grade}
                 </span>
               </div>
-              <div className="flex items-center gap-1 text-[10px] text-slate-300">
-                <WeatherIcon className="h-3 w-3 text-sky-300" />
+              <div className="mt-0.5 flex items-center gap-1 text-[10px] leading-none text-slate-300 whitespace-nowrap">
+                <span className="max-w-[84px] truncate font-semibold text-amber-200/95">
+                  {climberName}
+                </span>
+                <span aria-hidden="true" className="text-slate-500">
+                  ·
+                </span>
+                <WeatherIcon className="h-3 w-3 shrink-0 text-sky-300" />
                 <span>{weather.label}</span>
                 {isFreeSolo && (
                   <span className="font-semibold text-red-300">
@@ -255,124 +260,14 @@ export function GameHUD({
                 )}
               </div>
             </div>
-
-            {supportsRouteBook && (
-              <button
-                type="button"
-                onClick={onToggleRouteRead}
-                title="路书读线 (空格)"
-                className={`ml-0.5 flex min-h-[36px] items-center gap-1 border px-2 text-[11px] font-semibold whitespace-nowrap transition-colors ${
-                  isReadingRoute
-                    ? 'border-sky-400 bg-sky-500 text-slate-950 font-bold'
-                    : 'border-white/20 bg-white/10 text-slate-100 hover:bg-white/20'
-                }`}
-              >
-                <Compass className="h-3.5 w-3.5" />
-                <span>
-                  {isReadingRoute
-                    ? isPreClimbReading
-                      ? '开攀'
-                      : '继续'
-                    : betaPinsCount > 0
-                      ? `路书(${betaPinsCount})`
-                      : '路书'}
-                </span>
-              </button>
-            )}
           </div>
 
-          <AltitudeDifficultyChart
-            profile={difficultyProfile}
-            altitudeM={stats.altitudeM}
-            routeHeightM={route.heightM}
-            isReadingRoute={supportsRouteBook && isReadingRoute}
-            onInspectBin={supportsRouteBook ? onInspectBin : undefined}
-          />
-        </div>
-
-        {/* Top-Right: Compact Survival Bars + Quick Actions */}
-        <div className="pointer-events-auto flex items-center gap-1.5 border border-white/15 bg-[#141820]/82 px-2 py-1 backdrop-blur-sm sm:gap-2.5 sm:px-2.5 sm:py-1.5">
-          <div className="w-[108px] space-y-1 sm:w-[148px]">
-            <div>
-              <div className="flex items-center justify-between gap-1 text-[10px] leading-none">
-                <span className="truncate text-slate-200">耐力·{staminaStatus}</span>
-                <span className="flex items-center gap-1 font-mono-tabular whitespace-nowrap">
-                  <span
-                    className={
-                      rateRounded > 0.05
-                        ? 'text-emerald-300'
-                        : rateRounded <= -2.2
-                          ? 'text-red-300'
-                          : rateRounded < -0.05
-                            ? 'text-amber-300'
-                            : 'text-slate-400'
-                    }
-                  >
-                    {rateText}
-                  </span>
-                  <span className="text-slate-300">{staminaPct}%</span>
-                </span>
-              </div>
-              <div className="mt-1 h-1.5 w-full bg-slate-800">
-                <div
-                  className={`h-full transition-[width] duration-150 ${
-                    staminaPct <= 25
-                      ? 'bg-red-500'
-                      : staminaPct <= 55
-                        ? 'bg-amber-500'
-                        : 'bg-emerald-400'
-                  }`}
-                  style={{ width: `${staminaPct}%` }}
-                />
-              </div>
-              <div className="mt-0.5 flex items-center justify-between text-[9px] leading-none text-slate-400 font-mono-tabular">
-                <span>耗 {spentTotal}</span>
-                <span>回 {recoveredTotal}</span>
-              </div>
-            </div>
-
-            {isFreeSolo ? (
-              <div className="flex items-center justify-between gap-1.5">
-                <div className="flex flex-1 items-center gap-1">
-                  <span className="text-[9px] text-slate-400">体</span>
-                  <div className="h-1 flex-1 bg-slate-800">
-                    <div
-                      className={`h-full ${healthPct <= 35 ? 'bg-red-500' : 'bg-sky-400'}`}
-                      style={{ width: `${healthPct}%` }}
-                    />
-                  </div>
-                </div>
-                <span className="text-[9px] font-semibold text-amber-300 whitespace-nowrap font-mono-tabular">
-                  耗体-50%
-                </span>
-              </div>
-            ) : (
-              <div className="grid grid-cols-2 gap-1.5">
-                <div className="flex items-center gap-1">
-                  <span className="text-[9px] text-slate-400">体</span>
-                  <div className="h-1 flex-1 bg-slate-800">
-                    <div
-                      className={`h-full ${healthPct <= 35 ? 'bg-red-500' : 'bg-sky-400'}`}
-                      style={{ width: `${healthPct}%` }}
-                    />
-                  </div>
-                </div>
-                <div className="flex items-center gap-1">
-                  <span className="text-[9px] text-slate-400">粉</span>
-                  <div className="h-1 flex-1 bg-slate-800">
-                    <div className="h-full bg-slate-100" style={{ width: `${chalkPct}%` }} />
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className="flex items-center gap-1">
+          <div className="pointer-events-auto flex items-center gap-1">
             <button
               type="button"
               onClick={onToggleMute}
               title={muted ? '开启音效' : '静音'}
-              className="flex min-h-[38px] min-w-[38px] items-center justify-center border border-white/15 bg-white/5 text-slate-200 hover:bg-white/15"
+              className="flex min-h-[38px] min-w-[38px] items-center justify-center border border-white/15 bg-[#141820]/82 text-slate-200 backdrop-blur-sm hover:bg-white/15"
             >
               {muted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
             </button>
@@ -380,16 +275,100 @@ export function GameHUD({
               type="button"
               onClick={onRestart}
               title="重攀"
-              className="hidden min-h-[38px] min-w-[38px] items-center justify-center border border-white/15 bg-white/5 text-slate-200 hover:bg-white/15 sm:flex"
+              className="hidden min-h-[38px] min-w-[38px] items-center justify-center border border-white/15 bg-[#141820]/82 text-slate-200 backdrop-blur-sm hover:bg-white/15 sm:flex"
             >
               <RotateCcw className="h-4 w-4" />
             </button>
           </div>
         </div>
+
+        {/* Row 2: Unified Slim Telemetry Strip (Stamina / Health / Chalk) */}
+        <div className="mx-auto flex w-full max-w-md items-center gap-2 border border-white/15 bg-[#141820]/80 px-2.5 py-1.5 backdrop-blur-sm">
+          {/* Stamina */}
+          <div className="min-w-0 flex-[1.9]">
+            <div className="flex items-center justify-between gap-1 text-[10px] leading-none">
+              <span className="truncate font-medium text-slate-200">耐力·{staminaStatus}</span>
+              <span className="flex items-center gap-1 font-mono-tabular whitespace-nowrap">
+                <span
+                  className={
+                    rateRounded > 0.05
+                      ? 'text-emerald-300'
+                      : rateRounded <= -2.2
+                        ? 'text-red-300'
+                        : rateRounded < -0.05
+                          ? 'text-amber-300'
+                          : 'text-slate-400'
+                  }
+                >
+                  {rateText}
+                </span>
+                <span className="font-semibold text-slate-100">{staminaPct}%</span>
+              </span>
+            </div>
+            <div className="mt-1 h-1.5 w-full bg-slate-800">
+              <div
+                className={`h-full transition-[width] duration-150 ${
+                  staminaPct <= 25
+                    ? 'bg-red-500'
+                    : staminaPct <= 55
+                      ? 'bg-amber-500'
+                      : 'bg-emerald-400'
+                }`}
+                style={{ width: `${staminaPct}%` }}
+              />
+            </div>
+            <div className="mt-0.5 hidden items-center justify-between text-[9px] leading-none text-slate-400 font-mono-tabular sm:flex">
+              <span>耗 {spentTotal}</span>
+              <span>回 {recoveredTotal}</span>
+            </div>
+          </div>
+
+          <div aria-hidden="true" className="h-5 w-px shrink-0 bg-white/12" />
+
+          {/* Health */}
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center justify-between gap-1 text-[10px] leading-none">
+              <span className="text-slate-300">体力</span>
+              <span className="font-mono-tabular font-semibold text-slate-100">{healthPct}%</span>
+            </div>
+            <div className="mt-1 h-1.5 w-full bg-slate-800">
+              <div
+                className={`h-full transition-[width] duration-150 ${
+                  healthPct <= 35 ? 'bg-red-500' : 'bg-sky-400'
+                }`}
+                style={{ width: `${healthPct}%` }}
+              />
+            </div>
+          </div>
+
+          <div aria-hidden="true" className="h-5 w-px shrink-0 bg-white/12" />
+
+          {/* Chalk (or Free Solo Stamina Bonus) */}
+          {isFreeSolo ? (
+            <div className="min-w-0 flex-1 text-center">
+              <div className="text-[10px] leading-none text-slate-400">徒手加成</div>
+              <div className="mt-1 text-[10px] font-bold leading-none text-amber-300 whitespace-nowrap font-mono-tabular">
+                耗体 -50%
+              </div>
+            </div>
+          ) : (
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center justify-between gap-1 text-[10px] leading-none">
+                <span className="text-slate-300">镁粉</span>
+                <span className="font-mono-tabular font-semibold text-slate-100">{chalkPct}%</span>
+              </div>
+              <div className="mt-1 h-1.5 w-full bg-slate-800">
+                <div
+                  className="h-full bg-slate-100 transition-[width] duration-150"
+                  style={{ width: `${chalkPct}%` }}
+                />
+              </div>
+            </div>
+          )}
         </div>
 
-        {/* Single-Line Top Safe-Zone Status Strip (Priority Arbitrated — Never Overlaps Climber) */}
-        <div className="flex min-h-[22px] justify-center">
+        {/* Row 3: Single-Line Top Safe-Zone Status Strip (Priority Arbitrated — Never Overlaps Climber) */}
+        <div className="flex min-h-[20px] justify-center">
           {weatherIncident && !isReadingRoute ? (
             <div
               className={`max-w-[92vw] border px-2.5 py-1 shadow-md backdrop-blur-sm ${
@@ -432,10 +411,6 @@ export function GameHUD({
             <div className="max-w-[92vw] truncate border border-red-400/55 bg-[#141820]/88 px-2.5 py-0.5 text-[11px] font-medium text-red-300">
               {activeDragReason}
             </div>
-          ) : statusBanner ? (
-            <div className="max-w-[92vw] truncate border border-amber-400/45 bg-[#141820]/86 px-2.5 py-0.5 text-[11px] font-medium text-amber-200">
-              {statusBanner}
-            </div>
           ) : inlineCues.length > 0 ? (
             <div className="inline-flex max-w-[92vw] items-center gap-1.5 bg-[#141820]/74 px-2.5 py-0.5 text-[11px] font-semibold tracking-wide whitespace-nowrap font-mono-tabular">
               {inlineCues.map((cue, idx) => (
@@ -453,7 +428,7 @@ export function GameHUD({
         </div>
       </div>
 
-      {/* Bottom Area: Essential Interactive Controls + ONLY Piton & Chalk Equipment Bar */}
+      {/* Bottom Area: Context Slot + Bottom-Left Frameless Progress % & Bottom-Right Roadbook/Equipment Bar */}
       <div className="flex flex-col gap-1.5 pb-[env(safe-area-inset-bottom)]">
         {/* Bottom Context Slot (Roadbook / Tutorial / Shake-Out / Quiet Hover) */}
         <div className="flex justify-center">
@@ -475,7 +450,7 @@ export function GameHUD({
               </div>
 
               <div className="text-[10px] text-slate-300">
-                点岩点按序连线（再点末点撤销）；拖拽或滚轮上下览壁，点左上坡度柱跳转难段
+                点岩点按序连线（再点末点撤销）；拖拽或滚轮上下览壁
               </div>
 
               {roadbookEstimate && (
@@ -498,7 +473,7 @@ export function GameHUD({
                           </span>
                         </span>
                         <span className="text-slate-300">
-                          爬升 {roadbookEstimate.totalAscentM}m · 约{roadbookEstimate.estimatedTimeSec}s
+                          约{roadbookEstimate.estimatedTimeSec}s
                         </span>
                       </div>
                       <div
@@ -583,7 +558,7 @@ export function GameHUD({
             </div>
           ) : tutorial.active ? (
             <div className="max-w-[92vw] truncate border border-amber-400/60 bg-[#141820]/90 px-3 py-1 text-center text-xs font-medium text-amber-200">
-              {getTutorialText(tutorial, route.heightM, isFreeSolo)}
+              {getTutorialText(tutorial, isFreeSolo)}
             </div>
           ) : tacticalHint && !climber.isFalling && !isDraggingLimb ? (
             <div className="pointer-events-auto flex max-w-[92vw] items-center gap-2 border border-sky-400/55 bg-[#141820]/92 px-3 py-1 text-[11px] font-medium text-sky-200 shadow-sm">
@@ -636,23 +611,61 @@ export function GameHUD({
           ) : null}
         </div>
 
-        {/* Bottom Equipment Bar: ONLY Piton & Chalk (or compact Free Solo strip) */}
-        <div className="flex items-end justify-end">
-          <div className="pointer-events-auto border border-white/15 bg-[#141820]/84 p-1.5 backdrop-blur-sm">
+        {/* Bottom Row: Frameless Percentage Progress (Bottom-Left) + Roadbook & Gear Controls (Bottom-Right) */}
+        <div className="flex items-end justify-between gap-2">
+          {/* Bottom-Left: Frameless Climber Name & Pure Percentage Progress */}
+          <div
+            aria-label={`${climberName} 攀登进度 ${progressPct}%`}
+            className="select-none pl-1 pb-0.5 leading-none"
+          >
+            <div className="mb-0.5 max-w-[140px] truncate text-[11px] font-semibold tracking-wider text-amber-100/90 drop-shadow-[0_1px_4px_rgba(0,0,0,0.92)]">
+              {climberName}
+            </div>
+            <span className="font-display text-3xl font-extrabold tracking-tight text-[#F4F1EA] font-mono-tabular drop-shadow-[0_2px_6px_rgba(0,0,0,0.92)] sm:text-4xl">
+              {progressPct}%
+            </span>
+          </div>
+
+          {/* Bottom-Right: Roadbook Toggle + Piton & Chalk Controls */}
+          <div className="pointer-events-auto flex items-center gap-1.5 border border-white/15 bg-[#141820]/84 p-1.5 backdrop-blur-sm">
+            {supportsRouteBook && (
+              <button
+                type="button"
+                onClick={onToggleRouteRead}
+                title="路书读线 (空格)"
+                className={`flex min-h-[42px] items-center justify-center gap-1 border px-2.5 text-xs font-semibold whitespace-nowrap transition-colors ${
+                  isReadingRoute
+                    ? 'border-sky-400 bg-sky-500 font-bold text-slate-950'
+                    : 'border-sky-400/45 bg-sky-500/15 text-sky-200 hover:bg-sky-500/30'
+                }`}
+              >
+                <Compass className="h-3.5 w-3.5 shrink-0" />
+                <span>
+                  {isReadingRoute
+                    ? isPreClimbReading
+                      ? '开攀'
+                      : '继续'
+                    : betaPinsCount > 0
+                      ? `路书(${betaPinsCount})`
+                      : '路书'}
+                </span>
+              </button>
+            )}
+
             {isFreeSolo ? (
-              <div className="border border-red-500/45 bg-red-950/40 px-3 py-1.5 text-center leading-tight">
-                <div className="text-[11px] font-bold text-red-200">徒手攀登 · 无岩钉镁粉</div>
-                <div className="mt-0.5 text-[10px] text-amber-200/90">无保护存档 · 登顶 SSS</div>
+              <div className="border border-red-500/45 bg-red-950/40 px-2.5 py-1 text-center leading-tight">
+                <div className="text-[11px] font-bold text-red-200">徒手无保护</div>
+                <div className="mt-0.5 text-[10px] text-amber-200/90">登顶 SSS</div>
               </div>
             ) : (
-              <div className="grid w-[164px] grid-cols-2 gap-1.5 sm:w-[184px]">
+              <div className="grid grid-cols-2 gap-1.5">
                 <button
                   type="button"
                   onClick={onPlacePiton}
                   disabled={climber.pitonsLeft <= 0 || climber.isFalling || isReadingRoute}
-                  className={`flex min-h-[42px] items-center justify-center gap-1 border text-xs font-semibold whitespace-nowrap transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                  className={`flex min-h-[42px] min-w-[74px] items-center justify-center gap-1 border px-2 text-xs font-semibold whitespace-nowrap transition-colors disabled:cursor-not-allowed disabled:opacity-40 sm:min-w-[84px] ${
                     tutorial.active && tutorial.variant === 'basic' && tutorial.step === 2
-                      ? 'border-amber-400 bg-orange-600 text-white animate-pulse'
+                      ? 'animate-pulse border-amber-400 bg-orange-600 text-white'
                       : 'border-orange-500/45 bg-orange-600/25 text-orange-200 hover:bg-orange-600/40'
                   }`}
                 >
@@ -664,9 +677,9 @@ export function GameHUD({
                   type="button"
                   onClick={onApplyChalk}
                   disabled={climber.chalkUses <= 0 || climber.isFalling || isReadingRoute}
-                  className={`flex min-h-[42px] items-center justify-center gap-1 border text-xs font-semibold whitespace-nowrap transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                  className={`flex min-h-[42px] min-w-[74px] items-center justify-center gap-1 border px-2 text-xs font-semibold whitespace-nowrap transition-colors disabled:cursor-not-allowed disabled:opacity-40 sm:min-w-[84px] ${
                     tutorial.active && tutorial.variant === 'basic' && tutorial.step === 3
-                      ? 'border-amber-400 bg-slate-100 text-slate-950 animate-pulse'
+                      ? 'animate-pulse border-amber-400 bg-slate-100 text-slate-950'
                       : 'border-white/20 bg-white/10 text-slate-100 hover:bg-white/20'
                   }`}
                 >

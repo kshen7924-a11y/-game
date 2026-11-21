@@ -14,6 +14,7 @@ import { MountainWorld } from './mountain';
 import {
   ActiveWeather,
   CameraState,
+  ClimberGender,
   ClimberSkinConfig,
   ClimberState,
   ClimbEvent,
@@ -29,6 +30,21 @@ import {
   Vec2,
   WeatherIncidentState,
 } from './types';
+import { AssetRegistry } from '../visual/AssetRegistry';
+import {
+  getDecodedArtPack,
+  VisualAtmosphereGrade,
+} from '../visual/artPackAssets';
+import { drawArtPackHold } from '../visual/holdSprites';
+import {
+  advanceRouteReadFade,
+  computeSummitWideDissolveAlpha,
+  drawArtPackWorldScene,
+  drawRouteReadingBackdrop,
+  drawSummitWideEndingOverlay,
+} from '../visual/scenePresentation';
+import { renderClimberCharacter } from '../visual/characterRenderer';
+import { drawWorldPropSprite, getDecodedWorldPropsPack } from '../visual/worldPropsArt';
 
 const INK = '#141820';
 
@@ -123,49 +139,6 @@ function computeHoldStaminaCostRatio(
   return Math.max(0.05, Math.min(1, cost));
 }
 
-function drawCapsuleLimb(
-  ctx: CanvasRenderingContext2D,
-  a: Vec2,
-  b: Vec2,
-  width: number,
-  fill: string,
-  shadowFill: string,
-  inkWidth: number
-) {
-  const dx = b.x - a.x;
-  const dy = b.y - a.y;
-  const len = Math.hypot(dx, dy) || 1;
-  const nx = (-dy / len) * (width * 0.5);
-  const ny = (dx / len) * (width * 0.5);
-
-  ctx.save();
-  ctx.lineJoin = 'round';
-  ctx.lineCap = 'round';
-
-  ctx.strokeStyle = INK;
-  ctx.lineWidth = width + inkWidth * 2;
-  ctx.beginPath();
-  ctx.moveTo(a.x, a.y);
-  ctx.lineTo(b.x, b.y);
-  ctx.stroke();
-
-  ctx.strokeStyle = fill;
-  ctx.lineWidth = width;
-  ctx.beginPath();
-  ctx.moveTo(a.x, a.y);
-  ctx.lineTo(b.x, b.y);
-  ctx.stroke();
-
-  ctx.strokeStyle = shadowFill;
-  ctx.lineWidth = width * 0.36;
-  ctx.beginPath();
-  ctx.moveTo(a.x + nx * 0.45, a.y + ny * 0.45);
-  ctx.lineTo(b.x + nx * 0.45, b.y + ny * 0.45);
-  ctx.stroke();
-
-  ctx.restore();
-}
-
 export interface RenderParams {
   ctx: CanvasRenderingContext2D;
   width: number;
@@ -196,6 +169,7 @@ export interface RenderParams {
   highlightPelvis?: boolean;
   isFreeSolo?: boolean;
   weatherIncident?: WeatherIncidentState | null;
+  gender?: ClimberGender;
 }
 
 export function renderGameFrame(params: RenderParams) {
@@ -229,13 +203,33 @@ export function renderGameFrame(params: RenderParams) {
     highlightPelvis = false,
     isFreeSolo = false,
     weatherIncident = null,
+    gender = 'male',
   } = params;
 
   const mountainHeight = world.mountainHeight;
   const altRatio = Math.max(0, Math.min(1, -climber.torsoPos.y / mountainHeight));
   const inkScale = Math.max(1.05, Math.min(2.4, 1.75 / Math.sqrt(camera.zoom)));
 
-  // 1. Painterly Graphic-Novel Sky Gradient (Dynamic altitude & time-of-day shift)
+  // Visual presentation art pack, Cairn world-props pack & smooth transition factors
+  const artPack = getDecodedArtPack(AssetRegistry.resolveBiomePackId(world.route.palette));
+  const worldPropsPack = getDecodedWorldPropsPack();
+  const atmosphereGrade = artPack.urls.atmosphereGrade;
+  const routeReadFade = advanceRouteReadFade(isReadingRoute && phase === 'PLAYING', timeSec);
+  const sceneAlpha = Math.max(0, 1 - routeReadFade);
+  const wideDissolveAlpha = computeSummitWideDissolveAlpha(
+    phase,
+    summitProgress,
+    trailPlaybackProgress
+  );
+  const hasArtPackScene = Boolean(
+    artPack.seamlessWallTile || artPack.wallImg || artPack.startImg || artPack.summitNearImg
+  );
+
+  // 1. Sky & Distant Ranges (skipped when full-bleed art-pack plates are loaded, keeping mobile GPU lean)
+  if (hasArtPackScene) {
+    ctx.fillStyle = artPack.urls.metrics.fallbackWallColor;
+    ctx.fillRect(0, 0, width, height);
+  } else {
   const skyGrad = ctx.createLinearGradient(0, 0, 0, height);
   if (phase === 'SUMMIT') {
     skyGrad.addColorStop(0, '#132742');
@@ -508,6 +502,10 @@ export function renderGameFrame(params: RenderParams) {
       ctx.restore();
     }
   }
+  } // End procedural sky/distant-range fallback
+
+  // Route-Reading pure-holds backdrop (fades out wall, scenery & climber so original-position holds stay crystal clear)
+  drawRouteReadingBackdrop(ctx, width, height, camera, routeReadFade);
 
   // 4. World-Space Camera Transform
   const shakeX = camera.shake > 0 ? (Math.random() - 0.5) * camera.shake : 0;
@@ -518,6 +516,38 @@ export function renderGameFrame(params: RenderParams) {
   ctx.scale(camera.zoom, camera.zoom);
   ctx.translate(-camera.x, -camera.y);
 
+  const viewHalfH = (height / camera.zoom) * 0.72;
+  const minVisY = camera.y - viewHalfH;
+  const maxVisY = camera.y + viewHalfH;
+
+  // 4A-4C. Full-Bleed Art-Pack Scene Plates (01-Start -> 02-Seamless Wall -> 03-Summit Near) or Procedural Fallback
+  const renderedArtScene = hasArtPackScene
+    ? drawArtPackWorldScene(ctx, width, height, camera, world, artPack, sceneAlpha)
+    : false;
+
+  // 4C-2. Optional Cairn-style cel-shaded cliff flora scattered sparsely in rock crevices (when cliffFlora PNG is provided)
+  if (worldPropsPack.imgs.cliffFlora && sceneAlpha > 0.05) {
+    ctx.save();
+    ctx.globalAlpha = sceneAlpha * 0.92;
+    const floraStep = 210;
+    const startIdx = Math.max(1, Math.floor((-maxVisY) / floraStep));
+    const endIdx = Math.min(Math.floor(mountainHeight / floraStep), Math.ceil((-minVisY) / floraStep));
+    for (let idx = startIdx; idx <= endIdx; idx++) {
+      const hash = ((idx * 2654435761) ^ world.route.seed) >>> 0;
+      if (hash % 3 !== 0) continue;
+      const side = (hash >>> 3) % 2 === 0 ? -1 : 1;
+      const fx = side * (115 + ((hash >>> 6) % 95));
+      const fy = -idx * floraStep + (((hash >>> 12) % 70) - 35);
+      const fScale = 0.78 + ((hash >>> 18) % 42) * 0.01;
+      const fRot = side * (0.08 + ((hash >>> 22) % 10) * 0.02);
+      drawWorldPropSprite(ctx, worldPropsPack, 'cliffFlora', fx, fy, fRot, fScale);
+    }
+    ctx.restore();
+  }
+
+  if (!renderedArtScene && sceneAlpha > 0.01) {
+  ctx.save();
+  ctx.globalAlpha = sceneAlpha;
   // 4A. Mountain Extruded 2.5D Shadow Flank
   const flankDepthX = 52;
   const flankDepthY = 44;
@@ -570,10 +600,6 @@ export function renderGameFrame(params: RenderParams) {
   ctx.clip();
 
   // 4C. Render Visible 2.5D Rock Facets
-  const viewHalfH = (height / camera.zoom) * 0.72;
-  const minVisY = camera.y - viewHalfH;
-  const maxVisY = camera.y + viewHalfH;
-
   for (const f of world.facets) {
     const fy = f.points[0].y;
     if (fy < minVisY - 260 || fy > maxVisY + 260) continue;
@@ -725,14 +751,19 @@ export function renderGameFrame(params: RenderParams) {
   ctx.lineWidth = 3.2 * inkScale;
   ctx.stroke();
   ctx.restore();
+  ctx.restore(); // End procedural cliff sceneAlpha wrapper
+  }
 
-  // 4D. Rest / Bivouac Ledges & Summit Crown
+  // 4D. Rest / Bivouac Ledges (skip boxy procedural base-camp & summit when art-pack plates render them)
+  if (sceneAlpha > 0.02) {
   for (const ledge of world.ledges) {
+    if (renderedArtScene && (ledge.id === 'base-camp' || ledge.isSummit)) continue;
     if (ledge.y < minVisY - 220 || ledge.y > maxVisY + 220) continue;
     const lx = ledge.x - ledge.width * 0.5;
     const ly = ledge.y;
 
     ctx.save();
+    ctx.globalAlpha = sceneAlpha;
     ctx.fillStyle = '#47505E';
     ctx.strokeStyle = INK;
     ctx.lineWidth = 2.2 * inkScale;
@@ -786,55 +817,70 @@ export function renderGameFrame(params: RenderParams) {
         ctx.fill();
       }
 
-      world.cairnStones.forEach((st, idx) => {
-        const w = 26 - idx * 4.5;
-        const h = 11 - idx * 1.2;
-        ctx.fillStyle = idx % 2 === 0 ? '#C7BFB0' : '#969EA9';
-        ctx.strokeStyle = INK;
-        ctx.lineWidth = 2 * inkScale;
-        ctx.beginPath();
-        ctx.ellipse(st.x, st.y, w * 0.5, h * 0.5, 0, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-      });
+      if (!drawWorldPropSprite(ctx, worldPropsPack, 'summitCairn', ledge.x, ly - 6)) {
+        world.cairnStones.forEach((st, idx) => {
+          const w = 26 - idx * 4.5;
+          const h = 11 - idx * 1.2;
+          ctx.fillStyle = idx % 2 === 0 ? '#C7BFB0' : '#969EA9';
+          ctx.strokeStyle = INK;
+          ctx.lineWidth = 2 * inkScale;
+          ctx.beginPath();
+          ctx.ellipse(st.x, st.y, w * 0.5, h * 0.5, 0, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+        });
+      }
 
       const poleX = ledge.x - 54;
       const poleY = ly - 8;
-      ctx.strokeStyle = INK;
-      ctx.lineWidth = 3 * inkScale;
-      ctx.beginPath();
-      ctx.moveTo(poleX, poleY);
-      ctx.lineTo(poleX, poleY - 58);
-      ctx.stroke();
+      if (!drawWorldPropSprite(ctx, worldPropsPack, 'summitFlag', poleX, poleY)) {
+        ctx.strokeStyle = INK;
+        ctx.lineWidth = 3 * inkScale;
+        ctx.beginPath();
+        ctx.moveTo(poleX, poleY);
+        ctx.lineTo(poleX, poleY - 58);
+        ctx.stroke();
 
-      const wave = Math.sin(timeSec * 5.2) * 8 + windForce * 14;
-      ctx.fillStyle = '#EA580C';
-      ctx.lineWidth = 2 * inkScale;
-      ctx.beginPath();
-      ctx.moveTo(poleX, poleY - 56);
-      ctx.quadraticCurveTo(poleX + 24, poleY - 50 + wave * 0.5, poleX + 46, poleY - 46 + wave);
-      ctx.lineTo(poleX, poleY - 38);
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
+        const wave = Math.sin(timeSec * 5.2) * 8 + windForce * 14;
+        ctx.fillStyle = '#EA580C';
+        ctx.lineWidth = 2 * inkScale;
+        ctx.beginPath();
+        ctx.moveTo(poleX, poleY - 56);
+        ctx.quadraticCurveTo(poleX + 24, poleY - 50 + wave * 0.5, poleX + 46, poleY - 46 + wave);
+        ctx.lineTo(poleX, poleY - 38);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+      }
     } else if (ledge.isBivouac && ledge.id !== 'base-camp') {
+      // Optional Cairn-style bivouac tent / camp pack sprite on mid-wall bivouac ledges
+      drawWorldPropSprite(
+        ctx,
+        worldPropsPack,
+        'bivouacCamp',
+        ledge.x - ledge.width * 0.14,
+        ly - 6
+      );
+
       const flagX = ledge.x + ledge.width * 0.36;
       const flagY = ly - 8;
-      ctx.strokeStyle = INK;
-      ctx.lineWidth = 2 * inkScale;
-      ctx.beginPath();
-      ctx.moveTo(flagX, flagY);
-      ctx.lineTo(flagX, flagY - 30);
-      ctx.stroke();
+      if (!drawWorldPropSprite(ctx, worldPropsPack, 'bivouacFlag', flagX, flagY)) {
+        ctx.strokeStyle = INK;
+        ctx.lineWidth = 2 * inkScale;
+        ctx.beginPath();
+        ctx.moveTo(flagX, flagY);
+        ctx.lineTo(flagX, flagY - 30);
+        ctx.stroke();
 
-      ctx.fillStyle = ledge.visited ? '#10B981' : '#F59E0B';
-      ctx.beginPath();
-      ctx.moveTo(flagX, flagY - 30);
-      ctx.lineTo(flagX + 18, flagY - 24 + Math.sin(timeSec * 4) * 3);
-      ctx.lineTo(flagX, flagY - 18);
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
+        ctx.fillStyle = ledge.visited ? '#10B981' : '#F59E0B';
+        ctx.beginPath();
+        ctx.moveTo(flagX, flagY - 30);
+        ctx.lineTo(flagX + 18, flagY - 24 + Math.sin(timeSec * 4) * 3);
+        ctx.lineTo(flagX, flagY - 18);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+      }
     }
 
     if (camera.zoom > 0.32) {
@@ -844,6 +890,7 @@ export function renderGameFrame(params: RenderParams) {
       ctx.fillText(ledge.label, ledge.x, ly + 40);
     }
     ctx.restore();
+  }
   }
 
   // 4E. Climbable Holds + Reachable Touch Affordances
@@ -1018,10 +1065,33 @@ export function renderGameFrame(params: RenderParams) {
         ctx.fill();
       }
 
-      ctx.rotate(h.angle + jitterAngle);
-
       const r = h.radius;
       const v = h.shapeVariant;
+      const hoverHighlightColor = isHovered
+        ? hover?.reachable
+          ? '#F59E0B'
+          : hover?.dynoEligible
+            ? '#38BDF8'
+            : '#EF4444'
+        : null;
+
+      // Render transparent art-pack PNG hold strictly rotated & scaled around contact anchor (0, 0)
+      const drewArtHold = drawArtPackHold({
+        ctx,
+        pack: artPack,
+        hold: h,
+        climber,
+        timeSec,
+        jitterAngle,
+        isHovered,
+        isSteppedOn,
+        hoverHighlightColor,
+      });
+
+      if (!drewArtHold) {
+      ctx.save();
+      ctx.rotate(h.angle + jitterAngle);
+
       let baseMain = '#E6DDD0';
       let baseEdge = '#8E8477';
       if (h.type === 'crimp') {
@@ -1059,13 +1129,7 @@ export function renderGameFrame(params: RenderParams) {
       const mainColor = shadeHexColor(baseMain, shadeShift);
       const edgeColor = shadeHexColor(baseEdge, shadeShift * 0.85);
 
-      const strokeClr = isHovered
-        ? hover?.reachable
-          ? '#F59E0B'
-          : hover?.dynoEligible
-            ? '#38BDF8'
-            : '#EF4444'
-        : INK;
+      const strokeClr = hoverHighlightColor ?? INK;
       const strokeW = isHovered ? 3 : 1.9;
 
       if (h.type === 'spring') {
@@ -1430,6 +1494,8 @@ export function renderGameFrame(params: RenderParams) {
         ctx.lineWidth = strokeW;
         ctx.stroke();
       }
+      ctx.restore();
+      }
 
       if (h.type === 'fragile') {
         ctx.strokeStyle = h.crackProgress > 0.25 ? '#DC2626' : INK;
@@ -1776,7 +1842,7 @@ export function renderGameFrame(params: RenderParams) {
     ctx.restore();
   }
 
-  // 4G. Climbing Rope (skip rusty unclipped wall pitons, only thread player-placed pitons)
+  // 4G. Climbing Rope (skip rusty unclipped wall pitons, faded out during pure-holds route reading)
   const ropePitons = pitons.filter((p) => !p.isRusty);
   const ropeAnchors: Vec2[] = [
     { x: 0, y: 0 },
@@ -1784,8 +1850,9 @@ export function renderGameFrame(params: RenderParams) {
     { x: climber.torsoPos.x, y: climber.torsoPos.y + 16 },
   ];
 
-  if (!isFreeSolo && ropeAnchors.length >= 2) {
+  if (!isFreeSolo && ropeAnchors.length >= 2 && sceneAlpha > 0.02) {
     ctx.save();
+    ctx.globalAlpha = sceneAlpha;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
 
@@ -1802,41 +1869,69 @@ export function renderGameFrame(params: RenderParams) {
       }
     };
 
+    const ropeWScale = camera.zoom < 0.35 ? inkScale * 0.85 : 1;
+
+    // Cairn-style crisp wall-projected cel cast shadow under climbing rope
+    ctx.save();
+    ctx.translate(
+      (atmosphereGrade?.castShadowOffsetX ?? 9) * 0.72,
+      (atmosphereGrade?.castShadowOffsetY ?? 12) * 0.78
+    );
+    ctx.strokeStyle = atmosphereGrade?.castShadowColor ?? 'rgba(28, 56, 70, 0.34)';
+    ctx.lineWidth = 4.6 * ropeWScale;
+    drawRopePath();
+    ctx.stroke();
+    ctx.restore();
+
+    // Crisp ligne-claire dark ink outline + vibrant rope core + braided weave pattern
     ctx.strokeStyle = INK;
-    ctx.lineWidth = 5.5 * (camera.zoom < 0.35 ? inkScale * 0.85 : 1);
+    ctx.lineWidth = 5.5 * ropeWScale;
     drawRopePath();
     ctx.stroke();
 
     ctx.strokeStyle = skin.rope;
-    ctx.lineWidth = 3 * (camera.zoom < 0.35 ? inkScale * 0.85 : 1);
+    ctx.lineWidth = 3.1 * ropeWScale;
     drawRopePath();
     ctx.stroke();
+
+    ctx.strokeStyle = 'rgba(20, 24, 32, 0.42)';
+    ctx.lineWidth = 2.4 * ropeWScale;
+    ctx.setLineDash([2.5, 5.5]);
+    drawRopePath();
+    ctx.stroke();
+    ctx.setLineDash([]);
     ctx.restore();
   }
 
-  // 4H. Placed Pitons & Pre-placed Rusty Wall Pitons
+  // 4H. Placed Pitons & Pre-placed Rusty Wall Pitons (faded during route-reading except tactical rusty cues)
   for (const p of pitons) {
     if (p.integrity <= 0) continue;
+    if (sceneAlpha <= 0.02 && !(isReadingRoute && p.isRusty)) continue;
     ctx.save();
+    if (!(isReadingRoute && p.isRusty)) {
+      ctx.globalAlpha = sceneAlpha;
+    }
     ctx.translate(p.x, p.y);
     const s = camera.zoom < 0.35 ? inkScale * 0.9 : 1;
     ctx.scale(s, s);
 
     if (p.isRusty) {
-      ctx.rotate(p.angle);
-      ctx.fillStyle = '#92400E';
-      ctx.strokeStyle = INK;
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.roundRect(-5, -3, 10, 6, 2);
-      ctx.fill();
-      ctx.stroke();
+      if (!drawWorldPropSprite(ctx, worldPropsPack, 'pitonRusty', 0, 0, p.angle)) {
+        ctx.rotate(p.angle);
+        ctx.fillStyle = '#92400E';
+        ctx.strokeStyle = INK;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.roundRect(-5, -3, 10, 6, 2);
+        ctx.fill();
+        ctx.stroke();
 
-      ctx.strokeStyle = '#B45309';
-      ctx.lineWidth = 2.4;
-      ctx.beginPath();
-      ctx.arc(0, 5, 4.5, 0, Math.PI * 2);
-      ctx.stroke();
+        ctx.strokeStyle = '#B45309';
+        ctx.lineWidth = 2.4;
+        ctx.beginPath();
+        ctx.arc(0, 5, 4.5, 0, Math.PI * 2);
+        ctx.stroke();
+      }
 
       if (isReadingRoute) {
         ctx.strokeStyle = p.reliable ? '#34D399' : '#F59E0B';
@@ -1852,19 +1947,21 @@ export function renderGameFrame(params: RenderParams) {
         ctx.fillText(p.reliable ? '旧钉·可用' : '旧钉·锈蚀', 0, -10);
       }
     } else {
-      ctx.fillStyle = '#CBD5E1';
-      ctx.strokeStyle = INK;
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.roundRect(-5, -3, 10, 6, 2);
-      ctx.fill();
-      ctx.stroke();
+      if (!drawWorldPropSprite(ctx, worldPropsPack, 'pitonFresh', 0, 0, 0)) {
+        ctx.fillStyle = '#CBD5E1';
+        ctx.strokeStyle = INK;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.roundRect(-5, -3, 10, 6, 2);
+        ctx.fill();
+        ctx.stroke();
 
-      ctx.strokeStyle = '#EF4444';
-      ctx.lineWidth = 2.5;
-      ctx.beginPath();
-      ctx.arc(0, 5, 4.5, 0, Math.PI * 2);
-      ctx.stroke();
+        ctx.strokeStyle = '#EF4444';
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.arc(0, 5, 4.5, 0, Math.PI * 2);
+        ctx.stroke();
+      }
 
       if (
         nearbyRecyclablePitonId === p.id &&
@@ -2180,29 +2277,53 @@ export function renderGameFrame(params: RenderParams) {
     ctx.restore();
   }
 
-  // 4J. Climber (Aava)
-  drawClimber(
-    ctx,
-    climber,
-    lockedLimb,
-    hover,
-    phase,
-    timeSec,
-    windForce,
-    inkScale,
-    skin,
-    dynoCharge?.progress ?? 0,
-    world.route.palette,
-    weather.type,
-    world.holds,
-    activePelvisDrag,
-    isReadingRoute,
-    highlightPelvis
-  );
+  // 4H-2. Optional Cairn Climbot companion tethered near the highest active player piton
+  if (!isFreeSolo && worldPropsPack.imgs.climbot && ropePitons.length > 0 && sceneAlpha > 0.05) {
+    const latestPiton = ropePitons[ropePitons.length - 1];
+    ctx.save();
+    ctx.globalAlpha = sceneAlpha;
+    drawWorldPropSprite(
+      ctx,
+      worldPropsPack,
+      'climbot',
+      latestPiton.x + 14,
+      latestPiton.y + 12 + Math.sin(timeSec * 2.2) * 1.4,
+      Math.sin(timeSec * 1.6) * 0.04
+    );
+    ctx.restore();
+  }
 
-  // 4K. World-Space Particles & Comic Rings
+  // 4J. Climber (Aava) — fades cleanly out during pure-holds route reading
+  if (sceneAlpha > 0.02) {
+    ctx.save();
+    ctx.globalAlpha = sceneAlpha;
+    drawClimber(
+      ctx,
+      climber,
+      lockedLimb,
+      hover,
+      phase,
+      timeSec,
+      windForce,
+      inkScale,
+      skin,
+      dynoCharge?.progress ?? 0,
+      world.route.palette,
+      weather.type,
+      world.holds,
+      activePelvisDrag,
+      isReadingRoute,
+      highlightPelvis,
+      atmosphereGrade,
+      gender
+    );
+    ctx.restore();
+  }
+
+  // 4K. World-Space Particles & Comic Rings (faded out during pure-holds route reading)
+  if (sceneAlpha > 0.02) {
   for (const pt of particles) {
-    const alpha = Math.max(0, pt.life / pt.maxLife);
+    const alpha = Math.max(0, pt.life / pt.maxLife) * sceneAlpha;
     ctx.save();
     ctx.globalAlpha = alpha;
     if (pt.kind === 'ring') {
@@ -2232,14 +2353,15 @@ export function renderGameFrame(params: RenderParams) {
     }
     ctx.restore();
   }
+  }
 
-  // 4L. Volumetric Top-Down Summit Spotlight Beam & Golden Light Motes
-  if (phase === 'SUMMIT') {
+  // 4L. Volumetric Top-Down Summit Spotlight Beam & Golden Light Motes (fades cleanly as wide ending dissolves in)
+  if (phase === 'SUMMIT' && wideDissolveAlpha < 0.96) {
     const summitLedge = world.ledges.find((l) => l.isSummit);
     if (summitLedge) {
       const peakX = summitLedge.x;
       const peakY = summitLedge.y - 15;
-      const beamFade = Math.min(1, summitProgress * 6.5);
+      const beamFade = Math.min(1, summitProgress * 6.5) * Math.max(0, 1 - wideDissolveAlpha * 1.25);
       const shimmer = 0.92 + 0.08 * Math.sin(timeSec * 2.4);
       const viewTopWorldY = camera.y - (height * 0.58) / Math.max(0.12, camera.zoom);
       const beamTopY = Math.min(peakY - 840, viewTopWorldY - 140);
@@ -2308,9 +2430,11 @@ export function renderGameFrame(params: RenderParams) {
       ? 0.26
       : 0;
   const fogStrength =
-    phase === 'SUMMIT'
+    (phase === 'SUMMIT'
       ? weather.fogOpacity * Math.max(0, 1 - summitProgress * 1.8)
-      : Math.min(0.86, weather.fogOpacity + squallBoost);
+      : Math.min(0.86, weather.fogOpacity + squallBoost)) *
+    sceneAlpha *
+    (1 - wideDissolveAlpha);
 
   if (fogStrength > 0.04) {
     // Soft ambient tint (cool rain slate vs icy blizzard white vs golden-grey valley mist)
@@ -2358,12 +2482,42 @@ export function renderGameFrame(params: RenderParams) {
     ctx.restore();
   }
 
+  // 5A. Weather-Specific Decorative Particle Effects (parallaxed, zero-allocation procedural layer)
+  const weatherFxAlpha = sceneAlpha * (1 - wideDissolveAlpha);
+  if (weatherFxAlpha > 0.04) {
+    const effectiveWeatherType: ActiveWeather['type'] =
+      squallBoost > 0 ? 'snowstorm' : weather.type;
+    const effectiveIntensity = Math.min(
+      1.35,
+      Math.max(0.25, weather.intensity + squallBoost * 1.4)
+    );
+    drawWeatherDecorativeParticles(
+      ctx,
+      width,
+      height,
+      camera,
+      timeSec,
+      windForce,
+      effectiveWeatherType,
+      effectiveIntensity,
+      world.route.palette,
+      altRatio,
+      weatherFxAlpha
+    );
+  }
+
   // 5B. Master-Tier Crosswind Gust Screen-Space Sweeping Gale Streaks
-  if (phase === 'PLAYING' && weatherIncident && weatherIncident.type === 'crosswind_gust') {
+  if (
+    phase === 'PLAYING' &&
+    weatherIncident &&
+    weatherIncident.type === 'crosswind_gust' &&
+    sceneAlpha > 0.05
+  ) {
     const isActive = weatherIncident.phase === 'active';
     const dir = weatherIncident.direction;
     const count = isActive ? 14 : 6;
     ctx.save();
+    ctx.globalAlpha = sceneAlpha;
     ctx.strokeStyle = isActive
       ? 'rgba(224, 242, 254, 0.52)'
       : 'rgba(251, 191, 36, 0.38)';
@@ -2383,27 +2537,336 @@ export function renderGameFrame(params: RenderParams) {
     ctx.restore();
   }
 
-  // 6. Illustrated Storybook Panel Framing Vignette
+  // 6. Illustrated Storybook Panel Framing Vignette (softened during pure-holds route reading)
+  const vigMult = atmosphereGrade?.vignetteStrength ?? 1;
+  if (sceneAlpha > 0.05 && wideDissolveAlpha < 0.95 && vigMult > 0.01) {
+    ctx.save();
+    ctx.globalAlpha = sceneAlpha * (1 - wideDissolveAlpha) * Math.min(1.5, vigMult);
+    const vigGrad = ctx.createRadialGradient(
+      width * 0.5,
+      height * 0.48,
+      Math.min(width, height) * 0.36,
+      width * 0.5,
+      height * 0.5,
+      Math.max(width, height) * 0.76
+    );
+    vigGrad.addColorStop(0, 'rgba(15, 23, 42, 0)');
+    vigGrad.addColorStop(
+      1,
+      phase === 'SUMMIT'
+        ? 'rgba(19, 39, 66, 0.22)'
+        : weather.type === 'rain' || weather.type === 'snowstorm'
+          ? 'rgba(12, 19, 30, 0.34)'
+          : 'rgba(15, 20, 28, 0.22)'
+    );
+    ctx.fillStyle = vigGrad;
+    ctx.fillRect(0, 0, width, height);
+    ctx.restore();
+  }
+
+  // 7. Summit Static Wide Mountain Painting Dissolve Overlay (04-广角结尾.png)
+  drawSummitWideEndingOverlay(
+    ctx,
+    width,
+    height,
+    phase,
+    summitProgress,
+    trailPlaybackProgress,
+    artPack
+  );
+}
+
+function wrapCoord(val: number, span: number): number {
+  return ((val % span) + span) % span;
+}
+
+/**
+ * Procedural screen-space + camera-parallaxed decorative weather particles.
+ * Zero per-frame heap allocations; adapts cleanly to clear, mist, rain, and snowstorm.
+ */
+function drawWeatherDecorativeParticles(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  camera: CameraState,
+  timeSec: number,
+  windForce: number,
+  weatherType: ActiveWeather['type'],
+  intensity: number,
+  palette: MountainWorld['route']['palette'],
+  altRatio: number,
+  baseAlpha: number
+) {
   ctx.save();
-  const vigGrad = ctx.createRadialGradient(
-    width * 0.5,
-    height * 0.48,
-    Math.min(width, height) * 0.36,
-    width * 0.5,
-    height * 0.5,
-    Math.max(width, height) * 0.76
-  );
-  vigGrad.addColorStop(0, 'rgba(15, 23, 42, 0)');
-  vigGrad.addColorStop(
-    1,
-    phase === 'SUMMIT'
-      ? 'rgba(19, 39, 66, 0.22)'
-      : weather.type === 'rain' || weather.type === 'snowstorm'
-        ? 'rgba(12, 19, 30, 0.34)'
-        : 'rgba(15, 20, 28, 0.22)'
-  );
-  ctx.fillStyle = vigGrad;
-  ctx.fillRect(0, 0, width, height);
+
+  const spanW = width + 160;
+  const spanH = height + 160;
+
+  if (weatherType === 'clear') {
+    // Subtle floating sunlit alpine dust motes (or icy diamond-dust glints on glacial / high peaks)
+    const isDiamondDust = palette === 'glacial' || altRatio > 0.65;
+    const count = isDiamondDust ? 20 : 16;
+    for (let i = 0; i < count; i++) {
+      const seedA = Math.sin(i * 12.9898) * 43758.5453;
+      const fracA = seedA - Math.floor(seedA);
+      const seedB = Math.sin(i * 78.233 + 1.7) * 24634.6345;
+      const fracB = seedB - Math.floor(seedB);
+
+      const depth = 0.25 + (i % 3) * 0.22;
+      const driftX =
+        fracA * spanW +
+        timeSec * (8 + windForce * 16) * depth +
+        Math.sin(timeSec * (0.65 + fracB * 0.6) + i * 2.1) * 18 -
+        camera.x * 0.28 * depth;
+      const driftY =
+        fracB * spanH -
+        timeSec * (isDiamondDust ? 6 : 11) * depth +
+        Math.cos(timeSec * 0.5 + i * 1.3) * 10 -
+        camera.y * 0.28 * depth;
+
+      const sx = wrapCoord(driftX, spanW) - 80;
+      const sy = wrapCoord(driftY, spanH) - 80;
+      const twinkle = 0.45 + 0.55 * Math.sin(timeSec * (1.7 + fracA * 1.8) + i * 3.1);
+      const r = (1.1 + fracB * 1.45) * (0.75 + depth * 0.45);
+      const alpha = baseAlpha * (isDiamondDust ? 0.34 : 0.28) * twinkle;
+
+      ctx.fillStyle = isDiamondDust
+        ? `rgba(224, 242, 254, ${alpha.toFixed(3)})`
+        : `rgba(254, 243, 199, ${alpha.toFixed(3)})`;
+      ctx.beginPath();
+      ctx.arc(sx, sy, r, 0, Math.PI * 2);
+      ctx.fill();
+
+      if (isDiamondDust && twinkle > 0.85) {
+        ctx.strokeStyle = `rgba(240, 249, 255, ${(alpha * 0.75).toFixed(3)})`;
+        ctx.lineWidth = 0.8;
+        ctx.beginPath();
+        ctx.moveTo(sx - r * 2.1, sy);
+        ctx.lineTo(sx + r * 2.1, sy);
+        ctx.moveTo(sx, sy - r * 2.1);
+        ctx.lineTo(sx, sy + r * 2.1);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+    return;
+  }
+
+  if (weatherType === 'mist') {
+    const mistStrength = Math.max(0.35, Math.min(1.15, intensity));
+
+    // Layer 1: Soft drifting vapor puffs that billow lazily across the rock face
+    const puffCount = Math.round(14 + mistStrength * 8);
+    for (let i = 0; i < puffCount; i++) {
+      const s1 = Math.sin(i * 19.19 + 0.3) * 14321.3;
+      const f1 = s1 - Math.floor(s1);
+      const s2 = Math.sin(i * 41.73 + 2.1) * 19843.7;
+      const f2 = s2 - Math.floor(s2);
+
+      const depth = 0.22 + (i % 4) * 0.16;
+      const vx = (14 + f1 * 18 + windForce * 24) * depth;
+      const vy = (-4 + (f2 - 0.5) * 9) * depth;
+
+      const px = wrapCoord(f1 * (width + 260) + timeSec * vx - camera.x * 0.22 * depth, width + 260) - 130;
+      const py =
+        wrapCoord(
+          f2 * (height + 220) + timeSec * vy + Math.sin(timeSec * 0.45 + i * 1.7) * 18 - camera.y * 0.22 * depth,
+          height + 220
+        ) - 110;
+
+      const breath = 0.72 + 0.28 * Math.sin(timeSec * (0.42 + f1 * 0.35) + i * 2.4);
+      const rx = (34 + f2 * 54) * (0.75 + depth * 0.55) * breath;
+      const ry = rx * (0.44 + f1 * 0.18);
+      const puffAlpha = baseAlpha * (0.045 + mistStrength * 0.055) * breath;
+
+      // Two concentric translucent ellipses for soft volumetric mist edge without expensive per-particle gradients
+      ctx.fillStyle = `rgba(226, 234, 244, ${(puffAlpha * 0.6).toFixed(3)})`;
+      ctx.beginPath();
+      ctx.ellipse(px, py, rx, ry, Math.sin(timeSec * 0.2 + i) * 0.18, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = `rgba(241, 245, 249, ${(puffAlpha * 0.75).toFixed(3)})`;
+      ctx.beginPath();
+      ctx.ellipse(px + rx * 0.08, py - ry * 0.06, rx * 0.58, ry * 0.58, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Layer 2: Fine suspended misty micro-droplets drifting in humid air
+    const speckCount = Math.round(24 + mistStrength * 14);
+    for (let i = 0; i < speckCount; i++) {
+      const s1 = Math.sin(i * 53.17) * 31991.1;
+      const f1 = s1 - Math.floor(s1);
+      const s2 = Math.sin(i * 91.41) * 17327.9;
+      const f2 = s2 - Math.floor(s2);
+
+      const depth = 0.35 + (i % 3) * 0.28;
+      const sx =
+        wrapCoord(
+          f1 * spanW + timeSec * (20 + windForce * 38) * depth + Math.sin(timeSec * 0.9 + i) * 14 - camera.x * 0.36 * depth,
+          spanW
+        ) - 80;
+      const sy =
+        wrapCoord(
+          f2 * spanH + timeSec * (6 + f1 * 9) * depth + Math.cos(timeSec * 0.7 + i * 1.4) * 10 - camera.y * 0.36 * depth,
+          spanH
+        ) - 80;
+
+      const shimmer = 0.4 + 0.6 * Math.sin(timeSec * 1.5 + i * 2.3);
+      const r = (1.1 + f1 * 1.9) * depth;
+      const alpha = baseAlpha * (0.16 + mistStrength * 0.14) * shimmer;
+
+      ctx.fillStyle = `rgba(226, 236, 246, ${alpha.toFixed(3)})`;
+      ctx.beginPath();
+      ctx.arc(sx, sy, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+    return;
+  }
+
+  if (weatherType === 'rain') {
+    const rainStrength = Math.max(0.4, Math.min(1.25, intensity));
+    const streakCount = Math.round(28 + rainStrength * 22);
+    const slantX = windForce * 88 - 28;
+    const fallY = 460 + rainStrength * 140;
+
+    // Layer 1: Multi-depth wind-slanted rain streaks
+    ctx.lineCap = 'round';
+    for (let i = 0; i < streakCount; i++) {
+      const s1 = Math.sin(i * 31.71) * 29413.7;
+      const f1 = s1 - Math.floor(s1);
+      const s2 = Math.sin(i * 67.19) * 18231.3;
+      const f2 = s2 - Math.floor(s2);
+
+      const depth = 0.48 + (i % 3) * 0.26;
+      const sx =
+        wrapCoord(
+          f1 * spanW + timeSec * slantX * depth - camera.x * 0.35 * depth,
+          spanW
+        ) - 80;
+      const sy =
+        wrapCoord(
+          f2 * spanH + timeSec * fallY * depth - camera.y * 0.35 * depth,
+          spanH
+        ) - 80;
+
+      const lenScale = (0.022 + f1 * 0.014) * depth;
+      const alpha = baseAlpha * (0.16 + depth * 0.24) * Math.min(1, rainStrength);
+      ctx.strokeStyle = `rgba(203, 218, 236, ${alpha.toFixed(3)})`;
+      ctx.lineWidth = 0.9 + depth * 0.75;
+      ctx.beginPath();
+      ctx.moveTo(sx, sy);
+      ctx.lineTo(sx + slantX * lenScale, sy + fallY * lenScale);
+      ctx.stroke();
+    }
+
+    // Layer 2: Damp spray & micro-splash droplets popping softly in the rain mist
+    const splashCount = Math.round(12 + rainStrength * 8);
+    for (let i = 0; i < splashCount; i++) {
+      const cycle = (timeSec * (1.2 + (i % 4) * 0.28) + i * 0.37) % 1;
+      const stepIdx = Math.floor(timeSec * (1.2 + (i % 4) * 0.28) + i * 0.37);
+      const rxSeed = Math.sin(stepIdx * 127.1 + i * 311.7) * 43758.5453;
+      const rySeed = Math.sin(stepIdx * 269.5 + i * 183.3) * 43758.5453;
+      const sx = (rxSeed - Math.floor(rxSeed)) * width;
+      const sy = (rySeed - Math.floor(rySeed)) * height;
+      const splashAlpha = baseAlpha * (1 - cycle) * 0.24 * Math.min(1, rainStrength);
+      const rad = 1.5 + cycle * 7.5;
+
+      ctx.strokeStyle = `rgba(224, 242, 254, ${splashAlpha.toFixed(3)})`;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(sx, sy, rad, Math.PI * 1.15, Math.PI * 1.85);
+      ctx.stroke();
+    }
+
+    ctx.restore();
+    return;
+  }
+
+  // weatherType === 'snowstorm' (and active whiteout_squall)
+  const stormStrength = Math.max(0.45, Math.min(1.35, intensity));
+
+  // Layer 1: Sweeping translucent spindrift snow-vortex ribbons
+  const swirlBands = Math.round(3 + stormStrength * 2.5);
+  ctx.lineCap = 'round';
+  for (let b = 0; b < swirlBands; b++) {
+    const dir = windForce >= -0.05 ? 1 : -1;
+    const speed = (150 + b * 45 + Math.abs(windForce) * 140) * dir;
+    const baseX = wrapCoord(b * 230 + timeSec * speed, width + 360) - 180;
+    const baseY =
+      ((height * (0.14 + (b / swirlBands) * 0.72) + Math.sin(timeSec * (0.85 + b * 0.22) + b * 2.1) * 48) %
+        height +
+        height) %
+      height;
+    const ribbonLen = 110 + (b % 3) * 55;
+    const curl = Math.sin(timeSec * 1.8 + b * 1.6) * 28;
+    const alpha = baseAlpha * (0.08 + stormStrength * 0.08);
+
+    ctx.strokeStyle = `rgba(241, 248, 255, ${alpha.toFixed(3)})`;
+    ctx.lineWidth = 6 + (b % 2) * 5;
+    ctx.beginPath();
+    ctx.moveTo(baseX, baseY);
+    ctx.quadraticCurveTo(
+      baseX + dir * ribbonLen * 0.55,
+      baseY + curl,
+      baseX + dir * ribbonLen,
+      baseY - curl * 0.45 + 16
+    );
+    ctx.stroke();
+  }
+
+  // Layer 2: Multi-depth swirling snowflakes with helical wind eddies
+  const flakeCount = Math.round(44 + stormStrength * 28);
+  for (let i = 0; i < flakeCount; i++) {
+    const s1 = Math.sin(i * 17.31 + 0.5) * 41231.7;
+    const f1 = s1 - Math.floor(s1);
+    const s2 = Math.sin(i * 63.79 + 1.9) * 28417.3;
+    const f2 = s2 - Math.floor(s2);
+
+    const layer = i % 3; // 0 = far fine snow, 1 = mid swirl, 2 = foreground fluffy flakes
+    const depth = layer === 0 ? 0.42 : layer === 1 ? 0.78 : 1.18;
+    const windDriftX = (windForce * 165 + (windForce >= 0 ? 48 : -48)) * depth;
+    const fallSpeedY = (68 + f2 * 52 + stormStrength * 28) * depth;
+
+    // Helical vortex swirl displacement unique to each flake
+    const swirlFreq = 1.45 + f1 * 1.9;
+    const swirlPhase = timeSec * swirlFreq + i * 1.37;
+    const swirlRadiusX = (14 + f2 * 24) * depth * Math.min(1.25, stormStrength);
+    const swirlRadiusY = (7 + f1 * 14) * depth;
+
+    const rawX =
+      f1 * spanW +
+      timeSec * windDriftX +
+      Math.cos(swirlPhase) * swirlRadiusX -
+      camera.x * 0.42 * depth;
+    const rawY =
+      f2 * spanH +
+      timeSec * fallSpeedY +
+      Math.sin(swirlPhase * 1.15) * swirlRadiusY -
+      camera.y * 0.42 * depth;
+
+    const sx = wrapCoord(rawX, spanW) - 80;
+    const sy = wrapCoord(rawY, spanH) - 80;
+    const r = (layer === 0 ? 1.15 : layer === 1 ? 2.0 : 2.95) * (0.78 + f1 * 0.48);
+    const alpha =
+      baseAlpha *
+      (layer === 0 ? 0.34 : layer === 1 ? 0.56 : 0.72) *
+      Math.min(1.1, 0.6 + stormStrength * 0.45);
+
+    // Soft frosted outer bloom for foreground swirling flakes
+    if (layer === 2) {
+      ctx.fillStyle = `rgba(224, 242, 254, ${(alpha * 0.3).toFixed(3)})`;
+      ctx.beginPath();
+      ctx.arc(sx, sy, r * 2.05, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    ctx.fillStyle = `rgba(248, 250, 252, ${alpha.toFixed(3)})`;
+    ctx.beginPath();
+    ctx.arc(sx, sy, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
   ctx.restore();
 }
 
@@ -2437,18 +2900,6 @@ function lerpScalar(a: number, b: number, t: number): number {
   return a + (b - a) * t;
 }
 
-function clampJointWithinReach(joint: Vec2, anchor: Vec2, maxReach: number): Vec2 {
-  const dx = joint.x - anchor.x;
-  const dy = joint.y - anchor.y;
-  const d = Math.hypot(dx, dy);
-  if (d <= maxReach || d < 0.001) return joint;
-  const scale = maxReach / d;
-  return {
-    x: anchor.x + dx * scale,
-    y: anchor.y + dy * scale,
-  };
-}
-
 function solveNaturalLimbIK(
   root: Vec2,
   target: Vec2,
@@ -2459,8 +2910,24 @@ function solveNaturalLimbIK(
   torsoX: number,
   dropKnee = 0
 ): { joint: Vec2; end: Vec2 } {
-  const solPos = solveTwoBoneIK(root, target, len1, len2, 1);
-  const solNeg = solveTwoBoneIK(root, target, len1, len2, -1);
+  // Elastic anatomical reach-preserving extension:
+  // When a hold sits slightly beyond nominal (len1 + len2), smoothly extend both limb segments
+  // proportionally instead of ripping the shoulder/hip off the torso or leaving a floating gap.
+  const rawDx = target.x - root.x;
+  const rawDy = target.y - root.y;
+  const rawDist = Math.hypot(rawDx, rawDy);
+  const nominalMax = (len1 + len2) * 0.992;
+  let effLen1 = len1;
+  let effLen2 = len2;
+  if (rawDist > nominalMax && rawDist > 0.001) {
+    // Keep a tiny natural athletic bend (~173 deg) even at full extension
+    const scale = (rawDist / nominalMax) * 1.006;
+    effLen1 = len1 * scale;
+    effLen2 = len2 * scale;
+  }
+
+  const solPos = solveTwoBoneIK(root, target, effLen1, effLen2, 1);
+  const solNeg = solveTwoBoneIK(root, target, effLen1, effLen2, -1);
 
   if (isHand) {
     // Human elbows bend naturally outward from torso AND slightly downward
@@ -2508,8 +2975,8 @@ function solveNaturalLimbIK(
   const dx = rawJoint.x - root.x;
   const dy = rawJoint.y - root.y;
   const d = Math.hypot(dx, dy) || 1;
-  const targetLen = len1 * (1 - Math.sin(smoothT * Math.PI) * 0.14);
-  const clampedLen = Math.min(len1, Math.max(len1 * 0.68, targetLen));
+  const targetLen = effLen1 * (1 - Math.sin(smoothT * Math.PI) * 0.14);
+  const clampedLen = Math.min(effLen1, Math.max(effLen1 * 0.68, targetLen));
 
   return {
     joint: {
@@ -2625,7 +3092,9 @@ function drawClimber(
   holds: Hold[] = [],
   activePelvisDrag: PelvisDragState | null = null,
   isReadingRoute = false,
-  highlightPelvis = false
+  highlightPelvis = false,
+  atmosphereGrade?: VisualAtmosphereGrade,
+  gender: ClimberGender = 'male'
 ) {
   const { leftHand, rightHand, leftFoot, rightFoot } = climber.limbs;
 
@@ -2748,44 +3217,42 @@ function drawClimber(
   const visDropR = climberTween.dropKneeR;
   const visLean = climberTween.leanAngle;
 
-  // Articulated 2.5D shoulder & lower-back/pelvis joints (preserving anchored limb ends)
-  const baseJoints = getShoulderAndHip(climber);
-  const chestCounterX = -visWaistX * 0.22;
-  const chestJointOffsetY = breathY * 0.5;
-  const rawLeftShoulder = {
-    x: baseJoints.leftShoulder.x + chestCounterX,
-    y: baseJoints.leftShoulder.y + chestJointOffsetY - visTwist * 1.4,
-  };
-  const rawRightShoulder = {
-    x: baseJoints.rightShoulder.x + chestCounterX,
-    y: baseJoints.rightShoulder.y + chestJointOffsetY + visTwist * 1.4,
-  };
-  const rawLeftHip = {
-    x: baseJoints.leftHip.x + visWaistX,
-    y: baseJoints.leftHip.y + visWaistY + breathY * 0.35 - visTwist * 2.4,
-  };
-  const rawRightHip = {
-    x: baseJoints.rightHip.x + visWaistX,
-    y: baseJoints.rightHip.y + visWaistY + breathY * 0.35 + visTwist * 2.4,
+  // Anchor shoulder & hip sockets STRICTLY inside the rendered torso's exact local-to-world frame
+  // so limbs NEVER visually detach from the jacket or pelvis harness during extreme reaches/twists.
+  const cosLean = Math.cos(visLean);
+  const sinLean = Math.sin(visLean);
+  const torsoToWorld = (lx: number, ly: number): Vec2 => ({
+    x: climber.torsoPos.x + lx * cosLean - ly * sinLean,
+    y: climber.torsoPos.y + breathY + lx * sinLean + ly * cosLean,
+  });
+  const shoulderTwistScale = 1 - Math.abs(visTwist) * 0.14;
+  const hipTwistScale = 1 - Math.abs(visTwist) * 0.22;
+  const localHipX = visWaistX * 0.85;
+  const localHipY = visWaistY * 0.72;
+  const chestTopW = 14.8 * shoulderTwistScale;
+  const hipBotW = 13.0 * hipTwistScale;
+
+  // Tiny anatomical socket protraction (<= 2.2px inside sleeve/hip seam) gives natural shoulder roll
+  // while keeping the proximal joint 100% embedded inside the torso silhouette.
+  const protractSocket = (socket: Vec2, target: Vec2, maxShift = 2.2): Vec2 => {
+    const dx = target.x - socket.x;
+    const dy = target.y - socket.y;
+    const d = Math.hypot(dx, dy);
+    if (d < 1) return socket;
+    const amt = Math.min(maxShift, Math.max(0, (d - 42) * 0.06));
+    return { x: socket.x + (dx / d) * amt, y: socket.y + (dy / d) * amt };
   };
 
+  const baseLeftShoulder = torsoToWorld(-chestTopW * 0.78, -17.5 - visTwist * 1.1);
+  const baseRightShoulder = torsoToWorld(chestTopW * 0.78, -17.5 + visTwist * 1.1);
+  const baseLeftHip = torsoToWorld(localHipX - hipBotW * 0.62, 15.5 + localHipY - visTwist * 1.6);
+  const baseRightHip = torsoToWorld(localHipX + hipBotW * 0.62, 15.5 + localHipY + visTwist * 1.6);
+
   const joints = {
-    leftShoulder:
-      leftHand.holdId !== null
-        ? clampJointWithinReach(rawLeftShoulder, lhPos, ARM_MAX_REACH + 8)
-        : rawLeftShoulder,
-    rightShoulder:
-      rightHand.holdId !== null
-        ? clampJointWithinReach(rawRightShoulder, rhPos, ARM_MAX_REACH + 8)
-        : rawRightShoulder,
-    leftHip:
-      leftFoot.holdId !== null
-        ? clampJointWithinReach(rawLeftHip, lfPos, LEG_MAX_REACH + 8)
-        : rawLeftHip,
-    rightHip:
-      rightFoot.holdId !== null
-        ? clampJointWithinReach(rawRightHip, rfPos, LEG_MAX_REACH + 8)
-        : rawRightHip,
+    leftShoulder: protractSocket(baseLeftShoulder, lhPos, 2.2),
+    rightShoulder: protractSocket(baseRightShoulder, rhPos, 2.2),
+    leftHip: protractSocket(baseLeftHip, lfPos, 1.8),
+    rightHip: protractSocket(baseRightHip, rfPos, 1.8),
   };
 
   const hipMidX = (joints.leftHip.x + joints.rightHip.x) * 0.5;
@@ -2841,45 +3308,13 @@ function drawClimber(
     rfIK.joint.y += rfTremor.y * 0.55;
   }
 
-  // 2.5D Drop Shadow onto Rock Wall (wallHug + side-twist dynamically modulate shadow separation)
-  ctx.save();
-  const hugShift = visHug * 6.2;
-  const shadowOffX = (climber.isFalling ? 24 : 15 - hugShift) + visTwist * 3.8;
-  const shadowOffY = climber.isFalling ? 26 : 17 - hugShift * 0.85;
-  ctx.translate(shadowOffX, shadowOffY);
-  ctx.strokeStyle = 'rgba(15, 20, 28, 0.42)';
-  ctx.fillStyle = 'rgba(15, 20, 28, 0.42)';
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
-
-  ctx.lineWidth = 10;
-  ctx.beginPath();
-  ctx.moveTo(joints.leftShoulder.x, joints.leftShoulder.y);
-  ctx.lineTo(lhIK.joint.x, lhIK.joint.y);
-  ctx.lineTo(lhIK.end.x, lhIK.end.y);
-  ctx.moveTo(joints.rightShoulder.x, joints.rightShoulder.y);
-  ctx.lineTo(rhIK.joint.x, rhIK.joint.y);
-  ctx.lineTo(rhIK.end.x, rhIK.end.y);
-  ctx.moveTo(joints.leftHip.x, joints.leftHip.y);
-  ctx.lineTo(lfIK.joint.x, lfIK.joint.y);
-  ctx.lineTo(lfIK.end.x, lfIK.end.y);
-  ctx.moveTo(joints.rightHip.x, joints.rightHip.y);
-  ctx.lineTo(rfIK.joint.x, rfIK.joint.y);
-  ctx.lineTo(rfIK.end.x, rfIK.end.y);
-  ctx.stroke();
-
-  ctx.beginPath();
-  ctx.ellipse(
-    climber.torsoPos.x + visWaistX * 0.45,
-    climber.torsoPos.y + visWaistY * 0.35 + breathY * 0.6,
-    14 * (1 - Math.abs(visTwist) * 0.2),
-    24,
-    visLean,
-    0,
-    Math.PI * 2
-  );
-  ctx.fill();
-  ctx.restore();
+  // Single unified wall-projected cel cast shadow is now drawn inside renderClimberCharacter
+  const hugShift = visHug * 5.2;
+  const computedShadowOffX =
+    (atmosphereGrade?.castShadowOffsetX ?? (climber.isFalling ? 22 : 12.5 - hugShift)) +
+    visTwist * 2.8;
+  const computedShadowOffY =
+    atmosphereGrade?.castShadowOffsetY ?? (climber.isFalling ? 24 : 15 - hugShift * 0.78);
 
   if (activeStrainFx) {
     drawLimbStrainGlow(ctx, joints.leftHip, lfIK.joint, lfIK.end, 10.5, leftFoot.strain, timeSec, 'leftFoot');
@@ -2894,86 +3329,6 @@ function drawClimber(
         : weatherType === 'rain'
           ? 'rgba(148, 163, 184, 0.7)'
           : 'rgba(255, 244, 214, 0.85)';
-
-  // 2.5D Depth-Sorted Legs: side turned into rock renders slightly darker & first
-  const legOutline = 1.7;
-  const drawSingleLeg = (side: 'left' | 'right') => {
-    const isLeft = side === 'left';
-    const hip = isLeft ? joints.leftHip : joints.rightHip;
-    const ik = isLeft ? lfIK : rfIK;
-    const hold = isLeft ? lfHold : rfHold;
-    const dropAmt = isLeft ? visDropL : visDropR;
-    const turnedIntoWall = isLeft ? visTwist < -0.2 : visTwist > 0.2;
-    const pantsFill = turnedIntoWall ? '#2D3748' : isLeft ? '#374151' : '#4B5563';
-    const pantsShadow = turnedIntoWall ? '#111827' : '#1F2937';
-
-    drawCapsuleLimb(ctx, hip, ik.joint, 11, pantsFill, pantsShadow, legOutline);
-    drawCapsuleLimb(ctx, ik.joint, ik.end, 9.5, pantsFill, pantsShadow, legOutline);
-
-    // Subtle knee cap highlight & sunlit outside-leg rim
-    if (dropAmt > 0.18) {
-      ctx.save();
-      ctx.fillStyle = shadeHexColor(pantsFill, 0.14);
-      ctx.strokeStyle = INK;
-      ctx.lineWidth = 1.4;
-      ctx.beginPath();
-      ctx.arc(ik.joint.x, ik.joint.y, 4.6, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-      ctx.restore();
-    }
-    if (isLeft && visTwist > -0.45) {
-      ctx.save();
-      ctx.strokeStyle = rimColor;
-      ctx.lineWidth = 1.6;
-      ctx.lineCap = 'round';
-      ctx.beginPath();
-      ctx.moveTo(hip.x - 3.2, hip.y);
-      ctx.lineTo(ik.joint.x - 3.2, ik.joint.y);
-      ctx.lineTo(ik.end.x - 2.6, ik.end.y);
-      ctx.stroke();
-      ctx.restore();
-    }
-
-    const baseShoeAngle = computeLimbEndAngle(isLeft ? 'leftFoot' : 'rightFoot', ik.joint, ik.end, hold);
-    // Drop-knee rotates the climbing shoe onto its outer edge toe-turn; Summit stands flat on peak
-    const dropEdgeCant = (isLeft ? 0.34 : -0.34) * dropAmt;
-    const shoeAngle = phase === 'SUMMIT' ? (isLeft ? 0.06 : -0.06) : baseShoeAngle + dropEdgeCant;
-
-    ctx.save();
-    ctx.translate(ik.end.x, ik.end.y);
-    if (phase === 'SUMMIT' && isLeft) {
-      ctx.scale(-1, 1);
-    }
-    ctx.rotate(shoeAngle);
-    ctx.scale(1, 1 - dropAmt * 0.14);
-    ctx.fillStyle = '#F59E0B';
-    ctx.strokeStyle = INK;
-    ctx.lineWidth = 1.9;
-    ctx.beginPath();
-    ctx.roundRect(-6.5, -4.2, 14, 8.2, isLeft ? [3, 6, 4, 3] : [6, 3, 3, 4]);
-    ctx.fill();
-    ctx.stroke();
-
-    ctx.fillStyle = '#1E293B';
-    ctx.beginPath();
-    ctx.roundRect(2.5, -3.5, 4.6, 6.8, 2);
-    ctx.fill();
-    ctx.restore();
-  };
-
-  if (visTwist > 0.15) {
-    drawSingleLeg('right');
-    drawSingleLeg('left');
-  } else {
-    drawSingleLeg('left');
-    drawSingleLeg('right');
-  }
-
-  if (activeStrainFx) {
-    drawLimbStrainGlow(ctx, joints.leftShoulder, lhIK.joint, lhIK.end, 9, leftHand.strain, timeSec, 'leftHand');
-    drawLimbStrainGlow(ctx, joints.rightShoulder, rhIK.joint, rhIK.end, 9, rightHand.strain, timeSec, 'rightHand');
-  }
 
   // Visual Shake-Out animation for dangling free hand
   const shakeOutOffset = (limb: typeof leftHand) => {
@@ -2991,333 +3346,71 @@ function drawClimber(
   const rhDrawJoint = { x: rhIK.joint.x + rhShake.x * 0.45, y: rhIK.joint.y + rhShake.y * 0.45 };
   const rhDrawEnd = { x: rhIK.end.x + rhShake.x, y: rhIK.end.y + rhShake.y };
 
-  const drawSingleArm = (side: 'left' | 'right') => {
-    const isLeft = side === 'left';
-    const shoulder = isLeft ? joints.leftShoulder : joints.rightShoulder;
-    const drawJoint = isLeft ? lhDrawJoint : rhDrawJoint;
-    const drawEnd = isLeft ? lhDrawEnd : rhDrawEnd;
-    const ik = isLeft ? lhIK : rhIK;
-    const hold = isLeft ? lhHold : rhHold;
-    const limbState = isLeft ? leftHand : rightHand;
-    const turnedIntoWall = isLeft ? visTwist < -0.24 : visTwist > 0.24;
-    const armFill = turnedIntoWall ? skin.jacketShadow : skin.jacket;
-    const armShadow = turnedIntoWall ? shadeHexColor(skin.jacketShadow, -0.25) : skin.jacketShadow;
-
-    drawCapsuleLimb(ctx, shoulder, drawJoint, 9.5, armFill, armShadow, legOutline);
-    drawCapsuleLimb(ctx, drawJoint, drawEnd, 8, armFill, armShadow, legOutline);
-
-    if (isLeft && !turnedIntoWall) {
-      ctx.save();
-      ctx.strokeStyle = rimColor;
-      ctx.lineWidth = 1.6;
-      ctx.lineCap = 'round';
-      ctx.beginPath();
-      ctx.moveTo(shoulder.x - 2.8, shoulder.y - 1);
-      ctx.lineTo(drawJoint.x - 2.8, drawJoint.y - 1);
-      ctx.lineTo(drawEnd.x - 2.2, drawEnd.y - 1);
-      ctx.stroke();
-      ctx.restore();
-    }
-
-    if (climber.isShakingOut && activeStrainFx && limbState.holdId === null) {
-      ctx.save();
-      ctx.strokeStyle = 'rgba(248, 250, 252, 0.72)';
-      ctx.lineWidth = 1.6;
-      ctx.lineCap = 'round';
-      ctx.beginPath();
-      ctx.arc(drawEnd.x, drawEnd.y, 9, Math.PI * 0.15, Math.PI * 0.75);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.arc(drawEnd.x, drawEnd.y, 12.5, Math.PI * 1.15, Math.PI * 1.75);
-      ctx.stroke();
-      ctx.restore();
-    }
-
-    const handAngle = computeLimbEndAngle(isLeft ? 'leftHand' : 'rightHand', ik.joint, drawEnd, hold);
-    const anchored = limbState.holdId !== null;
-    ctx.save();
-    ctx.translate(drawEnd.x, drawEnd.y);
-    ctx.rotate(handAngle);
-    ctx.fillStyle = climber.chalk > 20 ? '#F8FAFC' : '#E2B49A';
-    ctx.strokeStyle = INK;
-    ctx.lineWidth = 1.75;
-    ctx.beginPath();
-    ctx.roundRect(-4.5, -4.2, anchored ? 9.5 : 8.5, 8.4, 3.8);
-    ctx.fill();
-    ctx.stroke();
-
-    if (anchored) {
-      ctx.strokeStyle = INK;
-      ctx.lineWidth = 1.25;
-      ctx.beginPath();
-      ctx.moveTo(2.2, -3.5);
-      ctx.lineTo(2.2, 3.5);
-      ctx.stroke();
-    }
-    ctx.restore();
-  };
-
-  // Wall-pressed arm renders BEFORE torso/pack for crisp 2.5D side-turn overlap
-  const wallArmSide: 'left' | 'right' | null =
-    visTwist < -0.22 ? 'left' : visTwist > 0.22 ? 'right' : null;
-  if (wallArmSide) {
-    drawSingleArm(wallArmSide);
-  } else {
-    drawSingleArm('left');
-    drawSingleArm('right');
-  }
-
-  // Articulated 2.5D Torso (Upper Chest + Curved Lumbar / Pelvis CoM Shift + Twist Depth)
   const pelvisCenterWorld = {
     x: climber.torsoPos.x + visWaistX,
     y: climber.torsoPos.y + 10 + breathY + visWaistY,
   };
 
-  ctx.save();
-  ctx.translate(climber.torsoPos.x, climber.torsoPos.y + breathY);
-  ctx.rotate(visLean);
-
-  const hipTwistScale = 1 - Math.abs(visTwist) * 0.22;
-  const shoulderTwistScale = 1 - Math.abs(visTwist) * 0.14;
-  // Local lumbar offsets inside rotated torso space
-  const localHipX = visWaistX * 0.85;
-  const localHipY = visWaistY * 0.72;
-  const chestTopW = 14 * shoulderTwistScale;
-  const hipBotW = 13.5 * hipTwistScale;
-  const waistCtrlX = localHipX * 0.45 + visTwist * 2.2;
-  const waistCtrlY = 2 + localHipY * 0.45;
-
-  // Sculpted Jacket Silhouette with lumbar curve
-  const drawJacketPath = () => {
-    ctx.beginPath();
-    ctx.moveTo(-chestTopW, -22);
-    ctx.quadraticCurveTo(0, -24, chestTopW, -22);
-    ctx.quadraticCurveTo(
-      waistCtrlX + hipBotW * 0.96,
-      waistCtrlY,
-      localHipX + hipBotW,
-      19 + localHipY
-    );
-    ctx.quadraticCurveTo(
-      localHipX,
-      22 + localHipY,
-      localHipX - hipBotW,
-      19 + localHipY
-    );
-    ctx.quadraticCurveTo(
-      waistCtrlX - hipBotW * 0.96,
-      waistCtrlY,
-      -chestTopW,
-      -22
-    );
-    ctx.closePath();
-  };
-
-  drawJacketPath();
-  ctx.fillStyle = skin.jacket;
-  ctx.fill();
-
-  // Dynamic 2.5D Shadow Split inside Jacket (shifts across spine as torso twists!)
-  ctx.save();
-  drawJacketPath();
-  ctx.clip();
-  const splitOffset = visTwist * 7.5;
-  ctx.fillStyle = skin.jacketShadow;
-  ctx.beginPath();
-  ctx.moveTo(splitOffset, -24);
-  ctx.lineTo(chestTopW + 8, -24);
-  ctx.lineTo(localHipX + hipBotW + 8, 24 + localHipY);
-  ctx.lineTo(localHipX + splitOffset * 0.75, 24 + localHipY);
-  ctx.closePath();
-  ctx.fill();
-
-  // Subtle lumbar fabric fold crease indicating lower-back flex/shift
-  if (Math.abs(visWaistX) > 2.5 || Math.abs(visTwist) > 0.18 || Math.abs(visWaistY) > 2.5) {
-    ctx.strokeStyle = 'rgba(20, 24, 32, 0.34)';
-    ctx.lineWidth = 1.4;
-    ctx.beginPath();
-    ctx.moveTo(localHipX - hipBotW * 0.65, 6 + localHipY * 0.5);
-    ctx.quadraticCurveTo(
-      waistCtrlX,
-      8 + localHipY * 0.7,
-      localHipX + hipBotW * 0.65,
-      4 + localHipY * 0.5
-    );
-    ctx.stroke();
-  }
-  ctx.restore();
-
-  drawJacketPath();
-  ctx.strokeStyle = INK;
-  ctx.lineWidth = 2.2;
-  ctx.stroke();
-
-  // Crisp sunlit rim highlight along left edge (dims softly when left side turns into rock)
-  if (visTwist > -0.55) {
-    ctx.strokeStyle = rimColor;
-    ctx.lineWidth = 2;
-    ctx.lineCap = 'round';
-    ctx.beginPath();
-    ctx.moveTo(-chestTopW + 1.8, -18);
-    ctx.quadraticCurveTo(
-      waistCtrlX - hipBotW * 0.82,
-      waistCtrlY,
-      localHipX - hipBotW + 2.2,
-      15 + localHipY
-    );
-    ctx.stroke();
-  }
-
-  // Climbing Harness Belt anchored smoothly to shifted Pelvis/Lumbar zone
-  const beltSkewY = visTwist * 2.2;
-  ctx.save();
-  ctx.translate(localHipX, 13 + localHipY);
-  ctx.rotate(visTwist * 0.08);
-  ctx.fillStyle = '#1F2937';
-  ctx.strokeStyle = INK;
-  ctx.lineWidth = 1.8;
-  ctx.beginPath();
-  ctx.roundRect(-hipBotW - 0.5, -3.5, (hipBotW + 0.5) * 2, 7.5, 3);
-  ctx.fill();
-  ctx.stroke();
-
-  ctx.strokeStyle = '#94A3B8';
-  ctx.lineWidth = 1.6;
-  ctx.beginPath();
-  ctx.arc(-hipBotW * 0.58, 4.5 - beltSkewY * 0.25, 3.1, 0, Math.PI);
-  ctx.stroke();
-  ctx.restore();
-
-  // 2.5D Alpine Backpack (slides subtly along back & exposes side gusset during twist)
-  const packOffsetX = localHipX * 0.25 - visTwist * 4.2;
-  const packOffsetY = localHipY * 0.25;
-  const packHalfW = 11 * (1 - Math.abs(visTwist) * 0.18);
-  ctx.save();
-  ctx.translate(packOffsetX, packOffsetY);
-
-  // Side depth panel when twisted
-  if (Math.abs(visTwist) > 0.14) {
-    const sideDir = visTwist > 0 ? -1 : 1;
-    const sideDepthW = Math.abs(visTwist) * 5.2;
-    ctx.fillStyle = '#334155';
-    ctx.strokeStyle = INK;
-    ctx.lineWidth = 1.6;
-    ctx.beginPath();
-    ctx.roundRect(
-      sideDir > 0 ? packHalfW - 2 : -packHalfW - sideDepthW + 2,
-      -17,
-      sideDepthW + 2,
-      24,
-      3
-    );
-    ctx.fill();
-    ctx.stroke();
-  }
-
-  ctx.fillStyle = '#475569';
-  ctx.strokeStyle = INK;
-  ctx.lineWidth = 1.8;
-  ctx.beginPath();
-  ctx.roundRect(-packHalfW, -18, packHalfW * 2, 26, 6);
-  ctx.fill();
-  ctx.stroke();
-
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
-  ctx.lineWidth = 1.3;
-  ctx.beginPath();
-  ctx.moveTo(-packHalfW * 0.72, -14);
-  ctx.lineTo(-packHalfW * 0.72, 3);
-  ctx.stroke();
-
-  ctx.fillStyle = skin.accent;
-  ctx.strokeStyle = INK;
-  ctx.lineWidth = 1.8;
-  ctx.beginPath();
-  ctx.roundRect(-packHalfW - 1, -23, (packHalfW + 1) * 2, 7, 3.5);
-  ctx.fill();
-  ctx.stroke();
-  ctx.restore();
-
-  // Swinging Chalk Bag anchored to shifted lumbar belt
-  const bagSwing =
-    -visLean * 0.75 +
-    windForce * 0.28 +
-    Math.sin(timeSec * 4.2) * 0.08 -
-    Math.max(-0.35, Math.min(0.35, climber.torsoVel.x * 0.002));
-  ctx.save();
-  ctx.translate(localHipX + 9 * hipTwistScale, 12 + localHipY);
-  ctx.rotate(bagSwing);
-  ctx.fillStyle = '#E2E8F0';
-  ctx.strokeStyle = INK;
-  ctx.lineWidth = 1.7;
-  ctx.beginPath();
-  ctx.roundRect(-4, 0, 8.5, 10.5, 2.5);
-  ctx.fill();
-  ctx.stroke();
-  ctx.fillStyle = skin.accent;
-  ctx.fillRect(-3.2, 0.8, 6.8, 2.5);
-  ctx.restore();
-
-  // Layered Flowing Comic Scarf
-  const scarfFlutter = Math.sin(timeSec * 6.5) * 4.5 + windForce * 15;
-  const scarfFlutter2 = Math.cos(timeSec * 5.2 + 0.8) * 3.5 + windForce * 11;
-  ctx.lineCap = 'round';
-  ctx.strokeStyle = INK;
-  ctx.lineWidth = 5.4;
-  ctx.beginPath();
-  ctx.moveTo(-4 * shoulderTwistScale, -22);
-  ctx.quadraticCurveTo(-13 + scarfFlutter * 0.5, -18, -19 + scarfFlutter, -9 + scarfFlutter2 * 0.3);
-  ctx.stroke();
-  ctx.strokeStyle = skin.scarf;
-  ctx.lineWidth = 3;
-  ctx.stroke();
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(-5 * shoulderTwistScale, -22.5);
-  ctx.quadraticCurveTo(-12 + scarfFlutter * 0.45, -19, -17 + scarfFlutter * 0.85, -11);
-  ctx.stroke();
-
-  // Head & Beanie with subtle twist offset & Rim Highlight
-  ctx.save();
-  ctx.translate(-visTwist * 1.8, -32);
-  ctx.rotate(climber.lookAngle);
-  ctx.fillStyle = '#332924';
-  ctx.strokeStyle = INK;
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.arc(0, 0, 9.5, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.stroke();
-
-  ctx.fillStyle = skin.beanie;
-  ctx.beginPath();
-  ctx.arc(0, -2, 9.5, Math.PI, 0);
-  ctx.closePath();
-  ctx.fill();
-  ctx.stroke();
-
-  ctx.strokeStyle = rimColor;
-  ctx.lineWidth = 1.6;
-  ctx.beginPath();
-  ctx.arc(0, -2, 7.6, Math.PI * 1.08, Math.PI * 1.52);
-  ctx.stroke();
-  ctx.restore();
-
-  if (phase === 'SUMMIT') {
-    ctx.strokeStyle = 'rgba(245, 158, 11, 0.55)';
-    ctx.lineWidth = 1.6 * inkScale;
-    ctx.beginPath();
-    ctx.arc(0, -10, 44, 0, Math.PI * 2);
-    ctx.stroke();
-  }
-
-  ctx.restore();
-
-  // Camera-facing foreground arm renders AFTER torso/pack when side-turned
-  if (wallArmSide) {
-    drawSingleArm(wallArmSide === 'left' ? 'right' : 'left');
-  }
+  // Delegate pure character presentation to slot-based art-pack / upgraded painterly renderer
+  renderClimberCharacter(ctx, {
+    climber,
+    skin,
+    phase,
+    timeSec,
+    windForce,
+    inkScale,
+    rimColor,
+    activeStrainFx,
+    breathY,
+    visTwist,
+    visWaistX,
+    visWaistY,
+    visDropL,
+    visDropR,
+    visLean,
+    joints,
+    lhIK,
+    rhIK,
+    lfIK,
+    rfIK,
+    lhDrawJoint,
+    lhDrawEnd,
+    rhDrawJoint,
+    rhDrawEnd,
+    lhHold,
+    rhHold,
+    lfHold,
+    rfHold,
+    computeLimbEndAngle,
+    castShadowColor: atmosphereGrade?.castShadowColor,
+    castShadowOffsetX: computedShadowOffX,
+    castShadowOffsetY: computedShadowOffY,
+    gender,
+    drawArmStrainGlow: activeStrainFx
+      ? () => {
+          drawLimbStrainGlow(
+            ctx,
+            joints.leftShoulder,
+            lhIK.joint,
+            lhIK.end,
+            9,
+            leftHand.strain,
+            timeSec,
+            'leftHand'
+          );
+          drawLimbStrainGlow(
+            ctx,
+            joints.rightShoulder,
+            rhIK.joint,
+            rhIK.end,
+            9,
+            rightHand.strain,
+            timeSec,
+            'rightHand'
+          );
+        }
+      : undefined,
+  });
 
   if (activeStrainFx) {
     const limbList: { id: LimbId; pos: Vec2 }[] = [

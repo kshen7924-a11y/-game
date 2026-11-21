@@ -42,15 +42,31 @@ export interface LoadoutConfig {
 
 export type ClimbStyle = 'onsight' | 'redpoint' | 'summit';
 
-export type ClimberSkinId =
-  | 'alpine-orange'
-  | 'glacier-cyan'
-  | 'granite-gold'
-  | 'summit-crimson';
+export type ClimberGender = 'male' | 'female';
+
+export type ClimberSkinId = 'alpine-orange' | 'glacier-cyan';
+
+export type ClimberHeadgearStyle =
+  | 'beanie'
+  | 'helmet'
+  | 'expedition-cap'
+  | 'pro-hood'
+  | 'fur-beanie'
+  | 'visor-cap';
+
+export type ClimberPackStyle =
+  | 'alpine'
+  | 'ice-axe'
+  | 'rope-coil'
+  | 'pro-shell'
+  | 'bivouac-roll'
+  | 'minimal-sling';
 
 export interface ClimberSkinConfig {
   id: ClimberSkinId;
   name: string;
+  tag: string;
+  subtitle: string;
   unlockCount: number;
   jacket: string;
   jacketShadow: string;
@@ -58,6 +74,13 @@ export interface ClimberSkinConfig {
   scarf: string;
   beanie: string;
   rope: string;
+  /** Optional character art pack id bound to CHARACTER_ART_MANIFEST (defaults to id) */
+  artPackId?: string;
+  /** Optional procedural silhouette styling presets (used when PNG slots are not overridden) */
+  headgear?: ClimberHeadgearStyle;
+  packStyle?: ClimberPackStyle;
+  pants?: string;
+  shoe?: string;
 }
 
 export interface ClimbEvent {

@@ -707,47 +707,39 @@ export const LOADOUT_OPTIONS: LoadoutConfig[] = [
 export const CLIMBER_SKINS: ClimberSkinConfig[] = [
   {
     id: 'alpine-orange',
-    name: '经典蓝橙',
+    name: '山脊经典',
+    tag: '默认一',
+    subtitle: '蓝橙高山冲锋衣 · 护目镜绒帽 · 探险背包',
     unlockCount: 0,
+    artPackId: 'alpine-orange',
     jacket: '#2563EB',
     jacketShadow: '#1E3A8A',
     accent: '#EA580C',
     scarf: '#F59E0B',
     beanie: '#D97706',
     rope: '#F97316',
+    headgear: 'beanie',
+    packStyle: 'alpine',
+    pants: '#334155',
+    shoe: '#F59E0B',
   },
   {
     id: 'glacier-cyan',
     name: '极光冰青',
-    unlockCount: 3,
+    tag: '默认二',
+    subtitle: '冰青高寒冲锋衣 · 头灯防撞盔 · 外挂冰镐包',
+    unlockCount: 0,
+    artPackId: 'glacier-cyan',
     jacket: '#0891B2',
     jacketShadow: '#164E63',
     accent: '#38BDF8',
     scarf: '#E0F2FE',
     beanie: '#0284C7',
     rope: '#38BDF8',
-  },
-  {
-    id: 'granite-gold',
-    name: '岩壁琥珀',
-    unlockCount: 6,
-    jacket: '#B45309',
-    jacketShadow: '#78350F',
-    accent: '#FBBF24',
-    scarf: '#FEF3C7',
-    beanie: '#D97706',
-    rope: '#FACC15',
-  },
-  {
-    id: 'summit-crimson',
-    name: '神山绯红',
-    unlockCount: 11,
-    jacket: '#BE123C',
-    jacketShadow: '#881337',
-    accent: '#FB7185',
-    scarf: '#FFE4E6',
-    beanie: '#E11D48',
-    rope: '#FB7185',
+    headgear: 'helmet',
+    packStyle: 'ice-axe',
+    pants: '#1E293B',
+    shoe: '#38BDF8',
   },
 ];
 
@@ -855,6 +847,315 @@ export interface MountainWorld {
   difficultyProfile: AltitudeDifficultyBin[];
   wallAnalysis: RouteWallAnalysis;
 }
+
+/**
+ * 关卡岩点生成角色划分（不修改 shared/types.ts 的 Hold 结构，由 mountain.ts 策略层统一管理）
+ * - core_path: 核心可攀路径（主干动作段 + 真可选分岔 + 营地/登顶锚点，isDecoy = false）
+ * - decorative_dead_end: 装饰性死胡同点（远距绝对不可达的 2~4 点短线，丰富岩壁纵深与层次，isDecoy = true）
+ * - far_distractor: 远端干扰点（全壁两侧远距岩脉集群 + 幻象岩岛，丰富高山大墙体量与读线干扰，isDecoy = true）
+ * - master_decoy_path: 虚假诱饵路径（中高级起步、大师级强化的“黄金高速诱饵”与侧翼死胡同，isDecoy = true）
+ */
+export type HoldPlacementRole =
+  | 'core_path'
+  | 'decorative_dead_end'
+  | 'far_distractor'
+  | 'master_decoy_path';
+
+/**
+ * 进阶/大师级思考型难点逻辑模块
+ * - sidepull_gate: 强侧拉门控横移（必须顺侧拉方向配低脚横移，正上方常设直线假路诱饵）
+ * - undercling_mantle: 屋檐反扣翻越（先反扣高抬脚、再向外侧岩台翻越）
+ * - keyhole_bridge: 钥匙孔单点桥（以 spring 蹬台 + swing 摆荡单线穿过空白岩带，直上是死路）
+ * - stamina_dilemma: 耐力博弈双选分岔（近路高耗 crimp/ice/tremor vs 远路回耐 jug/ledge 绕行）
+ */
+export type MasterCruxLogic =
+  | 'sidepull_gate'
+  | 'undercling_mantle'
+  | 'keyhole_bridge'
+  | 'stamina_dilemma';
+
+export interface LevelGenerationStrategy {
+  tier: number;
+  label: string;
+  corePath: {
+    stepLen: number;
+    corridorClarity: 'high' | 'medium' | 'tactical' | 'master_puzzle';
+    viableBranchCount: number;
+    staminaDilemmaForks: number;
+    enabledCruxLogics: MasterCruxLogic[];
+    asymmetricSkipChance: number;
+  };
+  decorativeDeadEnd: {
+    lineCount: number;
+    holdsPerLine: [number, number];
+    /** 严格大于最大动态够距（98 + 26 = 124px），确保玩家绝对够不到 */
+    minDistFromCore: number;
+    minDistFromDecoy: number;
+    radiusScale: number;
+  };
+  farDistractor: {
+    clusterCount: number;
+    clusterSize: [number, number];
+    /** 远端干扰点同样与核心线保持不可直达隔离 */
+    minDistFromCore: number;
+    minDistFromDecoy: number;
+    /** 悬浮于远端空白岩壁的诱人“幻象岩岛”数量 */
+    phantomIslandCount: number;
+  };
+  masterDecoyPath: {
+    enabled: boolean;
+    /** 贴合横移/钥匙孔入口向上延伸的“虚假黄金高速”数量 */
+    falseGoldenHighways: number;
+    /** 侧翼分岔虚假死胡同数量 */
+    flankDecoyBranches: number;
+    stepsPerDecoy: [number, number];
+    /** 诱饵前 N 步故意放置 jug/ledge/crack 制造“好走错觉” */
+    lureHeadSteps: number;
+    /** 诱饵中后段与核心路径的最小隔离距离，确保真正成为死胡同 */
+    tipMinIsolationFromCore: number;
+  };
+}
+
+export interface RouteCruxPlacement {
+  logic: MasterCruxLogic;
+  x: number;
+  y: number;
+  altitudeM: number;
+  summary: string;
+}
+
+export interface RouteDecoyPathMeta {
+  kind: 'false_golden_highway' | 'flank_decoy';
+  entryX: number;
+  entryY: number;
+  tipX: number;
+  tipY: number;
+  stepCount: number;
+  holdIds: string[];
+}
+
+export interface RouteRoleBreakdown {
+  strategy: LevelGenerationStrategy;
+  counts: Record<HoldPlacementRole, number>;
+  holdIdsByRole: Record<HoldPlacementRole, string[]>;
+  cruxPlacements: RouteCruxPlacement[];
+  decoyPaths: RouteDecoyPathMeta[];
+}
+
+const routeRoleBreakdownMap = new WeakMap<MountainWorld, RouteRoleBreakdown>();
+
+export function getRouteRoleBreakdown(world: MountainWorld): RouteRoleBreakdown | null {
+  return routeRoleBreakdownMap.get(world) ?? null;
+}
+
+export function getLevelGenerationStrategy(
+  rawTier: number,
+  heightM = 60
+): LevelGenerationStrategy {
+  const tier = Math.max(1, Math.min(11, Math.round(rawTier)));
+  const heightFactor = Math.max(0.75, heightM / 48);
+
+  if (tier <= 2) {
+    return {
+      tier,
+      label: tier === 1 ? '启蒙清晰主线（零陷阱 + 远景层次）' : '入门自然曲线（轻分岔 + 远景层次）',
+      corePath: {
+        stepLen: 36 + (tier - 1) * 1.2,
+        corridorClarity: 'high',
+        viableBranchCount: tier === 1 ? 0 : 1,
+        staminaDilemmaForks: 0,
+        enabledCruxLogics: [],
+        asymmetricSkipChance: 0,
+      },
+      decorativeDeadEnd: {
+        lineCount: Math.max(4, Math.round(4 * heightFactor)),
+        holdsPerLine: [2, 3],
+        minDistFromCore: 132,
+        minDistFromDecoy: 120,
+        radiusScale: 0.84,
+      },
+      farDistractor: {
+        clusterCount: Math.max(8, Math.round(7 * heightFactor)),
+        clusterSize: [1, 2],
+        minDistFromCore: 128,
+        minDistFromDecoy: 118,
+        phantomIslandCount: 0,
+      },
+      masterDecoyPath: {
+        enabled: false,
+        falseGoldenHighways: 0,
+        flankDecoyBranches: 0,
+        stepsPerDecoy: [0, 0],
+        lureHeadSteps: 0,
+        tipMinIsolationFromCore: 110,
+      },
+    };
+  }
+
+  if (tier <= 4) {
+    return {
+      tier,
+      label: '初级进阶（轻横移 + 少量短死胡同）',
+      corePath: {
+        stepLen: 37.5 + (tier - 3) * 1.0,
+        corridorClarity: 'medium',
+        viableBranchCount: tier - 2,
+        staminaDilemmaForks: tier === 4 ? 1 : 0,
+        enabledCruxLogics: tier === 4 ? ['sidepull_gate', 'stamina_dilemma'] : ['sidepull_gate'],
+        asymmetricSkipChance: 0.06,
+      },
+      decorativeDeadEnd: {
+        lineCount: Math.max(5, Math.round(5 * heightFactor)),
+        holdsPerLine: [2, 3],
+        minDistFromCore: 128,
+        minDistFromDecoy: 118,
+        radiusScale: 0.84,
+      },
+      farDistractor: {
+        clusterCount: Math.max(11, Math.round(9 * heightFactor)),
+        clusterSize: [2, 3],
+        minDistFromCore: 124,
+        minDistFromDecoy: 116,
+        phantomIslandCount: tier === 4 ? 2 : 1,
+      },
+      masterDecoyPath: {
+        enabled: true,
+        falseGoldenHighways: tier === 4 ? 1 : 0,
+        flankDecoyBranches: tier === 3 ? 1 : 2,
+        stepsPerDecoy: [3, 4],
+        lureHeadSteps: 1,
+        tipMinIsolationFromCore: 106,
+      },
+    };
+  }
+
+  if (tier <= 6) {
+    return {
+      tier,
+      label: '中级技术壁（折返横移 + 屋檐反扣 + 诱饵分岔）',
+      corePath: {
+        stepLen: 39.2 + (tier - 5) * 0.8,
+        corridorClarity: 'tactical',
+        viableBranchCount: tier - 3,
+        staminaDilemmaForks: tier - 3,
+        enabledCruxLogics: ['sidepull_gate', 'undercling_mantle', 'stamina_dilemma'],
+        asymmetricSkipChance: tier === 6 ? 0.18 : 0.12,
+      },
+      decorativeDeadEnd: {
+        lineCount: Math.max(7, Math.round(6 * heightFactor)),
+        holdsPerLine: [2, 4],
+        minDistFromCore: 126,
+        minDistFromDecoy: 116,
+        radiusScale: 0.85,
+      },
+      farDistractor: {
+        clusterCount: Math.max(14, Math.round(10 * heightFactor)),
+        clusterSize: [2, 4],
+        minDistFromCore: 122,
+        minDistFromDecoy: 116,
+        phantomIslandCount: tier === 6 ? 4 : 3,
+      },
+      masterDecoyPath: {
+        enabled: true,
+        falseGoldenHighways: tier === 5 ? 2 : 3,
+        flankDecoyBranches: tier === 5 ? 3 : 4,
+        stepsPerDecoy: [4, 5],
+        lureHeadSteps: 2,
+        tipMinIsolationFromCore: 105,
+      },
+    };
+  }
+
+  if (tier <= 8) {
+    return {
+      tier,
+      label: '高级险关壁（钥匙孔桥 + 强横移门控 + 幻象岩岛）',
+      corePath: {
+        stepLen: 40.8 + (tier - 7) * 0.7,
+        corridorClarity: 'tactical',
+        viableBranchCount: tier - 4,
+        staminaDilemmaForks: tier - 4,
+        enabledCruxLogics: [
+          'sidepull_gate',
+          'undercling_mantle',
+          'keyhole_bridge',
+          'stamina_dilemma',
+        ],
+        asymmetricSkipChance: 0.24,
+      },
+      decorativeDeadEnd: {
+        lineCount: Math.max(9, Math.round(6.5 * heightFactor)),
+        holdsPerLine: [3, 4],
+        minDistFromCore: 125,
+        minDistFromDecoy: 116,
+        radiusScale: 0.85,
+      },
+      farDistractor: {
+        clusterCount: Math.max(18, Math.round(11 * heightFactor)),
+        clusterSize: [2, 4],
+        minDistFromCore: 120,
+        minDistFromDecoy: 116,
+        phantomIslandCount: tier === 7 ? 5 : 6,
+      },
+      masterDecoyPath: {
+        enabled: true,
+        falseGoldenHighways: tier === 7 ? 3 : 4,
+        flankDecoyBranches: tier === 7 ? 5 : 6,
+        stepsPerDecoy: [4, 6],
+        lureHeadSteps: 2,
+        tipMinIsolationFromCore: 105,
+      },
+    };
+  }
+
+  // Tier 9..11: Master Alpine Puzzle
+  const masterLevel = tier - 9; // 0, 1, 2
+  return {
+    tier,
+    label:
+      masterLevel === 0
+        ? '大师一阶 · 读线迷宫（黄金诱饵 + 钥匙孔门控）'
+        : masterLevel === 1
+          ? '大师二阶 · 绝壁博弈（多层假路 + 耐力双选）'
+          : '大师终阶 · 神山终极读线（全机制复合思考壁）',
+    corePath: {
+      stepLen: 42.0 + masterLevel * 0.75,
+      corridorClarity: 'master_puzzle',
+      viableBranchCount: 4 + masterLevel,
+      staminaDilemmaForks: 4 + masterLevel,
+      enabledCruxLogics: [
+        'sidepull_gate',
+        'undercling_mantle',
+        'keyhole_bridge',
+        'stamina_dilemma',
+      ],
+      asymmetricSkipChance: 0.3 + masterLevel * 0.04,
+    },
+    decorativeDeadEnd: {
+      lineCount: Math.max(10 + masterLevel * 2, Math.round((7 + masterLevel * 0.8) * heightFactor)),
+      holdsPerLine: [3, 4],
+      minDistFromCore: 124,
+      minDistFromDecoy: 116,
+      radiusScale: 0.86,
+    },
+    farDistractor: {
+      clusterCount: Math.max(22 + masterLevel * 4, Math.round((12 + masterLevel) * heightFactor)),
+      clusterSize: [2, 4],
+      minDistFromCore: 120,
+      minDistFromDecoy: 116,
+      phantomIslandCount: 7 + masterLevel * 2,
+    },
+    masterDecoyPath: {
+      enabled: true,
+      falseGoldenHighways: 5 + masterLevel,
+      flankDecoyBranches: 6 + masterLevel,
+      stepsPerDecoy: [5, 7],
+      lureHeadSteps: 3,
+      tipMinIsolationFromCore: 106,
+    },
+  };
+}
+
 
 const YDS_GRADE_LADDER = [
   '5.4',
@@ -1192,31 +1493,33 @@ export function generateSuggestedRoadbook(
   };
 
   const getUpwardContinuationScore = (h: Hold): number => {
-    if (h.y <= -world.mountainHeight + 55) return 26;
+    if (h.y <= -world.mountainHeight + 55) return 28;
     const nextNeighbors = world.holds.filter(
       (n) =>
         !n.broken &&
         n.id !== h.id &&
-        n.y < h.y - 16 &&
+        n.y <= h.y + 8 &&
         n.y >= h.y - 102 &&
-        Math.hypot(n.x - h.x, n.y - h.y) <= 98
+        Math.hypot(n.x - h.x, n.y - h.y) <= 98 &&
+        (h.y - n.y >= 10 || Math.abs(n.x - h.x) >= 24)
     );
-    if (nextNeighbors.length === 0) return -68;
-    let best2nd = -40;
+    if (nextNeighbors.length === 0) return -72;
+    let best2nd = -42;
     for (const n of nextNeighbors) {
       let s2 = typeWeight[n.type];
       if (n.wet) s2 -= isFreeSolo ? 16 : 8;
-      if (n.isDecoy) s2 -= 18;
+      if (n.isDecoy) s2 -= 24;
       const has3rd =
         n.y <= -world.mountainHeight + 55 ||
         world.holds.some(
           (n2) =>
             !n2.broken &&
             n2.id !== n.id &&
-            n2.y < n.y - 16 &&
+            n2.id !== h.id &&
+            n2.y < n.y - 12 &&
             Math.hypot(n2.x - n.x, n2.y - n.y) <= 98
         );
-      if (!has3rd) s2 -= 42;
+      if (!has3rd) s2 -= 46;
       if (s2 > best2nd) best2nd = s2;
     }
     return best2nd * 0.48 + Math.min(10, nextNeighbors.length * 3);
@@ -1233,18 +1536,21 @@ export function generateSuggestedRoadbook(
     for (const h of candidates) {
       if (usedIds.has(h.id)) continue;
       const dy = cur.y - h.y;
-      if (dy < 22 || dy > 92) continue;
+      const dx = Math.abs(h.x - cur.x);
+      // Allow intentional lateral traverse steps (small dy, moderate dx) as well as upward steps
+      if (dy < -4 || dy > 92) continue;
+      if (dy < 14 && dx < 22) continue;
       const d = Math.hypot(h.x - cur.x, h.y - cur.y);
-      if (d > 102) continue;
+      if (d > 100) continue;
 
       let score = typeWeight[h.type];
       if (h.wet) score -= isFreeSolo ? 20 : 12;
       if (h.gripKind === 'undercling') score -= 5;
-      else if (h.gripKind === 'sidepullLeft' || h.gripKind === 'sidepullRight') score -= 3;
-      if (h.isDecoy) score -= 34;
+      else if (h.gripKind === 'sidepullLeft' || h.gripKind === 'sidepullRight') score -= 2;
+      if (h.isDecoy) score -= 42;
 
-      // Favor clean vertical efficiency so optimal roadbook climbs faster
-      score += Math.min(30, dy * 0.48);
+      // Favor clean vertical efficiency while still permitting necessary lateral traverses
+      score += dy >= 14 ? Math.min(30, dy * 0.48) : 6 + dx * 0.14;
       if (d > 86) score -= (d - 86) * 1.15;
       score += getUpwardContinuationScore(h);
 
@@ -1653,6 +1959,16 @@ export function generateMountain(route: RouteConfig): MountainWorld {
   const holds: Hold[] = [];
   let holdCounter = 0;
 
+  const strategy = getLevelGenerationStrategy(route.tier, route.heightM);
+  const holdIdsByRole: Record<HoldPlacementRole, string[]> = {
+    core_path: [],
+    decorative_dead_end: [],
+    far_distractor: [],
+    master_decoy_path: [],
+  };
+  const cruxPlacements: RouteCruxPlacement[] = [];
+  const decoyPaths: RouteDecoyPathMeta[] = [];
+
   const pushHold = (
     x: number,
     y: number,
@@ -1661,8 +1977,10 @@ export function generateMountain(route: RouteConfig): MountainWorld {
     radiusOverride?: number,
     wet = false,
     forceDownpull = false,
-    isDecoy = false
+    role: HoldPlacementRole = 'core_path',
+    forcedGripKind?: Hold['gripKind']
   ) => {
+    const isDecoy = role !== 'core_path';
     const stabilityMap: Record<HoldType, number> = {
       ledge: 1.45,
       swing: 1.32,
@@ -1686,8 +2004,9 @@ export function generateMountain(route: RouteConfig): MountainWorld {
       ice: 10,
     };
 
-    let gripKind: Hold['gripKind'] = 'downpull';
+    let gripKind: Hold['gripKind'] = forcedGripKind ?? 'downpull';
     if (
+      !forcedGripKind &&
       !forceDownpull &&
       type !== 'ledge' &&
       type !== 'ice' &&
@@ -1715,14 +2034,14 @@ export function generateMountain(route: RouteConfig): MountainWorld {
             ? (rng() - 0.5) * 0.26
             : (rng() - 0.5) * 0.65;
 
-    holds.push({
+    const hold: Hold = {
       id: `hold-${holdCounter++}`,
       x,
       y,
       radius: radiusOverride ?? radiusMap[type],
       type,
       gripKind,
-      shapeVariant: Math.floor(rng() * 4),
+      shapeVariant: Math.floor(rng() * 10),
       stability: stabilityMap[type],
       angle: baseAngle,
       depth: 5 + rng() * 5,
@@ -1735,7 +2054,10 @@ export function generateMountain(route: RouteConfig): MountainWorld {
       ...(type === 'tremor'
         ? { tremorFreq: 18 + rng() * 14, tremorEnergy: 0 }
         : {}),
-    });
+    };
+    holds.push(hold);
+    holdIdsByRole[role].push(hold.id);
+    return hold;
   };
 
   const canPlaceHold = (x: number, y: number, minD = 26) => {
@@ -1745,293 +2067,915 @@ export function generateMountain(route: RouteConfig): MountainWorld {
     return true;
   };
 
-  // Starting anchor holds around 0m base camp
-  pushHold(-22, -22, 'jug', 0, undefined, false, true);
-  pushHold(22, -24, 'jug', 0, undefined, false, true);
-  pushHold(-20, -64, 'jug', 0, undefined, false, true);
-  pushHold(22, -68, 'jug', 0, undefined, false, true);
-  pushHold(-38, -46, 'ledge', 0, undefined, false, true);
-  pushHold(38, -48, 'ledge', 0, undefined, false, true);
+  // Starting anchor holds around 0m base camp (preserved verbatim for tutorial & stable start)
+  pushHold(-22, -22, 'jug', 0, undefined, false, true, 'core_path');
+  pushHold(22, -24, 'jug', 0, undefined, false, true, 'core_path');
+  pushHold(-20, -64, 'jug', 0, undefined, false, true, 'core_path');
+  pushHold(22, -68, 'jug', 0, undefined, false, true, 'core_path');
+  pushHold(-38, -46, 'ledge', 0, undefined, false, true, 'core_path');
+  pushHold(38, -48, 'ledge', 0, undefined, false, true, 'core_path');
 
   if (route.hasTutorial) {
-    pushHold(-16, -104, 'jug', 0, 13, false, true);
-    pushHold(22, -110, 'jug', 0, 13, false, true);
+    pushHold(-16, -104, 'jug', 0, 13, false, true, 'core_path');
+    pushHold(22, -110, 'jug', 0, 13, false, true, 'core_path');
   }
 
-  // Build smooth waypoints through base -> bivouacs -> summit so the Main Line connects cleanly
-  const tier = route.tier; // 1..11
+  // ============================================================================
+  // LEVEL GENERATION STRATEGY (4 EXPLICIT ROLE LAYERS)
+  // Stage 1 [core_path]:           Clear climbing spine + Master cerebral crux motifs + viable dilemma branches + camp/summit anchors
+  // Stage 2 [master_decoy_path]:   False Golden Highways above traverses/keyholes + flank dead-end traps (Tier >= 3, peak on Tier 9..11)
+  // Stage 3 [decorative_dead_end]: Strictly unreachable 2~4 hold short dead-end rock lines (>= 124px from core) for visual depth
+  // Stage 4 [far_distractor]:      Full-wall flank veins & Phantom Islands across [-248..+248] (>= 120px from core, never bridging decoys)
+  // ============================================================================
+  const tier = strategy.tier;
+  const hasRainRoute = route.weatherStages.some((s) => s.type === 'rain');
+
+  const isWetHold = (hType: HoldType, progress: number, extraChance = 0) =>
+    tier >= 4 &&
+    hType !== 'ledge' &&
+    hType !== 'ice' &&
+    hType !== 'spring' &&
+    hType !== 'swing' &&
+    hType !== 'tremor' &&
+    rng() < (hasRainRoute ? 0.12 + progress * 0.08 : 0.055) + extraChance;
+
+  const pickMainType = (isPrimary: boolean, progress: number): HoldType => {
+    const r = rng();
+    if (tier === 1) return r < 0.72 ? 'jug' : 'ledge';
+    if (tier === 2) return r < 0.66 ? 'jug' : r < 0.86 ? 'ledge' : 'crack';
+    if (tier === 3) return r < 0.54 ? 'jug' : r < 0.88 ? 'crack' : 'crimp';
+    if (tier === 4) return r < 0.44 ? 'jug' : r < 0.82 ? 'crack' : 'crimp';
+    if (tier === 5) return isPrimary ? (r < 0.38 ? 'jug' : 'crack') : r < 0.64 ? 'crack' : 'crimp';
+    if (tier === 6) return isPrimary ? (r < 0.28 ? 'jug' : r < 0.74 ? 'crack' : 'crimp') : r < 0.48 ? 'crack' : 'crimp';
+    if (tier === 7) return isPrimary ? (r < 0.22 ? 'jug' : r < 0.66 ? 'crack' : 'crimp') : r < 0.4 ? 'crack' : 'crimp';
+    if (tier === 8) return isPrimary ? (r < 0.18 ? 'jug' : r < 0.58 ? 'crack' : 'crimp') : r < 0.34 ? 'crack' : 'crimp';
+    if (tier === 9) {
+      if (!isPrimary && progress > 0.38 && r < 0.18) return 'ice';
+      return isPrimary ? (r < 0.16 ? 'jug' : r < 0.54 ? 'crack' : 'crimp') : r < 0.32 ? 'crack' : 'crimp';
+    }
+    if (tier === 10) {
+      if (!isPrimary && progress > 0.3 && r < 0.24) return 'ice';
+      return isPrimary ? (r < 0.13 ? 'jug' : r < 0.48 ? 'crack' : 'crimp') : r < 0.28 ? 'crack' : 'crimp';
+    }
+    if (!isPrimary && progress > 0.24 && r < 0.28) return 'ice';
+    return isPrimary ? (r < 0.11 ? 'jug' : r < 0.44 ? 'crack' : 'crimp') : r < 0.24 ? 'crack' : 'crimp';
+  };
+
+  // Build pitch anchors from base -> bivouacs -> summit
   const anchorPoints: Vec2[] = [
     { x: 0, y: route.hasTutorial ? -120 : -82 },
     ...ledges
       .filter((l) => l.isBivouac && l.id !== 'base-camp')
       .map((l) => ({ x: l.x, y: l.y })),
     { x: summitCenter, y: -mountainHeight + 18 },
-  ].sort((a, b) => b.y - a.y); // bottom (less negative) to top (more negative)
+  ].sort((a, b) => b.y - a.y);
 
-  const getMainLineCenterX = (y: number): number => {
-    let segIdx = 0;
-    for (let i = 0; i < anchorPoints.length - 1; i++) {
-      if (y <= anchorPoints[i].y && y >= anchorPoints[i + 1].y) {
-        segIdx = i;
-        break;
-      }
-      if (y < anchorPoints[i + 1].y) segIdx = i;
-    }
-    const p0 = anchorPoints[segIdx];
-    const p1 = anchorPoints[Math.min(anchorPoints.length - 1, segIdx + 1)];
-    const segSpan = p0.y - p1.y || 1;
-    const t = Math.max(0, Math.min(1, (p0.y - y) / segSpan));
-    const baseLineX = p0.x + (p1.x - p0.x) * t;
+  interface SpineWaypoint {
+    x: number;
+    y: number;
+    motif:
+      | 'flow'
+      | 'traverse'
+      | 'roof_undercling'
+      | 'keyhole_bridge'
+      | 'asymmetric_crux'
+      | 'dynamic_flow';
+    traverseDir?: -1 | 1;
+  }
 
-    // Sin-envelope keeps endpoints pinned cleanly to bivouacs/summit while meandering in between
-    const envelope = Math.sin(t * Math.PI);
-    const waveAmp = Math.min(110, 26 + (tier - 1) * 8.5);
-    const waveFreq = 0.008 + (tier - 1) * 0.0005;
-    const meander = Math.sin(y * waveFreq + tier) * waveAmp * envelope;
-
-    const bounds = getCliffBounds(y, mountainHeight);
-    const margin = 44;
-    return Math.max(bounds.left + margin, Math.min(bounds.right - margin, baseLineX + meander));
+  const spineWaypoints: SpineWaypoint[] = [];
+  const clampClimbX = (x: number, y: number, margin = 46): number => {
+    const b = getCliffBounds(y, mountainHeight);
+    return Math.max(b.left + margin, Math.min(b.right - margin, x));
   };
 
-  // Step 1: Generate the clean, anatomically reachable Main Climbing Line
-  const holdStepY = Math.round(33 + (tier - 1) * 0.85); // 33px (Tier 1) -> 41.5px (Tier 11)
-  const mainLineNodes: { x: number; y: number; zone: number }[] = [];
+  for (let seg = 0; seg < anchorPoints.length - 1; seg++) {
+    const p0 = anchorPoints[seg];
+    const p1 = anchorPoints[seg + 1];
+    const segH = p0.y - p1.y;
+    const isFinalPitch = seg === anchorPoints.length - 2;
 
-  for (let y = route.hasTutorial ? -144 : -102; y >= -mountainHeight + 34; y -= holdStepY) {
-    const progress = Math.max(0, Math.min(1, -y / mountainHeight));
-    const zone = progress < 0.35 ? 0 : progress < 0.7 ? 1 : 2;
-    const lineX = getMainLineCenterX(y);
-    mainLineNodes.push({ x: lineX, y, zone });
-
-    // Staggered Left & Right holds along the line (clean 2-hold rhythm instead of 5-hold clutter)
-    const pairHalfW = 17 + rng() * 9;
-    const staggerL = (rng() - 0.5) * 10;
-    const staggerR = (rng() - 0.5) * 10;
-
-    const pickMainType = (isPrimary: boolean): HoldType => {
-      const r = rng();
-      if (tier === 1) return r < 0.72 ? 'jug' : 'ledge';
-      if (tier === 2) return r < 0.68 ? 'jug' : r < 0.88 ? 'ledge' : 'crack';
-      if (tier === 3) return r < 0.56 ? 'jug' : r < 0.9 ? 'crack' : 'crimp';
-      if (tier === 4) return r < 0.45 ? 'jug' : r < 0.84 ? 'crack' : 'crimp';
-      if (tier === 5) return isPrimary ? (r < 0.4 ? 'jug' : 'crack') : r < 0.65 ? 'crack' : 'crimp';
-      if (tier === 6) return isPrimary ? (r < 0.3 ? 'jug' : r < 0.75 ? 'crack' : 'crimp') : r < 0.5 ? 'crack' : 'crimp';
-      if (tier === 7) return isPrimary ? (r < 0.24 ? 'jug' : r < 0.68 ? 'crack' : 'crimp') : r < 0.42 ? 'crack' : 'crimp';
-      if (tier === 8) return isPrimary ? (r < 0.2 ? 'jug' : r < 0.6 ? 'crack' : 'crimp') : r < 0.35 ? 'crack' : 'crimp';
-      if (tier === 9) return isPrimary ? (r < 0.18 ? 'jug' : r < 0.56 ? 'crack' : 'crimp') : r < 0.32 ? 'crack' : 'crimp';
-      if (tier === 10) return isPrimary ? (r < 0.14 ? 'jug' : r < 0.5 ? 'crack' : 'crimp') : r < 0.28 ? 'crack' : 'crimp';
-      return isPrimary ? (r < 0.12 ? 'jug' : r < 0.46 ? 'crack' : 'crimp') : r < 0.24 ? 'crack' : 'crimp';
-    };
-
-    const hasRainStage = route.weatherStages.some((s) => s.type === 'rain');
-    const isWetHold = (hType: HoldType) =>
-      tier >= 4 &&
-      hType !== 'ledge' &&
-      hType !== 'ice' &&
-      hType !== 'spring' &&
-      hType !== 'swing' &&
-      hType !== 'tremor' &&
-      rng() < (hasRainStage ? 0.12 + progress * 0.08 : 0.06);
-
-    // Periodically infuse dynamic Spring Kickoff, Swing Catch, and Tremor holds along main flow sections
-    const nodeIdx = mainLineNodes.length - 1;
-    const dynamicCycle = tier >= 2 && nodeIdx >= 2 && nodeIdx % 5 === 2;
-    const swingCycle = tier >= 2 && nodeIdx >= 3 && nodeIdx % 5 === 4;
-    const tremorCycle = tier >= 2 && nodeIdx >= 1 && nodeIdx % 4 === 1;
-    const tremorChance = Math.min(0.76, 0.44 + (tier - 2) * 0.045);
-
-    const lx = lineX - pairHalfW;
-    const ly = y + staggerL;
-    let lType = pickMainType(true);
-    if (dynamicCycle && rng() < 0.72) {
-      lType = 'spring';
-    } else if (swingCycle && rng() < 0.68) {
-      lType = 'swing';
-    } else if (tremorCycle && rng() < tremorChance) {
-      lType = 'tremor';
-    }
-    if (canPlaceHold(lx, ly, 24)) {
-      pushHold(lx, ly, lType, zone, tier === 1 ? 13.5 : undefined, isWetHold(lType));
+    if (seg === 0) {
+      spineWaypoints.push({ x: p0.x, y: p0.y, motif: 'flow' });
     }
 
-    const rx = lineX + pairHalfW;
-    const ry = y + staggerR;
-    let rType = pickMainType(false);
-    if (dynamicCycle && lType !== 'spring' && rng() < 0.75) {
-      rType = 'spring';
-    } else if (swingCycle && lType !== 'swing' && rng() < 0.7) {
-      rType = 'swing';
-    } else if (tremorCycle && lType !== 'tremor' && rng() < tremorChance) {
-      rType = 'tremor';
+    if (tier <= 2) {
+      // Beginner / Kids: clear, unmistakable gentle natural curve
+      const midY = (p0.y + p1.y) * 0.5;
+      const sway = (seg % 2 === 0 ? 1 : -1) * (tier === 1 ? 30 : 48);
+      spineWaypoints.push({
+        x: clampClimbX((p0.x + p1.x) * 0.5 + sway, midY, 54),
+        y: midY,
+        motif: 'flow',
+      });
+    } else if (tier <= 4) {
+      // Tier 3-4: 1 clear diagonal sidepull traverse + organic flow
+      const dir: -1 | 1 = (seg + tier) % 2 === 0 ? 1 : -1;
+      const y1 = p0.y - segH * 0.34;
+      const y2 = p0.y - segH * 0.56;
+      const shift = dir * (58 + (tier - 3) * 20);
+      spineWaypoints.push({
+        x: clampClimbX(p0.x - dir * 24, y1, 48),
+        y: y1,
+        motif: 'flow',
+      });
+      spineWaypoints.push({
+        x: clampClimbX(p0.x + shift, y2, 48),
+        y: y2,
+        motif: 'traverse',
+        traverseDir: dir,
+      });
+    } else if (tier <= 6) {
+      // Tier 5-6: Sidepull gate traverse + undercling mantle roof
+      const dir: -1 | 1 = (seg + tier) % 2 === 0 ? 1 : -1;
+      const y1 = p0.y - segH * 0.26;
+      const y2 = p0.y - segH * 0.48;
+      const y3 = p0.y - segH * 0.74;
+      spineWaypoints.push({
+        x: clampClimbX(p0.x - dir * 56, y1, 46),
+        y: y1,
+        motif: 'flow',
+      });
+      spineWaypoints.push({
+        x: clampClimbX(p0.x + dir * 78, y2, 46),
+        y: y2,
+        motif: 'traverse',
+        traverseDir: dir,
+      });
+      spineWaypoints.push({
+        x: clampClimbX(p1.x - dir * 32, y3, 46),
+        y: y3,
+        motif: tier === 6 ? 'roof_undercling' : 'dynamic_flow',
+      });
+    } else if (tier <= 8) {
+      // Tier 7-8: Asymmetric crux -> sidepull traverse -> keyhole bridge / roof undercling
+      const dir: -1 | 1 = (seg + tier) % 2 === 0 ? 1 : -1;
+      const y1 = p0.y - segH * 0.22;
+      const y2 = p0.y - segH * 0.42;
+      const y3 = p0.y - segH * 0.64;
+      const y4 = p0.y - segH * 0.82;
+      spineWaypoints.push({
+        x: clampClimbX(p0.x - dir * 72, y1, 44),
+        y: y1,
+        motif: 'asymmetric_crux',
+      });
+      spineWaypoints.push({
+        x: clampClimbX(p0.x + dir * 94, y2, 44),
+        y: y2,
+        motif: 'traverse',
+        traverseDir: dir,
+      });
+      spineWaypoints.push({
+        x: clampClimbX(p0.x + dir * 24, y3, 44),
+        y: y3,
+        motif: seg % 2 === 0 ? 'keyhole_bridge' : 'roof_undercling',
+        traverseDir: (dir * -1) as -1 | 1,
+      });
+      spineWaypoints.push({
+        x: clampClimbX(p1.x - dir * 46, y4, 46),
+        y: y4,
+        motif: isFinalPitch ? 'asymmetric_crux' : 'dynamic_flow',
+      });
+    } else {
+      // Tier 9-11 (Master): Full cerebral alpine puzzle combining all 4 crux logics
+      // Asymmetric entry -> Sidepull Gate Traverse (w/ straight-up Golden Decoy!)
+      // -> Undercling Mantle Roof -> Keyhole Bridge Counter-Traverse (w/ straight-up Golden Decoy!) -> Summit Crux
+      const dir: -1 | 1 = (seg + tier) % 2 === 0 ? 1 : -1;
+      const y1 = p0.y - segH * 0.19;
+      const y2 = p0.y - segH * 0.36;
+      const y3 = p0.y - segH * 0.55;
+      const y4 = p0.y - segH * 0.74;
+      const y5 = p0.y - segH * 0.88;
+      spineWaypoints.push({
+        x: clampClimbX(p0.x - dir * 88, y1, 42),
+        y: y1,
+        motif: 'asymmetric_crux',
+      });
+      spineWaypoints.push({
+        x: clampClimbX(p0.x + dir * 102, y2, 42),
+        y: y2,
+        motif: 'traverse',
+        traverseDir: dir,
+      });
+      spineWaypoints.push({
+        x: clampClimbX(p0.x + dir * 68, y3, 42),
+        y: y3,
+        motif: 'roof_undercling',
+      });
+      spineWaypoints.push({
+        x: clampClimbX(p1.x - dir * 74, y4, 44),
+        y: y4,
+        motif: 'keyhole_bridge',
+        traverseDir: (dir * -1) as -1 | 1,
+      });
+      spineWaypoints.push({
+        x: clampClimbX(p1.x + dir * 24, y5, 48),
+        y: y5,
+        motif: isFinalPitch ? 'asymmetric_crux' : 'dynamic_flow',
+      });
     }
-    // Higher tiers occasionally alternate single-side crux holds to force thoughtful foot-swaps
-    const skipSecond =
-      tier >= 7 &&
-      rType !== 'spring' &&
-      rType !== 'swing' &&
-      rType !== 'tremor' &&
-      rng() < 0.22;
-    if (!skipSecond && canPlaceHold(rx, ry, 24)) {
-      pushHold(rx, ry, rType, zone, tier === 1 ? 13.5 : undefined, isWetHold(rType));
+
+    spineWaypoints.push({ x: p1.x, y: p1.y, motif: 'flow' });
+  }
+
+  // ----------------------------------------------------------------------------
+  // STAGE 1A [core_path]: Walk the spine polyline in anatomically reachable steps
+  // ----------------------------------------------------------------------------
+  interface SpineNode {
+    x: number;
+    y: number;
+    zone: number;
+    motif: SpineWaypoint['motif'];
+    traverseDir?: -1 | 1;
+    stepIdx: number;
+  }
+
+  const mainLineNodes: SpineNode[] = [];
+  const goldenHighwayEntryAnchors: Array<{ node: SpineNode; baitDir: -1 | 1; crux: MasterCruxLogic }> = [];
+  const targetStepLen = strategy.corePath.stepLen;
+  let prevSideSign = 1;
+  let globalStep = 0;
+
+  for (let wIdx = 0; wIdx < spineWaypoints.length - 1; wIdx++) {
+    const a = spineWaypoints[wIdx];
+    const b = spineWaypoints[wIdx + 1];
+    const segDist = Math.hypot(b.x - a.x, b.y - a.y);
+    const steps = Math.max(1, Math.round(segDist / targetStepLen));
+    const dxNorm = (b.x - a.x) / Math.max(1, segDist);
+    const isLateralSeg = Math.abs(dxNorm) > 0.42;
+
+    for (let s = 1; s <= steps; s++) {
+      const t = s / steps;
+      const ny = a.y + (b.y - a.y) * t;
+      if (ny > (route.hasTutorial ? -128 : -88) || ny < -mountainHeight + 28) {
+        continue;
+      }
+      const nx = clampClimbX(a.x + (b.x - a.x) * t, ny, 38);
+      const progress = Math.max(0, Math.min(1, -ny / mountainHeight));
+      const zone = progress < 0.35 ? 0 : progress < 0.7 ? 1 : 2;
+      const motif = b.motif;
+      const tDir: -1 | 1 = b.traverseDir ?? (dxNorm >= 0 ? 1 : -1);
+      const node: SpineNode = {
+        x: nx,
+        y: ny,
+        zone,
+        motif,
+        traverseDir: tDir,
+        stepIdx: globalStep++,
+      };
+      mainLineNodes.push(node);
+
+      // Register crux placements & straight-up Golden Highway bait entries
+      if (s === 1 && motif === 'traverse' && isLateralSeg && tier >= 3) {
+        cruxPlacements.push({
+          logic: 'sidepull_gate',
+          x: nx,
+          y: ny,
+          altitudeM: Math.round(-ny / PIXELS_PER_METER),
+          summary: tDir > 0 ? '右侧拉门控横移' : '左侧拉门控横移',
+        });
+        if (strategy.masterDecoyPath.enabled) {
+          goldenHighwayEntryAnchors.push({
+            node,
+            baitDir: (tDir * -1) as -1 | 1,
+            crux: 'sidepull_gate',
+          });
+        }
+      } else if (s === 1 && motif === 'keyhole_bridge' && tier >= 7) {
+        cruxPlacements.push({
+          logic: 'keyhole_bridge',
+          x: nx,
+          y: ny,
+          altitudeM: Math.round(-ny / PIXELS_PER_METER),
+          summary: '钥匙孔单点摆荡/蹬跳桥',
+        });
+        if (strategy.masterDecoyPath.enabled) {
+          goldenHighwayEntryAnchors.push({
+            node,
+            baitDir: (tDir * -1) as -1 | 1,
+            crux: 'keyhole_bridge',
+          });
+        }
+      } else if (s === 1 && motif === 'roof_undercling' && tier >= 5) {
+        cruxPlacements.push({
+          logic: 'undercling_mantle',
+          x: nx,
+          y: ny,
+          altitudeM: Math.round(-ny / PIXELS_PER_METER),
+          summary: '屋檐反扣高脚翻越',
+        });
+      }
+
+      const dynamicCycle = tier >= 2 && node.stepIdx >= 2 && node.stepIdx % 6 === 2;
+      const swingCycle = tier >= 2 && node.stepIdx >= 3 && node.stepIdx % 6 === 5;
+      const tremorCycle = tier >= 2 && node.stepIdx >= 2 && node.stepIdx % 5 === 3;
+      const tremorChance = Math.min(0.68, 0.34 + (tier - 2) * 0.04);
+      const baseRadius = tier === 1 ? 13.5 : undefined;
+
+      if (motif === 'keyhole_bridge' && tier >= 7) {
+        // Master Keyhole Bridge: single deliberate sequence (spring launch -> swing transfer -> crack/crimp catch -> ledge exit)
+        // Keeps every consecutive step cleanly reachable while removing redundant parallel holds
+        let kType: HoldType;
+        let kGrip: Hold['gripKind'] | undefined;
+        let kForceDownpull = false;
+        if (s === 1) {
+          kType = 'spring';
+          kForceDownpull = true;
+        } else if (s === 2 || (steps >= 4 && s === Math.ceil(steps * 0.5))) {
+          kType = 'swing';
+          kForceDownpull = true;
+        } else if (s === steps) {
+          kType = tier >= 10 ? 'crack' : 'ledge';
+          kForceDownpull = kType === 'ledge';
+        } else {
+          kType = rng() < 0.55 ? 'crack' : 'crimp';
+          kGrip = tDir > 0 ? 'sidepullLeft' : 'sidepullRight';
+        }
+
+        const kx = nx + (rng() - 0.5) * 6;
+        const ky = ny + (rng() - 0.5) * 6;
+        if (canPlaceHold(kx, ky, 22)) {
+          pushHold(kx, ky, kType, zone, baseRadius, isWetHold(kType, progress), kForceDownpull, 'core_path', kGrip);
+        }
+        // Compact low foot-chip only on launch & landing so hips can commit across the keyhole
+        if (s === 1 || s === steps) {
+          const fx = nx - tDir * 18;
+          const fy = ny + 20;
+          if (fy < -26 && canPlaceHold(fx, fy, 22)) {
+            pushHold(fx, fy, 'crimp', zone, undefined, false, true, 'core_path');
+          }
+        }
+      } else if (motif === 'traverse' && isLateralSeg) {
+        // Sidepull Gate Traverse: directional sidepull handhold + offset low opposing foothold
+        const sideGrip: Hold['gripKind'] = tDir > 0 ? 'sidepullLeft' : 'sidepullRight';
+        let handType = pickMainType(true, progress);
+        if (swingCycle && rng() < 0.65) handType = 'swing';
+        else if (tremorCycle && rng() < tremorChance * 0.65) handType = 'tremor';
+
+        const hx = nx + (rng() - 0.5) * 10;
+        const hy = ny + (rng() - 0.5) * 8;
+        if (canPlaceHold(hx, hy, 24)) {
+          pushHold(hx, hy, handType, zone, baseRadius, isWetHold(handType, progress), false, 'core_path', sideGrip);
+        }
+        const fx = nx - tDir * (14 + rng() * 12);
+        const fy = ny + 20 + rng() * 10;
+        const footType: HoldType =
+          dynamicCycle && rng() < 0.6
+            ? 'spring'
+            : tier >= 8 && rng() < 0.45
+              ? 'crimp'
+              : tier >= 5
+                ? 'crack'
+                : 'jug';
+        if (fy < -24 && canPlaceHold(fx, fy, 24)) {
+          pushHold(fx, fy, footType, zone, baseRadius, isWetHold(footType, progress), true, 'core_path');
+        }
+      } else if (motif === 'roof_undercling' && tier >= 5) {
+        // Undercling Mantle: inverted grip arc paired with high opposing foothold, ending in a mantle ledge
+        const side = prevSideSign;
+        prevSideSign *= -1;
+        const isMantleExit = s === steps;
+        const ux = nx + side * (10 + rng() * 12);
+        const uy = ny + (rng() - 0.5) * 6;
+        const uType: HoldType = isMantleExit ? 'ledge' : rng() < 0.55 ? 'crack' : 'crimp';
+        if (canPlaceHold(ux, uy, 24)) {
+          pushHold(
+            ux,
+            uy,
+            uType,
+            zone,
+            baseRadius,
+            isWetHold(uType, progress),
+            isMantleExit,
+            'core_path',
+            isMantleExit ? 'downpull' : 'undercling'
+          );
+        }
+        const ox = nx - side * (22 + rng() * 12);
+        const oy = ny + 14 + rng() * 10;
+        const oType: HoldType = dynamicCycle ? 'spring' : pickMainType(true, progress);
+        if (oy < -24 && canPlaceHold(ox, oy, 24)) {
+          pushHold(ox, oy, oType, zone, baseRadius, isWetHold(oType, progress), false, 'core_path');
+        }
+      } else if (motif === 'asymmetric_crux' && tier >= 7) {
+        // Single-sided alternating crux: breaks symmetry and rewards body-tension & high-steps
+        const side = prevSideSign;
+        prevSideSign *= -1;
+        const cx = nx + side * (16 + rng() * 14);
+        const cy = ny + (rng() - 0.5) * 8;
+        let cType = pickMainType(true, progress);
+        if (tremorCycle && rng() < tremorChance) cType = 'tremor';
+        else if (swingCycle && rng() < 0.55) cType = 'swing';
+        if (canPlaceHold(cx, cy, 24)) {
+          pushHold(cx, cy, cType, zone, baseRadius, isWetHold(cType, progress), false, 'core_path');
+        }
+        if (rng() < 0.48 || dynamicCycle) {
+          const sx = nx - side * (18 + rng() * 14);
+          const sy = ny + 12 + rng() * 12;
+          const sType: HoldType = dynamicCycle ? 'spring' : pickMainType(false, progress);
+          if (sy < -24 && canPlaceHold(sx, sy, 24)) {
+            pushHold(sx, sy, sType, zone, baseRadius, isWetHold(sType, progress), false, 'core_path');
+          }
+        }
+      } else {
+        // Clear, organic staggered climbing flow
+        const leadSide = prevSideSign;
+        prevSideSign *= -1;
+        const spreadL = 14 + rng() * (tier <= 2 ? 12 : 20);
+        const spreadR = 14 + rng() * (tier <= 2 ? 12 : 20);
+        const leadX = nx + leadSide * spreadL;
+        const leadY = ny - 4 + (rng() - 0.5) * 10;
+        let leadType = pickMainType(true, progress);
+        if (dynamicCycle && rng() < 0.68) leadType = 'spring';
+        else if (swingCycle && rng() < 0.62) leadType = 'swing';
+        else if (tremorCycle && rng() < tremorChance) leadType = 'tremor';
+
+        if (canPlaceHold(leadX, leadY, 24)) {
+          pushHold(leadX, leadY, leadType, zone, baseRadius, isWetHold(leadType, progress), false, 'core_path');
+        }
+
+        const skipCompanion =
+          strategy.corePath.asymmetricSkipChance > 0 &&
+          leadType !== 'spring' &&
+          leadType !== 'swing' &&
+          leadType !== 'tremor' &&
+          rng() < strategy.corePath.asymmetricSkipChance;
+        if (!skipCompanion) {
+          const compX = nx - leadSide * spreadR;
+          const compY = ny + 10 + (rng() - 0.5) * 12;
+          let compType = pickMainType(false, progress);
+          if (dynamicCycle && leadType !== 'spring' && rng() < 0.6) compType = 'spring';
+          if (compY < -24 && canPlaceHold(compX, compY, 24)) {
+            pushHold(compX, compY, compType, zone, baseRadius, isWetHold(compType, progress), false, 'core_path');
+          }
+        }
+      }
     }
   }
 
-  // Step 2: Intentional Route-Reading Forks & High-Density Decoy Traps (heavily enriched on Tier >= 5)
-  // Tier 1: 0 branches (pure single line)
-  // Tier 2: 1 harmless parallel step
-  // Tier 3-4: 2-3 short alternative forks
-  // Tier 5-6: 7-9 misleading forks + false-promise entry traps + flank distractors
-  // Tier 7-8: 11-13 deceptive traverse/dead-end crux decoys
-  // Tier 9-11: 14-16 dense alpine false lines & high-drain decoys
-  const branchCount =
-    tier === 1
-      ? 0
-      : tier === 2
-        ? 1
-        : tier <= 4
-          ? tier - 1
-          : tier === 5
-            ? 7
-            : tier === 6
-              ? 9
-              : tier === 7
-                ? 11
-                : tier === 8
-                  ? 13
-                  : tier + 5;
-
-  const hasRainRoute = route.weatherStages.some((s) => s.type === 'rain');
-
-  for (let b = 0; b < branchCount; b++) {
-    if (mainLineNodes.length < 6) break;
-    const minIdx = 2;
-    const maxIdx = mainLineNodes.length - 4;
+  // ----------------------------------------------------------------------------
+  // STAGE 1B [core_path]: Reconnecting Stamina-Dilemma Branches (viable alternatives)
+  // ----------------------------------------------------------------------------
+  const viableBranchCount = strategy.corePath.viableBranchCount;
+  for (let b = 0; b < viableBranchCount; b++) {
+    if (mainLineNodes.length < 10) break;
+    const spanSteps = tier <= 4 ? 4 : tier <= 8 ? 5 + (b % 2) : 6 + (b % 3);
+    const usableMax = Math.max(3, mainLineNodes.length - spanSteps - 3);
     const startIdx =
-      minIdx + Math.floor(((b + 0.25 + rng() * 0.5) / branchCount) * (maxIdx - minIdx));
-    const anchor = mainLineNodes[Math.max(0, Math.min(mainLineNodes.length - 1, startIdx))];
+      2 + Math.floor(((b + 0.2 + rng() * 0.45) / viableBranchCount) * (usableMax - 2));
+    const endIdx = Math.min(mainLineNodes.length - 2, startIdx + spanSteps);
+    const startNode = mainLineNodes[startIdx];
+    const endNode = mainLineNodes[endIdx];
+    if (!startNode || !endNode) continue;
 
-    const dir = b % 2 === 0 ? 1 : -1;
-    const branchLen = tier <= 3 ? 3 : tier <= 6 ? 4 + (b % 2) : 5 + (b % 2);
-    const isDeadEndTrap =
-      tier >= 5
-        ? tier >= 7
-          ? rng() < 0.82
-          : rng() < 0.72
-        : tier === 4
-          ? rng() < 0.5
-          : false;
+    const midY = (startNode.y + endNode.y) * 0.5;
+    const midBounds = getCliffBounds(midY, mountainHeight);
+    const midX = (startNode.x + endNode.x) * 0.5;
+    const roomLeft = midX - (midBounds.left + 40);
+    const roomRight = midBounds.right - 40 - midX;
+    const preferRight = b % 2 === 0 ? roomRight >= 78 : roomLeft < 78;
+    const dir = preferRight ? 1 : -1;
+    const maxBow = Math.min(dir > 0 ? roomRight : roomLeft, tier <= 4 ? 88 : tier <= 8 ? 118 : 144);
+    if (maxBow < 56) continue;
 
-    let bx = anchor.x + dir * (38 + rng() * 16);
-    let by = anchor.y - 16;
+    const isSafeDetour = b % 2 === 0;
+    const branchSteps = Math.max(
+      4,
+      Math.round((Math.hypot(endNode.x - startNode.x, endNode.y - startNode.y) + maxBow * 1.15) / 42)
+    );
 
-    for (let s = 0; s < branchLen; s++) {
-      const bounds = getCliffBounds(by, mountainHeight);
-      if (bx < bounds.left + 24 || bx > bounds.right - 24 || by < -mountainHeight + 48) {
-        break;
-      }
+    if (b < strategy.corePath.staminaDilemmaForks) {
+      cruxPlacements.push({
+        logic: 'stamina_dilemma',
+        x: clampClimbX(midX + dir * maxBow * 0.65, midY, 36),
+        y: midY,
+        altitudeM: Math.round(-midY / PIXELS_PER_METER),
+        summary: isSafeDetour ? '远距回耐绕行线（含休息岩台）' : '高速高耗直切捷径',
+      });
+    }
+
+    for (let s = 1; s < branchSteps; s++) {
+      const t = s / branchSteps;
+      const arch = Math.sin(t * Math.PI);
+      const by = startNode.y + (endNode.y - startNode.y) * t;
+      const bx = clampClimbX(
+        startNode.x + (endNode.x - startNode.x) * t + dir * maxBow * arch,
+        by,
+        30
+      );
+      if (by < -mountainHeight + 56 || by > -36) continue;
 
       const progress = Math.max(0, Math.min(1, -by / mountainHeight));
       const zone = progress < 0.35 ? 0 : progress < 0.7 ? 1 : 2;
 
-      let bType: HoldType = 'crack';
+      let bType: HoldType;
       const r = rng();
-      if (tier <= 2) {
-        bType = r < 0.65 ? 'jug' : 'crack';
-      } else if (tier <= 4) {
-        bType = isDeadEndTrap && s === branchLen - 1 ? 'fragile' : r < 0.55 ? 'crimp' : 'crack';
-      } else if (tier <= 6) {
-        // False-promise entry: step 0 lures with a tempting crack/jug before turning into crimp/fragile traps
-        if (isDeadEndTrap && s === 0) {
-          bType = r < 0.38 ? 'jug' : 'crack';
+      if (isSafeDetour) {
+        if (s === Math.floor(branchSteps * 0.5) && tier >= 5) {
+          bType = 'ledge';
         } else {
-          bType =
-            isDeadEndTrap && s >= branchLen - 2
-              ? r < 0.68
-                ? 'fragile'
-                : 'crimp'
-              : r < 0.5
-                ? 'crimp'
-                : r < 0.74
-                  ? 'crack'
-                  : 'fragile';
+          bType = r < 0.45 ? 'jug' : r < 0.82 ? 'crack' : 'swing';
         }
       } else {
-        const allowIce = progress > 0.28 || tier >= 9;
-        if (isDeadEndTrap && s === 0) {
-          bType = r < 0.3 ? 'jug' : 'crack';
-        } else if (isDeadEndTrap && s >= branchLen - 2) {
-          bType = allowIce && rng() < 0.54 ? 'ice' : 'fragile';
-        } else {
-          bType = allowIce && r < 0.44 ? 'ice' : r < 0.8 ? 'crimp' : 'fragile';
-        }
+        const allowIce = tier >= 9 || (tier >= 7 && progress > 0.35);
+        if (allowIce && r < 0.25) bType = 'ice';
+        else if (r < 0.52) bType = 'crimp';
+        else if (r < 0.76) bType = 'crack';
+        else if (r < 0.9) bType = 'tremor';
+        else bType = 'spring';
       }
-
-      const bWet =
-        tier >= 5 &&
-        bType !== 'ice' &&
-        rng() < (hasRainRoute ? 0.22 + progress * 0.14 : 0.1);
 
       if (canPlaceHold(bx, by, 24)) {
-        pushHold(bx, by, bType, zone, undefined, bWet, false, isDeadEndTrap);
+        pushHold(bx, by, bType, zone, undefined, isWetHold(bType, progress), false, 'core_path');
       }
-
-      // Either curve away into a dead end or rejoin main line
-      if (isDeadEndTrap) {
-        bx += dir * (17 + rng() * 19);
-        by -= 35 + rng() * 11;
-      } else {
-        const nextMainX = getMainLineCenterX(by - 38);
-        bx = bx * 0.55 + nextMainX * 0.45;
-        by -= 36;
-      }
-    }
-  }
-
-  // Step 2b: Scattered flank distractor holds on Intermediate+ (tier >= 5) to raise route-reading stakes
-  if (tier >= ROUTE_BOOK_MIN_TIER && mainLineNodes.length >= 6) {
-    const decoyScatterCount = 8 + (tier - ROUTE_BOOK_MIN_TIER) * 4;
-    for (let dIdx = 0; dIdx < decoyScatterCount; dIdx++) {
-      const nodeIdx = 1 + Math.floor(((dIdx + 0.5) / decoyScatterCount) * (mainLineNodes.length - 3));
-      const anchor = mainLineNodes[Math.max(0, Math.min(mainLineNodes.length - 1, nodeIdx))];
-      const side = dIdx % 2 === 0 ? -1 : 1;
-      const dx = anchor.x + side * (46 + rng() * 54);
-      const dy = anchor.y + (rng() - 0.5) * 26;
-      const bounds = getCliffBounds(dy, mountainHeight);
-      if (dx < bounds.left + 26 || dx > bounds.right - 26 || dy < -mountainHeight + 52) {
-        continue;
-      }
-      const progress = Math.max(0, Math.min(1, -dy / mountainHeight));
-      const zone = progress < 0.35 ? 0 : progress < 0.7 ? 1 : 2;
-      const roll = rng();
-      let dType: HoldType = 'crimp';
-      if (tier >= 7 && (progress > 0.35 || tier >= 9) && roll < 0.34) {
-        dType = 'ice';
-      } else if (roll < 0.66) {
-        dType = 'fragile';
-      } else if (roll < 0.88) {
-        dType = 'crimp';
-      } else {
-        dType = 'crack';
-      }
-      const dWet =
-        dType !== 'ice' && rng() < (hasRainRoute ? 0.25 : 0.12);
-      if (canPlaceHold(dx, dy, 25)) {
-        pushHold(dx, dy, dType, zone, undefined, dWet, false, true);
+      if (arch > 0.65 && canPlaceHold(bx - dir * 18, by + 18, 24) && by + 18 < -30) {
+        pushHold(
+          bx - dir * 18,
+          by + 18,
+          isSafeDetour ? 'jug' : 'crimp',
+          zone,
+          undefined,
+          false,
+          true,
+          'core_path'
+        );
       }
     }
   }
 
+  // ----------------------------------------------------------------------------
+  // STAGE 1C [core_path]: Bivouac & Summit anchor holds (placed BEFORE isolation snapshots!)
+  // ----------------------------------------------------------------------------
   for (const ledge of ledges) {
     if (ledge.id === 'base-camp') continue;
-    pushHold(ledge.x - ledge.width * 0.26, ledge.y - 4, 'ledge', 1, 14);
-    pushHold(ledge.x, ledge.y - 4, 'ledge', 1, 15);
-    pushHold(ledge.x + ledge.width * 0.26, ledge.y - 4, 'ledge', 1, 14);
+    pushHold(ledge.x - ledge.width * 0.26, ledge.y - 4, 'ledge', 1, 14, false, true, 'core_path');
+    pushHold(ledge.x, ledge.y - 4, 'ledge', 1, 15, false, true, 'core_path');
+    pushHold(ledge.x + ledge.width * 0.26, ledge.y - 4, 'ledge', 1, 14, false, true, 'core_path');
     if (canPlaceHold(ledge.x - 24, ledge.y + 32, 22)) {
-      pushHold(ledge.x - 24, ledge.y + 32, 'jug', 1);
+      pushHold(ledge.x - 24, ledge.y + 32, 'jug', 1, undefined, false, false, 'core_path');
     }
     if (canPlaceHold(ledge.x + 24, ledge.y + 32, 22)) {
-      pushHold(ledge.x + 24, ledge.y + 32, 'jug', 1);
+      pushHold(ledge.x + 24, ledge.y + 32, 'jug', 1, undefined, false, false, 'core_path');
+    }
+  }
+
+  // Immutable snapshot of 100% of core_path holds (spine + dilemma branches + bivouacs + summit)
+  const coreHolds = holds.filter((h) => !h.isDecoy);
+  const minDistToList = (x: number, y: number, list: Array<{ x: number; y: number }>) => {
+    let best = Infinity;
+    for (const pt of list) {
+      const d = Math.hypot(pt.x - x, pt.y - y);
+      if (d < best) best = d;
+    }
+    return best;
+  };
+
+  // ----------------------------------------------------------------------------
+  // STAGE 2 [master_decoy_path]: False Golden Highways & Flank Decoy Traps
+  // ----------------------------------------------------------------------------
+  const decoyHolds: Hold[] = [];
+  const buildDecoyPath = (
+    anchor: Vec2,
+    preferredDirX: number,
+    kind: 'false_golden_highway' | 'flank_decoy',
+    len: number
+  ) => {
+    const isGolden = kind === 'false_golden_highway';
+    const minIso = strategy.masterDecoyPath.tipMinIsolationFromCore;
+    const lureHeadSteps = strategy.masterDecoyPath.lureHeadSteps;
+
+    // Pick whichever side has genuinely open cliff corridor 2..4 steps ahead so decoys don't clip into stubs
+    const scoreDir = (d: number) => {
+      let openSteps = 0;
+      let sx = anchor.x + d * (isGolden ? 14 : 44);
+      let sy = anchor.y - (isGolden ? 36 : 22);
+      for (let k = 0; k < len; k++) {
+        const b = getCliffBounds(sy, mountainHeight);
+        if (sx < b.left + 26 || sx > b.right - 26 || sy < -mountainHeight + 68 || sy > -46) break;
+        if (k >= 2 && minDistToList(sx, sy, coreHolds) < minIso) break;
+        openSteps++;
+        sx += d * (isGolden ? 20 : 24);
+        sy -= 38;
+      }
+      return openSteps;
+    };
+
+    const prefScore = scoreDir(preferredDirX);
+    const altScore = scoreDir(-preferredDirX);
+    const dirX = altScore > prefScore + 1 ? -preferredDirX : preferredDirX;
+
+    let tx = anchor.x + dirX * (isGolden ? 14 : 44 + rng() * 12);
+    let ty = anchor.y - (isGolden ? 36 : 22);
+    const placedIds: string[] = [];
+    let lastPlaced: Vec2 | null = null;
+
+    for (let s = 0; s < len; s++) {
+      const bounds = getCliffBounds(ty, mountainHeight);
+      if (tx < bounds.left + 26 || tx > bounds.right - 26 || ty < -mountainHeight + 68 || ty > -46) {
+        break;
+      }
+
+      // From step 2 onward, enforce strict isolation from ALL core_path holds so the decoy truly dead-ends
+      if (s >= 2 && minDistToList(tx, ty, coreHolds) < minIso) {
+        // Try one gentle outward nudge into open rock before terminating
+        const nudgedX = tx + dirX * 22;
+        if (
+          nudgedX >= bounds.left + 26 &&
+          nudgedX <= bounds.right - 26 &&
+          minDistToList(nudgedX, ty, coreHolds) >= minIso
+        ) {
+          tx = nudgedX;
+        } else {
+          break;
+        }
+      }
+
+      const progress = Math.max(0, Math.min(1, -ty / mountainHeight));
+      const zone = progress < 0.35 ? 0 : progress < 0.7 ? 1 : 2;
+      const allowIce = progress > 0.25 || tier >= 9;
+      const r = rng();
+
+      let tType: HoldType;
+      if (s < lureHeadSteps) {
+        // False Golden Highway: intentionally seductive large holds (jug / ledge / crack) at the head
+        if (isGolden && s === 1 && tier >= 8) {
+          tType = 'ledge';
+        } else {
+          tType = r < 0.56 ? 'jug' : r < 0.88 ? 'crack' : 'crimp';
+        }
+      } else if (s >= len - 2) {
+        // Terminal trap holds right before smooth blank rock
+        tType = allowIce && r < 0.52 ? 'ice' : r < 0.86 ? 'fragile' : 'crimp';
+      } else {
+        tType = allowIce && r < 0.34 ? 'ice' : r < 0.64 ? 'crimp' : r < 0.84 ? 'fragile' : 'tremor';
+      }
+
+      if (canPlaceHold(tx, ty, 24)) {
+        const placed = pushHold(
+          tx,
+          ty,
+          tType,
+          zone,
+          undefined,
+          isWetHold(tType, progress, 0.1),
+          isGolden && tType === 'ledge',
+          'master_decoy_path'
+        );
+        decoyHolds.push(placed);
+        placedIds.push(placed.id);
+        lastPlaced = { x: tx, y: ty };
+      }
+
+      // Drift cleanly away from the core corridor into blank alpine rock
+      tx += isGolden ? dirX * (16 + rng() * 14) : dirX * (20 + rng() * 16);
+      ty -= 35 + rng() * 11;
+    }
+
+    if (lastPlaced && placedIds.length >= 2) {
+      decoyPaths.push({
+        kind,
+        entryX: anchor.x,
+        entryY: anchor.y,
+        tipX: lastPlaced.x,
+        tipY: lastPlaced.y,
+        stepCount: placedIds.length,
+        holdIds: placedIds,
+      });
+    }
+  };
+
+  if (strategy.masterDecoyPath.enabled) {
+    const [minLen, maxLen] = strategy.masterDecoyPath.stepsPerDecoy;
+    const pickDecoyLen = (extra = 0) =>
+      Math.min(maxLen + extra, minLen + Math.floor(rng() * (maxLen - minLen + 1)) + extra);
+
+    // 2a. False Golden Highways anchored directly above sidepull_gate & keyhole_bridge entries
+    let goldenPlaced = 0;
+    for (const entry of goldenHighwayEntryAnchors) {
+      if (goldenPlaced >= strategy.masterDecoyPath.falseGoldenHighways) break;
+      buildDecoyPath(
+        { x: entry.node.x, y: entry.node.y },
+        entry.baitDir,
+        'false_golden_highway',
+        pickDecoyLen(tier >= 9 ? 1 : 0)
+      );
+      goldenPlaced++;
+    }
+
+    // Backfill remaining Master Golden Highways at mid-pitch spine nodes if needed
+    while (
+      goldenPlaced < strategy.masterDecoyPath.falseGoldenHighways &&
+      mainLineNodes.length >= 10
+    ) {
+      const frac = (goldenPlaced + 0.4) / Math.max(1, strategy.masterDecoyPath.falseGoldenHighways);
+      const idx = Math.max(
+        3,
+        Math.min(mainLineNodes.length - 5, Math.floor(frac * (mainLineNodes.length - 6)))
+      );
+      const anchor = mainLineNodes[idx];
+      const dir: -1 | 1 = goldenPlaced % 2 === 0 ? 1 : -1;
+      buildDecoyPath({ x: anchor.x, y: anchor.y }, dir, 'false_golden_highway', pickDecoyLen());
+      goldenPlaced++;
+    }
+
+    // 2b. Flank Decoy Branches splitting off the climb into dead-ends
+    const flankCount = strategy.masterDecoyPath.flankDecoyBranches;
+    for (let f = 0; f < flankCount; f++) {
+      if (mainLineNodes.length < 8) break;
+      const minIdx = 2;
+      const maxIdx = mainLineNodes.length - 4;
+      const nodeIdx =
+        minIdx + Math.floor(((f + 0.25 + rng() * 0.45) / Math.max(1, flankCount)) * (maxIdx - minIdx));
+      const anchor = mainLineNodes[Math.max(0, Math.min(mainLineNodes.length - 1, nodeIdx))];
+      const dir: -1 | 1 = f % 2 === 0 ? 1 : -1;
+      buildDecoyPath({ x: anchor.x, y: anchor.y }, dir, 'flank_decoy', pickDecoyLen());
+    }
+  }
+
+  // ----------------------------------------------------------------------------
+  // STAGE 3 [decorative_dead_end]: Strictly Unreachable Short Dead-End Rock Lines
+  // Placed far outside the playable corridor (>= 124..132px from EVERY core_path hold)
+  // and isolated from master_decoy_path holds (>= 116px) so they enrich visual depth
+  // and wall layering without ever being grabbable from the climbing route.
+  // ----------------------------------------------------------------------------
+  const decCfg = strategy.decorativeDeadEnd;
+  for (let l = 0; l < decCfg.lineCount; l++) {
+    const progress = 0.08 + ((l + 0.2 + rng() * 0.65) / Math.max(1, decCfg.lineCount)) * 0.78;
+    const startY = -progress * mountainHeight;
+    if (startY > -52 || startY < -mountainHeight + 110) continue;
+
+    const fullWallHalfW = progress > 0.8 ? 196 : 246;
+    const preferredSide = l % 2 === 0 ? -1 : 1;
+
+    // Find an unreachable starting anchor on either flank (prefer alternating left/right)
+    let startX: number | null = null;
+    for (const side of [preferredSide, -preferredSide]) {
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const candX = side * (134 + rng() * Math.max(24, fullWallHalfW - 134));
+        if (
+          minDistToList(candX, startY, coreHolds) >= decCfg.minDistFromCore &&
+          minDistToList(candX, startY, decoyHolds) >= decCfg.minDistFromDecoy &&
+          canPlaceHold(candX, startY, 28)
+        ) {
+          startX = candX;
+          break;
+        }
+      }
+      if (startX !== null) break;
+    }
+    if (startX === null) continue;
+
+    const [minHolds, maxHolds] = decCfg.holdsPerLine;
+    const lineLen = minHolds + Math.floor(rng() * (maxHolds - minHolds + 1));
+    const driftSide = startX >= 0 ? 1 : -1;
+    let dx = startX;
+    let dy = startY;
+
+    for (let step = 0; step < lineLen; step++) {
+      const p = Math.max(0, Math.min(1, -dy / mountainHeight));
+      const maxX = p > 0.82 ? 196 : 246;
+      if (Math.abs(dx) > maxX || dy > -46 || dy < -mountainHeight + 68) break;
+      if (minDistToList(dx, dy, coreHolds) < decCfg.minDistFromCore) break;
+      if (minDistToList(dx, dy, decoyHolds) < decCfg.minDistFromDecoy) break;
+
+      if (canPlaceHold(dx, dy, 26)) {
+        const zone = p < 0.35 ? 0 : p < 0.7 ? 1 : 2;
+        const r = rng();
+        let dType: HoldType;
+        if (route.palette === 'glacial') {
+          dType = step === lineLen - 1 ? 'ice' : r < 0.35 ? 'crack' : r < 0.7 ? 'crimp' : 'fragile';
+        } else if (tier <= 2) {
+          dType = r < 0.42 ? 'jug' : r < 0.76 ? 'crack' : 'crimp';
+        } else {
+          dType = step === lineLen - 1 ? 'fragile' : r < 0.38 ? 'crack' : r < 0.74 ? 'crimp' : 'jug';
+        }
+
+        const baseR =
+          dType === 'jug' ? 11.5 : dType === 'crack' ? 10.5 : 9.2;
+        pushHold(
+          dx,
+          dy,
+          dType,
+          zone,
+          baseR * decCfg.radiusScale,
+          false,
+          false,
+          'decorative_dead_end'
+        );
+      }
+
+      // Climb organically along an outer rib and drift slightly outward before terminating
+      dx += driftSide * (6 + rng() * 14) + (rng() - 0.5) * 10;
+      dy -= 30 + rng() * 14;
+    }
+  }
+
+  // ----------------------------------------------------------------------------
+  // STAGE 4 [far_distractor]: Full-Wall Flank Veins & Phantom Islands
+  // Enriches panoramic mountain wall scale across [-248..+248] and adds route-reading
+  // noise on mid/high/Master tiers while strictly respecting unreachable separation.
+  // ----------------------------------------------------------------------------
+  const distCfg = strategy.farDistractor;
+
+  // 4a. Phantom Islands (Tier >= 3, prominent on Master): tempting compact 3-4 hold islands
+  // perched across unjumpable blank rock bands (126..210px off the core corridor)
+  for (let pIdx = 0; pIdx < distCfg.phantomIslandCount; pIdx++) {
+    const progress = 0.12 + ((pIdx + 0.3 + rng() * 0.5) / Math.max(1, distCfg.phantomIslandCount)) * 0.72;
+    const islandY = -progress * mountainHeight;
+    if (islandY > -56 || islandY < -mountainHeight + 92) continue;
+
+    const maxX = progress > 0.8 ? 196 : 244;
+    const prefSide = pIdx % 2 === 0 ? 1 : -1;
+    let islandX: number | null = null;
+    for (const side of [prefSide, -prefSide]) {
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const candX = side * (128 + rng() * Math.max(24, maxX - 128));
+        if (
+          minDistToList(candX, islandY, coreHolds) >= Math.max(122, distCfg.minDistFromCore) &&
+          minDistToList(candX, islandY, decoyHolds) >= distCfg.minDistFromDecoy &&
+          canPlaceHold(candX, islandY, 30)
+        ) {
+          islandX = candX;
+          break;
+        }
+      }
+      if (islandX !== null) break;
+    }
+    if (islandX === null) continue;
+
+    const zone = progress < 0.35 ? 0 : progress < 0.7 ? 1 : 2;
+    const islandOffsets: Array<{ dx: number; dy: number; type: HoldType }> = [
+      { dx: 0, dy: 0, type: 'ledge' },
+      { dx: -22, dy: -26, type: 'jug' },
+      { dx: 20, dy: -32, type: route.palette === 'glacial' ? 'ice' : 'crack' },
+      { dx: 4, dy: -56, type: tier >= 9 ? 'crimp' : 'jug' },
+    ];
+    for (const off of islandOffsets) {
+      const ix = islandX + off.dx + (rng() - 0.5) * 8;
+      const iy = islandY + off.dy + (rng() - 0.5) * 8;
+      if (Math.abs(ix) > maxX || iy > -46 || iy < -mountainHeight + 66) continue;
+      if (minDistToList(ix, iy, coreHolds) < Math.max(122, distCfg.minDistFromCore)) continue;
+      if (minDistToList(ix, iy, decoyHolds) < distCfg.minDistFromDecoy) continue;
+      if (!canPlaceHold(ix, iy, 24)) continue;
+
+      const r = off.type === 'ledge' ? 12.2 : off.type === 'jug' ? 10.8 : 9.4;
+      pushHold(ix, iy, off.type, zone, r, false, off.type === 'ledge', 'far_distractor');
+    }
+  }
+
+  // 4b. Geological Flank Distractor Veins across both left & right outer walls
+  for (let c = 0; c < distCfg.clusterCount; c++) {
+    const progress = 0.07 + ((c + rng() * 0.85) / Math.max(1, distCfg.clusterCount)) * 0.82;
+    const baseY = -progress * mountainHeight;
+    if (baseY > -46 || baseY < -mountainHeight + 66) continue;
+
+    const fullWallHalfW = progress > 0.82 ? 196 : 248;
+    const side = c % 2 === 0 ? -1 : 1;
+    const minFlankX = tier <= 2 ? 134 : 112;
+    let baseX = side * (minFlankX + rng() * Math.max(24, fullWallHalfW - minFlankX));
+
+    const violatesIsolation = (x: number, y: number) =>
+      minDistToList(x, y, coreHolds) < distCfg.minDistFromCore ||
+      minDistToList(x, y, decoyHolds) < distCfg.minDistFromDecoy;
+
+    if (violatesIsolation(baseX, baseY)) {
+      const altX = -side * (142 + rng() * Math.max(20, fullWallHalfW - 142));
+      if (!violatesIsolation(altX, baseY)) {
+        baseX = altX;
+      }
+    }
+
+    const [minCluster, maxCluster] = distCfg.clusterSize;
+    const clusterSize = minCluster + Math.floor(rng() * (maxCluster - minCluster + 1));
+    const veinSlope = rng() < 0.65 ? -0.42 : 0.36;
+
+    for (let m = 0; m < clusterSize; m++) {
+      const ax = baseX + (m - (clusterSize - 1) * 0.5) * (24 + rng() * 14) + (rng() - 0.5) * 14;
+      const ay = baseY + (m - (clusterSize - 1) * 0.5) * (24 * veinSlope) + (rng() - 0.5) * 16;
+
+      if (Math.abs(ax) > fullWallHalfW || ay > -44 || ay < -mountainHeight + 66) continue;
+      if (!canPlaceHold(ax, ay, 28)) continue;
+      if (violatesIsolation(ax, ay)) continue;
+
+      const zone = progress < 0.35 ? 0 : progress < 0.7 ? 1 : 2;
+      const r = rng();
+      let aType: HoldType;
+      if (route.palette === 'glacial') {
+        aType = r < 0.28 ? 'ice' : r < 0.58 ? 'crimp' : r < 0.8 ? 'crack' : r < 0.92 ? 'fragile' : 'jug';
+      } else if (tier <= 2) {
+        aType = r < 0.38 ? 'jug' : r < 0.72 ? 'crack' : r < 0.9 ? 'crimp' : 'ledge';
+      } else {
+        aType = r < 0.3 ? 'crimp' : r < 0.58 ? 'crack' : r < 0.78 ? 'fragile' : r < 0.92 ? 'jug' : 'ledge';
+      }
+
+      const ambientRadius =
+        aType === 'crimp'
+          ? 8 + rng() * 1.6
+          : aType === 'ledge'
+            ? 11 + rng() * 2
+            : 9 + rng() * 2.4;
+
+      pushHold(ax, ay, aType, zone, ambientRadius, false, false, 'far_distractor');
     }
   }
 
@@ -2195,6 +3139,7 @@ export function generateMountain(route: RouteConfig): MountainWorld {
     const endM = Math.round(r1 * route.heightM);
 
     const holdsInBin = holds.filter((h) => {
+      if (h.isDecoy) return false;
       const hr = Math.max(0, Math.min(0.9999, -h.y / mountainHeight));
       return hr >= r0 && hr < r1;
     });
@@ -2298,7 +3243,7 @@ export function generateMountain(route: RouteConfig): MountainWorld {
 
   const wallAnalysis = analyzeStaminaAndHoldDensity(holds, mountainHeight, 1.0, route);
 
-  return {
+  const world: MountainWorld = {
     route,
     mountainHeight,
     outlineLeft,
@@ -2314,4 +3259,19 @@ export function generateMountain(route: RouteConfig): MountainWorld {
     difficultyProfile,
     wallAnalysis,
   };
+
+  routeRoleBreakdownMap.set(world, {
+    strategy,
+    counts: {
+      core_path: holdIdsByRole.core_path.length,
+      decorative_dead_end: holdIdsByRole.decorative_dead_end.length,
+      far_distractor: holdIdsByRole.far_distractor.length,
+      master_decoy_path: holdIdsByRole.master_decoy_path.length,
+    },
+    holdIdsByRole,
+    cruxPlacements,
+    decoyPaths,
+  });
+
+  return world;
 }
