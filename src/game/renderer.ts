@@ -10,7 +10,7 @@ import {
   predictReachPose,
   solveTwoBoneIK,
 } from './ik';
-import { MountainWorld } from './mountain';
+import { hasHoldHintsEnabled, MountainWorld } from './mountain';
 import {
   ActiveWeather,
   CameraState,
@@ -24,9 +24,12 @@ import {
   HoverInfo,
   LimbDragState,
   LimbId,
+  MicroWeatherWindow,
   Particle,
   PelvisDragState,
   Piton,
+  RoadbookAttemptReview,
+  RoadbookFallHotspot,
   Vec2,
   WeatherIncidentState,
 } from './types';
@@ -164,11 +167,16 @@ export interface RenderParams {
   trailPlaybackProgress: number | null;
   nearbyRecyclablePitonId: string | null;
   betaPins?: string[];
+  betaCursor?: number;
+  attemptReview?: RoadbookAttemptReview | null;
+  fallHotspots?: RoadbookFallHotspot[];
+  showAttemptReview?: boolean;
   activeLimbDrag?: LimbDragState | null;
   activePelvisDrag?: PelvisDragState | null;
   highlightPelvis?: boolean;
   isFreeSolo?: boolean;
   weatherIncident?: WeatherIncidentState | null;
+  microWindow?: MicroWeatherWindow | null;
   gender?: ClimberGender;
 }
 
@@ -198,14 +206,20 @@ export function renderGameFrame(params: RenderParams) {
     trailPlaybackProgress,
     nearbyRecyclablePitonId,
     betaPins = [],
+    betaCursor = 0,
+    attemptReview = null,
+    fallHotspots = [],
+    showAttemptReview = false,
     activeLimbDrag = null,
     activePelvisDrag = null,
     highlightPelvis = false,
     isFreeSolo = false,
     weatherIncident = null,
+    microWindow = null,
     gender = 'male',
   } = params;
 
+  const showHoldHints = hasHoldHintsEnabled(world.route);
   const mountainHeight = world.mountainHeight;
   const altRatio = Math.max(0, Math.min(1, -climber.torsoPos.y / mountainHeight));
   const inkScale = Math.max(1.05, Math.min(2.4, 1.75 / Math.sqrt(camera.zoom)));
@@ -893,31 +907,11 @@ export function renderGameFrame(params: RenderParams) {
   }
   }
 
-  // 4E. Climbable Holds + Reachable Touch Affordances
+  // 4E. Climbable Holds (Pure Rock Art on Intermediate+ & Roadbook; Learner Affordances on Tier 1..4)
   if (camera.zoom > 0.24) {
     const holdAlpha = Math.min(1, (camera.zoom - 0.24) / 0.28);
     ctx.save();
     ctx.globalAlpha = holdAlpha;
-
-    // In Route-Reading pause mode, show tactical sightlines from the inspected hold to nearby next holds
-    if (isReadingRoute && hover?.hold) {
-      const origin = hover.hold;
-      ctx.save();
-      ctx.strokeStyle = 'rgba(125, 211, 252, 0.72)';
-      ctx.lineWidth = 2;
-      ctx.setLineDash([5, 5]);
-      for (const target of world.holds) {
-        if (target.broken || target.id === origin.id) continue;
-        const d = Math.hypot(target.x - origin.x, target.y - origin.y);
-        if (d <= 78 && target.y <= origin.y + 24) {
-          ctx.beginPath();
-          ctx.moveTo(origin.x, origin.y);
-          ctx.lineTo(target.x, target.y);
-          ctx.stroke();
-        }
-      }
-      ctx.restore();
-    }
 
     // Map active limb strain per hold so gripped strained holds visibly tremble
     const strainedHoldMap = new Map<string, number>();
@@ -993,8 +987,8 @@ export function renderGameFrame(params: RenderParams) {
       ctx.save();
       ctx.translate(h.x + jitterX, h.y + jitterY);
 
-      // Subtle ivory halo ring for all currently reachable holds (crucial for mobile touch!)
-      if (isReachable && !isHovered && !isTutorialTarget) {
+      // Subtle ivory halo ring for reachable holds ONLY on Beginner/Intro routes (Tier <= 4) during active climb
+      if (showHoldHints && !isReadingRoute && isReachable && !isHovered && !isTutorialTarget) {
         ctx.strokeStyle = 'rgba(254, 243, 199, 0.56)';
         ctx.lineWidth = 1.8;
         ctx.beginPath();
@@ -1002,54 +996,13 @@ export function renderGameFrame(params: RenderParams) {
         ctx.stroke();
       }
 
-      // Route-Reading Scan Overlay: highlights rock quality + remaining grip intensity
-      if (isReadingRoute && !isHovered) {
-        const readColor =
-          h.type === 'jug' || h.type === 'ledge'
-            ? '#34D399'
-            : h.type === 'spring'
-              ? '#A3E635'
-              : h.type === 'swing'
-                ? '#22D3EE'
-                : h.type === 'tremor'
-                  ? '#E879F9'
-                  : h.type === 'crack'
-                    ? '#60A5FA'
-                    : h.type === 'fragile'
-                      ? '#F59E0B'
-                      : h.type === 'ice'
-                        ? '#38BDF8'
-                        : '#CBD5E1';
-        ctx.save();
-        ctx.strokeStyle = readColor;
-        ctx.lineWidth = 2.1;
-        if (h.type === 'fragile' || h.type === 'ice' || h.type === 'tremor') {
-          ctx.setLineDash([4, 3]);
-        }
+      // In Roadbook mode, show ONLY a subtle neutral parchment selection ring on the hovered hold (no color/quality hints)
+      if (isReadingRoute && isHovered) {
+        ctx.strokeStyle = 'rgba(244, 241, 234, 0.82)';
+        ctx.lineWidth = 1.8;
         ctx.beginPath();
-        ctx.arc(0, 0, h.radius + 7, 0, Math.PI * 2);
+        ctx.arc(0, 0, h.radius + 5.5, 0, Math.PI * 2);
         ctx.stroke();
-
-        // Remaining grip strength arc (full bright green = low stamina cost; short dark red = high cost)
-        const remainingGrip = Math.max(0.12, 1 - costRatio);
-        ctx.setLineDash([]);
-        ctx.strokeStyle =
-          remainingGrip >= 0.65
-            ? '#6EE7B7'
-            : remainingGrip >= 0.38
-              ? '#FBBF24'
-              : '#EF4444';
-        ctx.lineWidth = 2.4;
-        ctx.beginPath();
-        ctx.arc(
-          0,
-          0,
-          h.radius + 10.5,
-          -Math.PI / 2,
-          -Math.PI / 2 + Math.PI * 2 * remainingGrip
-        );
-        ctx.stroke();
-        ctx.restore();
       }
 
       // Tutorial pulsing beacon ring
@@ -1067,13 +1020,15 @@ export function renderGameFrame(params: RenderParams) {
 
       const r = h.radius;
       const v = h.shapeVariant;
-      const hoverHighlightColor = isHovered
-        ? hover?.reachable
-          ? '#F59E0B'
-          : hover?.dynoEligible
-            ? '#38BDF8'
-            : '#EF4444'
-        : null;
+      // Only show reachability color-coding on hover for Beginner/Intro tiers (never on Intermediate+ or Roadbook)
+      const hoverHighlightColor =
+        isHovered && showHoldHints && !isReadingRoute
+          ? hover?.reachable
+            ? '#F59E0B'
+            : hover?.dynoEligible
+              ? '#38BDF8'
+              : '#EF4444'
+          : null;
 
       // Render transparent art-pack PNG hold strictly rotated & scaled around contact anchor (0, 0)
       const drewArtHold = drawArtPackHold({
@@ -1086,6 +1041,7 @@ export function renderGameFrame(params: RenderParams) {
         isHovered,
         isSteppedOn,
         hoverHighlightColor,
+        pureArtMode: !showHoldHints || isReadingRoute,
       });
 
       if (!drewArtHold) {
@@ -1530,13 +1486,19 @@ export function renderGameFrame(params: RenderParams) {
         ctx.fill();
       }
 
-      // Directional grip lip accent (sidepull / undercling)
+      // Directional grip art: learner yellow/amber accent ONLY on Tier <= 4;
+      // on Intermediate+ & Roadbook, represent sidepull/undercling purely through subtle natural rock shadow bevel
       if (h.gripKind && h.gripKind !== 'downpull') {
-        ctx.strokeStyle =
-          h.gripKind === 'undercling'
-            ? 'rgba(245, 158, 11, 0.92)'
-            : 'rgba(250, 204, 21, 0.92)';
-        ctx.lineWidth = 2.2;
+        if (showHoldHints && !isReadingRoute) {
+          ctx.strokeStyle =
+            h.gripKind === 'undercling'
+              ? 'rgba(245, 158, 11, 0.92)'
+              : 'rgba(250, 204, 21, 0.92)';
+          ctx.lineWidth = 2.2;
+        } else {
+          ctx.strokeStyle = 'rgba(20, 24, 32, 0.44)';
+          ctx.lineWidth = 1.9;
+        }
         ctx.beginPath();
         if (h.gripKind === 'sidepullLeft') {
           ctx.arc(0, 0, r * 0.78, Math.PI * 0.65, Math.PI * 1.35);
@@ -1550,8 +1512,8 @@ export function renderGameFrame(params: RenderParams) {
 
       ctx.restore();
 
-      // Clear directional pull arrow badge when hovered or in Route-Read mode
-      if ((isHovered || isReadingRoute) && h.gripKind && h.gripKind !== 'downpull') {
+      // Directional pull arrow badge ONLY for Beginner/Intro active climb (never on Intermediate+ or Roadbook)
+      if (showHoldHints && !isReadingRoute && isHovered && h.gripKind && h.gripKind !== 'downpull') {
         ctx.save();
         ctx.translate(h.x, h.y - h.radius - 9);
         ctx.fillStyle = 'rgba(20, 24, 32, 0.86)';
@@ -1574,118 +1536,520 @@ export function renderGameFrame(params: RenderParams) {
     ctx.restore();
   }
 
-  // 4E-1B. Player-drawn Route-Read Roadbook Sequence, Feasibility & Next-Step Guide
+  // 4E-1C. Previous-Attempt Roadbook Review Trace & Circular Fall Hotspot Particle Rings
+  if (
+    phase === 'PLAYING' &&
+    isReadingRoute &&
+    showAttemptReview &&
+    (attemptReview || fallHotspots.length > 0)
+  ) {
+    const holdsById = new Map(world.holds.map((h) => [h.id, h]));
+    ctx.save();
+
+    const drawFallHotspotRing = (
+      hx: number,
+      hy: number,
+      altitudeM: number,
+      count: number,
+      isLatestFall: boolean
+    ) => {
+      if (hy < minVisY - 90 || hy > maxVisY + 90) return;
+      const heatBoost = Math.min(3, Math.max(0, count - 1));
+      const baseRingR = 17 + heatBoost * 3.5;
+      const maxWaveR = 40 + heatBoost * 7;
+
+      // 1. Soft pulsing crimson radial heat glow (keeps rock holds underneath legible)
+      const corePulse = 0.86 + 0.14 * Math.sin(timeSec * 3.1 + hx * 0.05);
+      const glowR = (30 + heatBoost * 6) * corePulse;
+      const grad = ctx.createRadialGradient(hx, hy, 2, hx, hy, glowR);
+      grad.addColorStop(0, `rgba(220, 38, 38, ${0.28 + heatBoost * 0.04})`);
+      grad.addColorStop(0.55, `rgba(239, 68, 68, ${0.14 + heatBoost * 0.025})`);
+      grad.addColorStop(1, 'rgba(239, 68, 68, 0)');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(hx, hy, glowR, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 2. Staggered expanding concentric hotspot wave rings
+      const waveCount = count >= 2 ? 3 : 2;
+      for (let w = 0; w < waveCount; w++) {
+        const phaseU = (timeSec * 0.62 + w / waveCount + (hx * 0.013)) % 1;
+        const eased = 1 - Math.pow(1 - phaseU, 2);
+        const waveR = 11 + eased * (maxWaveR - 11);
+        const waveAlpha = (1 - phaseU) * (isLatestFall ? 0.72 : 0.56);
+        ctx.strokeStyle = `rgba(239, 68, 68, ${waveAlpha.toFixed(3)})`;
+        ctx.lineWidth = 2.0 - phaseU * 1.1;
+        ctx.beginPath();
+        ctx.arc(hx, hy, waveR, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      // 3. Rotating dashed crimson containment ring
+      ctx.save();
+      ctx.translate(hx, hy);
+      ctx.rotate(timeSec * 0.38 * (isLatestFall ? 1 : -0.75));
+      ctx.strokeStyle = isLatestFall
+        ? 'rgba(248, 113, 113, 0.85)'
+        : 'rgba(239, 68, 68, 0.66)';
+      ctx.lineWidth = 1.6;
+      ctx.setLineDash([4.5, 4]);
+      ctx.beginPath();
+      ctx.arc(0, 0, baseRingR, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
+
+      // 4. Circular "坠落热点" orbiting & radially drifting particle halo
+      const particleCount = Math.min(26, 16 + heatBoost * 3);
+      for (let i = 0; i < particleCount; i++) {
+        const seed = i * 2.39996323 + hx * 0.031 + hy * 0.019;
+        const lifeU = (timeSec * (0.72 + (i % 3) * 0.14) + i / particleCount) % 1;
+        const orbitDir = i % 2 === 0 ? 1 : -0.68;
+        const ang =
+          (i / particleCount) * Math.PI * 2 +
+          timeSec * (0.55 + (i % 4) * 0.12) * orbitDir +
+          Math.sin(timeSec * 1.8 + seed) * 0.14;
+        const radialDrift =
+          baseRingR - 3 + lifeU * (15 + heatBoost * 4.5) + Math.sin(seed + timeSec * 2.5) * 1.8;
+        const px = hx + Math.cos(ang) * radialDrift;
+        const py = hy + Math.sin(ang) * radialDrift;
+        const fade = Math.sin(lifeU * Math.PI);
+        const pAlpha = fade * (isLatestFall ? 0.94 : 0.78);
+        const pSize = (1.35 + (i % 3) * 0.45 + heatBoost * 0.15) * (0.65 + 0.35 * fade);
+
+        // Soft crimson outer halo per ember particle
+        ctx.fillStyle = `rgba(239, 68, 68, ${(pAlpha * 0.34).toFixed(3)})`;
+        ctx.beginPath();
+        ctx.arc(px, py, pSize * 2.1, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Crisp luminous particle core
+        ctx.fillStyle =
+          i % 4 === 0
+            ? `rgba(254, 226, 226, ${pAlpha.toFixed(3)})`
+            : i % 3 === 0 && count >= 2
+              ? `rgba(251, 146, 60, ${pAlpha.toFixed(3)})`
+              : `rgba(239, 68, 68, ${pAlpha.toFixed(3)})`;
+        ctx.beginPath();
+        ctx.arc(px, py, pSize, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // 5. High-contrast crimson × crosshair core
+      ctx.strokeStyle = 'rgba(20, 24, 32, 0.85)';
+      ctx.lineWidth = 4.2;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(hx - 6.5, hy - 6.5);
+      ctx.lineTo(hx + 6.5, hy + 6.5);
+      ctx.moveTo(hx + 6.5, hy - 6.5);
+      ctx.lineTo(hx - 6.5, hy + 6.5);
+      ctx.stroke();
+
+      ctx.strokeStyle = '#EF4444';
+      ctx.lineWidth = 2.3;
+      ctx.beginPath();
+      ctx.moveTo(hx - 6.5, hy - 6.5);
+      ctx.lineTo(hx + 6.5, hy + 6.5);
+      ctx.moveTo(hx + 6.5, hy - 6.5);
+      ctx.lineTo(hx - 6.5, hy + 6.5);
+      ctx.stroke();
+
+      // 6. Editorial hotspot caption badge
+      if (isLatestFall || count >= 2) {
+        const fallLabel =
+          count >= 2
+            ? `坠落热点 ×${count} · ${altitudeM.toFixed(1)}m`
+            : `坠落热点 · ${altitudeM.toFixed(1)}m`;
+        ctx.font = 'bold 10px "Plus Jakarta Sans", sans-serif';
+        const tw = ctx.measureText(fallLabel).width;
+        const labelY = hy - baseRingR - 14;
+        ctx.fillStyle = 'rgba(20, 24, 32, 0.92)';
+        ctx.strokeStyle = count >= 2 ? '#EF4444' : 'rgba(239, 68, 68, 0.82)';
+        ctx.lineWidth = count >= 2 ? 1.5 : 1.2;
+        ctx.beginPath();
+        ctx.roundRect(hx - tw * 0.5 - 7, labelY - 8.5, tw + 14, 17, 3);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = count >= 2 ? '#FEE2E2' : '#FECACA';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(fallLabel, hx, labelY + 0.5);
+      }
+    };
+
+    // Climber's own previous trajectory on the rock face (with crimson fall-zone highlight)
+    if (attemptReview && attemptReview.trail.length >= 2) {
+      const hasFallPos = attemptReview.outcome === 'FALLEN' && Boolean(attemptReview.fallPos);
+      const trailPts = [...attemptReview.trail];
+      if (hasFallPos && attemptReview.fallPos) {
+        const tail = trailPts[trailPts.length - 1];
+        if (Math.hypot(tail.x - attemptReview.fallPos.x, tail.y - attemptReview.fallPos.y) > 6) {
+          trailPts.push(attemptReview.fallPos);
+        }
+      }
+
+      // Locate where the red danger approach into the fall point begins (~135px / last 25% of trail)
+      let redSplitIdx = trailPts.length;
+      if (hasFallPos && trailPts.length >= 2) {
+        let accLen = 0;
+        const minSegments = Math.max(2, Math.floor(trailPts.length * 0.2));
+        redSplitIdx = trailPts.length - 1;
+        for (let i = trailPts.length - 1; i >= 1; i--) {
+          const segLen = Math.hypot(
+            trailPts[i].x - trailPts[i - 1].x,
+            trailPts[i].y - trailPts[i - 1].y
+          );
+          accLen += segLen;
+          redSplitIdx = i - 1;
+          const segsFromEnd = trailPts.length - 1 - redSplitIdx;
+          if (accLen >= 135 && segsFromEnd >= minSegments) break;
+        }
+      }
+
+      // Earlier climbing trace in warm copper
+      if (redSplitIdx >= 1) {
+        const copperEnd = Math.min(trailPts.length - 1, redSplitIdx);
+        ctx.strokeStyle = 'rgba(234, 88, 12, 0.56)';
+        ctx.lineWidth = 2.3;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.setLineDash([7, 5]);
+        ctx.beginPath();
+        ctx.moveTo(trailPts[0].x, trailPts[0].y);
+        for (let i = 1; i <= copperEnd; i++) {
+          ctx.lineTo(trailPts[i].x, trailPts[i].y);
+        }
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
+      // Fall-point approach & crux trace in vivid crimson red
+      if (hasFallPos && redSplitIdx < trailPts.length - 1) {
+        // Soft red glow underlay
+        ctx.strokeStyle = 'rgba(220, 38, 38, 0.30)';
+        ctx.lineWidth = 6.5;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.beginPath();
+        ctx.moveTo(trailPts[redSplitIdx].x, trailPts[redSplitIdx].y);
+        for (let i = redSplitIdx + 1; i < trailPts.length; i++) {
+          ctx.lineTo(trailPts[i].x, trailPts[i].y);
+        }
+        ctx.stroke();
+
+        // Crisp red dashed trajectory into the fall point
+        ctx.strokeStyle = '#EF4444';
+        ctx.lineWidth = 3.0;
+        ctx.setLineDash([7, 4]);
+        ctx.beginPath();
+        ctx.moveTo(trailPts[redSplitIdx].x, trailPts[redSplitIdx].y);
+        for (let i = redSplitIdx + 1; i < trailPts.length; i++) {
+          ctx.lineTo(trailPts[i].x, trailPts[i].y);
+        }
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+
+    // Grabbed hold rings from previous attempt (red near the fall point, copper elsewhere)
+    if (attemptReview) {
+      const fallRef = attemptReview.outcome === 'FALLEN' ? attemptReview.fallPos : undefined;
+      const seenGrabbed = new Set<string>();
+      for (const hid of attemptReview.grabbedHoldIds) {
+        if (seenGrabbed.has(hid)) continue;
+        seenGrabbed.add(hid);
+        const gh = holdsById.get(hid);
+        if (!gh || gh.broken) continue;
+        const isNearFall =
+          fallRef !== undefined && Math.hypot(gh.x - fallRef.x, gh.y - fallRef.y) <= 98;
+        ctx.strokeStyle = isNearFall
+          ? 'rgba(239, 68, 68, 0.78)'
+          : 'rgba(251, 146, 60, 0.55)';
+        ctx.lineWidth = isNearFall ? 2.0 : 1.5;
+        ctx.beginPath();
+        ctx.arc(gh.x, gh.y, gh.radius + 3.5, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      // Key events from the previous attempt (slips, bivouacs, pitons, dynos)
+      for (const ev of attemptReview.events) {
+        if (ev.y < minVisY - 60 || ev.y > maxVisY + 60) continue;
+        const evColor =
+          ev.kind === 'slip'
+            ? '#F87171'
+            : ev.kind === 'piton'
+              ? '#CBD5E1'
+              : ev.kind === 'dyno'
+                ? '#FBBF24'
+                : '#E2E8F0';
+        const evGlyph =
+          ev.kind === 'slip'
+            ? '滑'
+            : ev.kind === 'bivouac'
+              ? '休'
+              : ev.kind === 'piton'
+                ? '钉'
+                : ev.kind === 'dyno'
+                  ? '跃'
+                  : '补';
+        ctx.fillStyle = 'rgba(20, 24, 32, 0.88)';
+        ctx.strokeStyle = evColor;
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.arc(ev.x - 14, ev.y - 12, 8, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = evColor;
+        ctx.font = 'bold 8.5px "Plus Jakarta Sans", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(evGlyph, ev.x - 14, ev.y - 11.5);
+      }
+    }
+
+    // Render yellow risk zones for high-damage climber.health drops & stamina exhaustion thresholds
+    const rawHealthDrops = attemptReview?.healthDrops ?? [];
+    const latestFallPos =
+      attemptReview?.outcome === 'FALLEN' ? attemptReview.fallPos : undefined;
+
+    interface ClusteredRiskZone {
+      x: number;
+      y: number;
+      altitudeM: number;
+      totalHealthLost: number;
+      minHealthAfter: number;
+      minStaminaAfter: number;
+      hasDamage: boolean;
+      hasStaminaCritical: boolean;
+      isFatalOnly: boolean;
+    }
+
+    const riskZones: ClusteredRiskZone[] = [];
+    for (const drop of rawHealthDrops) {
+      const isHighDamage = drop.healthLost >= 8 || drop.healthAfter <= 45;
+      const isStaminaCrit = drop.kind === 'stamina_critical' || drop.staminaAfter <= 16;
+      if (!isHighDamage && !isStaminaCrit) continue;
+
+      const existing = riskZones.find(
+        (z) => Math.hypot(z.x - drop.x, z.y - drop.y) <= 52
+      );
+      if (existing) {
+        existing.totalHealthLost += drop.healthLost;
+        existing.minHealthAfter = Math.min(existing.minHealthAfter, drop.healthAfter);
+        existing.minStaminaAfter = Math.min(existing.minStaminaAfter, drop.staminaAfter);
+        existing.hasDamage = existing.hasDamage || drop.healthLost > 0;
+        existing.hasStaminaCritical = existing.hasStaminaCritical || isStaminaCrit;
+        existing.isFatalOnly = existing.isFatalOnly && drop.kind === 'fall_fatal';
+      } else {
+        riskZones.push({
+          x: drop.x,
+          y: drop.y,
+          altitudeM: drop.altitudeM,
+          totalHealthLost: drop.healthLost,
+          minHealthAfter: drop.healthAfter,
+          minStaminaAfter: drop.staminaAfter,
+          hasDamage: drop.healthLost > 0,
+          hasStaminaCritical: isStaminaCrit,
+          isFatalOnly: drop.kind === 'fall_fatal',
+        });
+      }
+    }
+
+    // Highlight trail segments passing through yellow risk zones (excluding crimson fall tip)
+    if (attemptReview && attemptReview.trail.length >= 2 && riskZones.length > 0) {
+      const pts = attemptReview.trail;
+      for (let i = 1; i < pts.length; i++) {
+        const mx = (pts[i - 1].x + pts[i].x) * 0.5;
+        const my = (pts[i - 1].y + pts[i].y) * 0.5;
+        if (latestFallPos && Math.hypot(mx - latestFallPos.x, my - latestFallPos.y) <= 44) {
+          continue;
+        }
+        const insideRisk = riskZones.some(
+          (z) => !z.isFatalOnly && Math.hypot(mx - z.x, my - z.y) <= 44
+        );
+        if (!insideRisk) continue;
+        ctx.strokeStyle = 'rgba(250, 204, 21, 0.34)';
+        ctx.lineWidth = 6.0;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(pts[i - 1].x, pts[i - 1].y);
+        ctx.lineTo(pts[i].x, pts[i].y);
+        ctx.stroke();
+
+        ctx.strokeStyle = '#FACC15';
+        ctx.lineWidth = 2.6;
+        ctx.setLineDash([5, 4]);
+        ctx.beginPath();
+        ctx.moveTo(pts[i - 1].x, pts[i - 1].y);
+        ctx.lineTo(pts[i].x, pts[i].y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+
+    for (const zone of riskZones) {
+      if (zone.y < minVisY - 80 || zone.y > maxVisY + 80) continue;
+      const overlapsLatestFall =
+        latestFallPos !== undefined &&
+        Math.hypot(zone.x - latestFallPos.x, zone.y - latestFallPos.y) <= 30;
+      // Avoid duplicating a pure fatal-fall record right on top of the crimson fall hotspot
+      if (overlapsLatestFall && zone.isFatalOnly && !zone.hasStaminaCritical) {
+        continue;
+      }
+
+      const severity = Math.min(2, zone.totalHealthLost >= 16 ? 2 : zone.totalHealthLost >= 10 ? 1 : 0);
+      const zoneR = overlapsLatestFall ? 31 + severity * 4 : 24 + severity * 5;
+      const pulse = 0.88 + 0.12 * Math.sin(timeSec * 2.5 + zone.x * 0.04);
+
+      // 1. Soft translucent yellow risk zone aura
+      const grad = ctx.createRadialGradient(zone.x, zone.y, 3, zone.x, zone.y, zoneR * 1.38 * pulse);
+      grad.addColorStop(0, 'rgba(250, 204, 21, 0.24)');
+      grad.addColorStop(0.6, 'rgba(234, 179, 8, 0.11)');
+      grad.addColorStop(1, 'rgba(234, 179, 8, 0)');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(zone.x, zone.y, zoneR * 1.38 * pulse, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 2. Crisp dashed yellow risk perimeter ring
+      ctx.save();
+      ctx.translate(zone.x, zone.y);
+      ctx.rotate(-timeSec * 0.24);
+      ctx.strokeStyle = 'rgba(250, 204, 21, 0.86)';
+      ctx.lineWidth = 1.65;
+      ctx.setLineDash([5.5, 4]);
+      ctx.beginPath();
+      ctx.arc(0, 0, zoneR, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
+
+      // 3. Subtle orbiting golden caution sparks along the risk perimeter
+      const sparkCount = zone.hasDamage ? 8 : 6;
+      for (let s = 0; s < sparkCount; s++) {
+        const ang = (s / sparkCount) * Math.PI * 2 + timeSec * 0.42;
+        const sr = zoneR + Math.sin(timeSec * 2.2 + s * 1.7) * 2.2;
+        const sx = zone.x + Math.cos(ang) * sr;
+        const sy = zone.y + Math.sin(ang) * sr;
+        ctx.fillStyle = s % 2 === 0 ? 'rgba(254, 240, 138, 0.88)' : 'rgba(250, 204, 21, 0.72)';
+        ctx.beginPath();
+        ctx.arc(sx, sy, 1.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // 4. Compact warning diamond anchor (skipped if centered on crimson ×)
+      if (!overlapsLatestFall) {
+        ctx.save();
+        ctx.translate(zone.x, zone.y);
+        ctx.fillStyle = 'rgba(20, 24, 32, 0.9)';
+        ctx.strokeStyle = '#FACC15';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(0, -7.5);
+        ctx.lineTo(7.5, 0);
+        ctx.lineTo(0, 7.5);
+        ctx.lineTo(-7.5, 0);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = '#FEF08A';
+        ctx.font = 'bold 9.5px "Plus Jakarta Sans", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('!', 0, 0.5);
+        ctx.restore();
+      }
+
+      // 5. Concise risk zone label (offset below if overlapping fall hotspot to avoid collision)
+      const riskLabel =
+        zone.hasDamage && zone.hasStaminaCritical
+          ? `风险区 · 体-${zone.totalHealthLost} · 耐${zone.minStaminaAfter}%`
+          : zone.hasDamage
+            ? `高伤风险 · 体力-${zone.totalHealthLost} (余${zone.minHealthAfter})`
+            : `耐力临界 · 余${zone.minStaminaAfter}%`;
+      ctx.font = 'bold 9.5px "Plus Jakarta Sans", sans-serif';
+      const rtw = ctx.measureText(riskLabel).width;
+      const labelY = overlapsLatestFall ? zone.y + zoneR + 14 : zone.y - zoneR - 11;
+      ctx.fillStyle = 'rgba(20, 24, 32, 0.92)';
+      ctx.strokeStyle = 'rgba(250, 204, 21, 0.85)';
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.roundRect(zone.x - rtw * 0.5 - 6, labelY - 8, rtw + 12, 16, 3);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = '#FEF08A';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(riskLabel, zone.x, labelY + 0.5);
+    }
+
+    // Render historic repeated fall hotspots + latest fall hotspot ring particle effect
+    let matchedLatestHotspot = false;
+
+    for (const spot of fallHotspots) {
+      const isMatchingLatest =
+        latestFallPos !== undefined &&
+        Math.hypot(spot.x - latestFallPos.x, spot.y - latestFallPos.y) <= 80;
+      if (isMatchingLatest) {
+        matchedLatestHotspot = true;
+        // Anchor directly on the latest fall coordinate while preserving cumulative failure count
+        drawFallHotspotRing(
+          latestFallPos!.x,
+          latestFallPos!.y,
+          attemptReview?.maxAltitudeM ?? spot.altitudeM,
+          spot.count,
+          true
+        );
+      } else if (spot.count >= 2 || !latestFallPos) {
+        drawFallHotspotRing(spot.x, spot.y, spot.altitudeM, spot.count, false);
+      }
+    }
+
+    if (latestFallPos && !matchedLatestHotspot) {
+      drawFallHotspotRing(
+        latestFallPos.x,
+        latestFallPos.y,
+        attemptReview?.maxAltitudeM ?? 0,
+        1,
+        true
+      );
+    }
+
+    ctx.restore();
+  }
+
+  // 4E-1B. Player-drawn Roadbook Topo Marks (Pure Parchment & Ink — Zero Color/Direction Spoilers)
   if (phase === 'PLAYING' && (betaPins.length > 0 || (isReadingRoute && hover?.hold))) {
     const holdsById = new Map(world.holds.map((h) => [h.id, h]));
     const pinHolds = betaPins
       .map((id) => holdsById.get(id))
       .filter((h): h is NonNullable<typeof h> => !!h && !h.broken);
 
-    const getQualityAccent = (h: Hold): string => {
-      if (h.type === 'jug' || h.type === 'ledge') return '#34D399';
-      if (h.type === 'crack') return '#60A5FA';
-      if (h.type === 'ice') return '#38BDF8';
-      return '#F59E0B';
-    };
-
-    const drawSegmentWithArrow = (
-      from: Vec2,
-      to: Vec2,
-      color: string,
-      dash: number[],
-      badgeText: string | null,
-      alpha: number
-    ) => {
-      const dx = to.x - from.x;
-      const dy = to.y - from.y;
-      const len = Math.hypot(dx, dy) || 1;
-      const ux = dx / len;
-      const uy = dy / len;
-
-      ctx.save();
-      ctx.globalAlpha = alpha;
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 2.4;
-      ctx.setLineDash(dash);
-      ctx.beginPath();
-      ctx.moveTo(from.x, from.y);
-      ctx.lineTo(to.x, to.y);
-      ctx.stroke();
-      ctx.setLineDash([]);
-
-      // Midpoint arrowhead showing climbing sequence direction
-      if (len > 26) {
-        const mx = (from.x + to.x) * 0.5;
-        const my = (from.y + to.y) * 0.5;
-        const ang = Math.atan2(dy, dx);
-        ctx.fillStyle = color;
-        ctx.beginPath();
-        ctx.moveTo(mx + ux * 5, my + uy * 5);
-        ctx.lineTo(mx - Math.cos(ang - 0.55) * 6, my - Math.sin(ang - 0.55) * 6);
-        ctx.lineTo(mx - Math.cos(ang + 0.55) * 6, my - Math.sin(ang + 0.55) * 6);
-        ctx.closePath();
-        ctx.fill();
-
-        if (badgeText && isReadingRoute) {
-          ctx.fillStyle = 'rgba(20, 24, 32, 0.92)';
-          ctx.strokeStyle = color;
-          ctx.lineWidth = 1.2;
-          ctx.beginPath();
-          ctx.roundRect(mx - 12, my - 17, 24, 13, 3);
-          ctx.fill();
-          ctx.stroke();
-          ctx.fillStyle = color;
-          ctx.font = 'bold 8.5px "Plus Jakarta Sans", sans-serif';
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          ctx.fillText(badgeText, mx, my - 10.5);
-        }
-      }
-      ctx.restore();
-    };
-
     if (pinHolds.length > 0) {
       ctx.save();
-      const baseAlpha = isReadingRoute ? 0.95 : 0.62;
+      const clampedCursor = Math.max(0, Math.min(pinHolds.length, betaCursor));
 
-      // Subtle guide ray from climber/selected limb to immediate next roadbook hold during active climb
-      if (!isReadingRoute && !climber.isFalling) {
-        const nextPin = pinHolds[0];
-        const anchorPt = lockedLimb ? climber.limbs[lockedLimb].pos : climber.torsoPos;
-        const dToNext = Math.hypot(nextPin.x - anchorPt.x, nextPin.y - anchorPt.y);
-        if (dToNext > 16 && dToNext < 260) {
-          ctx.save();
-          ctx.globalAlpha = 0.42;
-          ctx.strokeStyle = '#FCD34D';
-          ctx.lineWidth = 1.7;
-          ctx.setLineDash([4, 5]);
-          ctx.beginPath();
-          ctx.moveTo(anchorPt.x, anchorPt.y);
-          ctx.lineTo(nextPin.x, nextPin.y);
-          ctx.stroke();
-          ctx.restore();
-        }
-      }
-
-      // Draw sequence segments between consecutive roadbook pins
+      // Draw clean monochrome parchment topo lines connecting player's pinned sequence
       for (let i = 0; i < pinHolds.length - 1; i++) {
         const a = pinHolds[i];
         const b = pinHolds[i + 1];
-        const segD = Math.hypot(b.x - a.x, b.y - a.y);
-        const segColor =
-          segD > 132
-            ? '#EF4444'
-            : segD > 95
-              ? '#38BDF8'
-              : isReadingRoute
-                ? '#34D399'
-                : '#FEF3C7';
-        const segBadge = segD > 132 ? '超距!' : segD > 95 ? '长距' : null;
-        const dash = segD > 132 ? [3, 4] : [6, 5];
-        drawSegmentWithArrow(a, b, segColor, dash, segBadge, baseAlpha * 0.85);
+        const isPast = !isReadingRoute && i < clampedCursor;
+        ctx.save();
+        ctx.globalAlpha = isReadingRoute ? 0.84 : isPast ? 0.2 : 0.48;
+        ctx.strokeStyle = '#F4F1EA';
+        ctx.lineWidth = isReadingRoute ? 2.1 : 1.7;
+        ctx.setLineDash([6, 5]);
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.restore();
       }
 
-      // Preview segment from last pin to currently hovered new hold while reading
+      // Neutral dashed preview line from last pin to hovered hold while editing Roadbook
       if (
         isReadingRoute &&
         hover?.hold &&
@@ -1693,49 +2057,54 @@ export function renderGameFrame(params: RenderParams) {
         !betaPins.includes(hover.hold.id)
       ) {
         const lastPin = pinHolds[pinHolds.length - 1];
-        const previewD = Math.hypot(hover.hold.x - lastPin.x, hover.hold.y - lastPin.y);
-        const pColor = previewD > 132 ? '#EF4444' : previewD > 95 ? '#38BDF8' : '#34D399';
-        const pBadge = previewD > 132 ? '超距!' : previewD > 95 ? '长距' : '稳妥';
-        drawSegmentWithArrow(lastPin, hover.hold, pColor, [4, 4], pBadge, 0.9);
+        ctx.save();
+        ctx.globalAlpha = 0.58;
+        ctx.strokeStyle = '#F4F1EA';
+        ctx.lineWidth = 1.6;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(lastPin.x, lastPin.y);
+        ctx.lineTo(hover.hold.x, hover.hold.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.restore();
       }
 
-      // Render numbered roadbook pins
+      // Render crisp numbered topo pins (uniform parchment/ink styling)
       pinHolds.forEach((h, idx) => {
-        const isNextTarget = idx === 0;
-        const qualityClr = getQualityAccent(h);
+        const isCompleted = !isReadingRoute && idx < clampedCursor;
+        const isNextTarget = !isReadingRoute && idx === clampedCursor;
 
         if (isNextTarget) {
-          const pulse = 1 + Math.sin(timeSec * 4.5) * 0.14;
+          const pulse = 1 + Math.sin(timeSec * 3.8) * 0.1;
           ctx.save();
-          ctx.globalAlpha = isReadingRoute ? 0.8 : 0.72;
-          ctx.strokeStyle = '#F59E0B';
-          ctx.lineWidth = 2.1;
+          ctx.globalAlpha = 0.65;
+          ctx.strokeStyle = '#F4F1EA';
+          ctx.lineWidth = 1.8;
           ctx.beginPath();
-          ctx.arc(h.x, h.y, (h.radius + 7) * pulse, 0, Math.PI * 2);
+          ctx.arc(h.x, h.y, (h.radius + 6) * pulse, 0, Math.PI * 2);
           ctx.stroke();
           ctx.restore();
         }
 
         const px = h.x + h.radius + 4;
         const py = h.y - h.radius - 4;
-        ctx.globalAlpha = isNextTarget ? 0.98 : baseAlpha;
+        ctx.save();
+        ctx.globalAlpha = isReadingRoute ? 0.96 : isCompleted ? 0.34 : isNextTarget ? 0.94 : 0.6;
         ctx.fillStyle = isNextTarget ? '#FEF3C7' : '#F4F1EA';
-        ctx.strokeStyle = isReadingRoute ? qualityClr : INK;
-        ctx.lineWidth = isNextTarget ? 2.4 : 2;
+        ctx.strokeStyle = INK;
+        ctx.lineWidth = isNextTarget ? 2.1 : 1.8;
         ctx.beginPath();
-        ctx.arc(px, py, isNextTarget ? 9.5 : 8.5, 0, Math.PI * 2);
+        ctx.arc(px, py, isNextTarget ? 9 : 8.2, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
 
-        ctx.strokeStyle = INK;
-        ctx.lineWidth = 1;
-        ctx.stroke();
-
         ctx.fillStyle = INK;
-        ctx.font = 'bold 10px "JetBrains Mono", monospace';
+        ctx.font = 'bold 9.5px "JetBrains Mono", monospace';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(String(idx + 1), px, py + 0.5);
+        ctx.restore();
       });
       ctx.restore();
     }
@@ -1820,9 +2189,19 @@ export function renderGameFrame(params: RenderParams) {
             ? '#38BDF8'
             : ev.kind === 'bivouac'
               ? '#10B981'
-              : '#F59E0B';
+              : ev.kind === 'supply'
+                ? '#34D399'
+                : '#F59E0B';
       const shortText =
-        ev.kind === 'slip' ? '滑' : ev.kind === 'dyno' ? '跃' : ev.kind === 'bivouac' ? '营' : '钉';
+        ev.kind === 'slip'
+          ? '滑'
+          : ev.kind === 'dyno'
+            ? '跃'
+            : ev.kind === 'bivouac'
+              ? '营'
+              : ev.kind === 'supply'
+                ? '补'
+                : '钉';
       ctx.fillStyle = badgeColor;
       ctx.strokeStyle = INK;
       ctx.lineWidth = 1.8 * inkScale;
@@ -1932,20 +2311,6 @@ export function renderGameFrame(params: RenderParams) {
         ctx.arc(0, 5, 4.5, 0, Math.PI * 2);
         ctx.stroke();
       }
-
-      if (isReadingRoute) {
-        ctx.strokeStyle = p.reliable ? '#34D399' : '#F59E0B';
-        ctx.lineWidth = 1.6;
-        ctx.setLineDash([3, 3]);
-        ctx.beginPath();
-        ctx.arc(0, 2, 12, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.setLineDash([]);
-        ctx.fillStyle = p.reliable ? '#A7F3D0' : '#FDE68A';
-        ctx.font = 'bold 10px "Plus Jakarta Sans", sans-serif';
-        ctx.textAlign = 'center';
-        ctx.fillText(p.reliable ? '旧钉·可用' : '旧钉·锈蚀', 0, -10);
-      }
     } else {
       if (!drawWorldPropSprite(ctx, worldPropsPack, 'pitonFresh', 0, 0, 0)) {
         ctx.fillStyle = '#CBD5E1';
@@ -1986,6 +2351,99 @@ export function renderGameFrame(params: RenderParams) {
     ctx.restore();
   }
 
+  // 4H-B. Optional Abandoned Wall Supply Caches (Risk-Reward Flank Exploration)
+  if (world.supplyCaches && world.supplyCaches.length > 0 && sceneAlpha > 0.04) {
+    for (const cache of world.supplyCaches) {
+      if (cache.collected) continue;
+      const distToClimber = Math.hypot(
+        cache.x - climber.torsoPos.x,
+        cache.y - climber.torsoPos.y
+      );
+      const isNearby = distToClimber < 135;
+      const sway = Math.sin(timeSec * 2.4 + cache.x * 0.05) * (0.06 + Math.abs(windForce) * 0.08);
+      const s = camera.zoom < 0.35 ? inkScale * 0.9 : 1;
+
+      ctx.save();
+      ctx.globalAlpha = sceneAlpha;
+      ctx.translate(cache.x, cache.y);
+      ctx.scale(s, s);
+
+      // Subtle warm discovery ring when climber approaches the flank detour
+      if (isNearby && phase === 'PLAYING' && !isReadingRoute) {
+        const pulse = 0.5 + 0.5 * Math.sin(timeSec * 4.2);
+        ctx.strokeStyle =
+          cache.reward === 'piton'
+            ? `rgba(251, 191, 36, ${0.28 + pulse * 0.32})`
+            : `rgba(226, 232, 240, ${0.28 + pulse * 0.32})`;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(0, 4, 13 + pulse * 3.5, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      // Small rock sling anchor stud
+      ctx.fillStyle = '#94A3B8';
+      ctx.strokeStyle = INK;
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.arc(0, -6, 2.8, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      // Hanging gear pouch swaying slightly in alpine breeze
+      ctx.rotate(sway);
+      ctx.strokeStyle = INK;
+      ctx.lineWidth = 1.8;
+      ctx.beginPath();
+      ctx.moveTo(0, -4);
+      ctx.lineTo(0, 2);
+      ctx.stroke();
+
+      if (cache.reward === 'piton') {
+        // Brass/ochre piton sling pouch
+        ctx.fillStyle = '#D97706';
+        ctx.beginPath();
+        ctx.roundRect(-6.5, 1, 13, 12, 3);
+        ctx.fill();
+        ctx.stroke();
+        // Metallic piton head glint
+        ctx.fillStyle = '#FEF3C7';
+        ctx.fillRect(-3.5, 4, 7, 2.2);
+      } else {
+        // Weathered canvas chalk bag with drawstring band
+        ctx.fillStyle = '#E2E8F0';
+        ctx.beginPath();
+        ctx.roundRect(-6, 1, 12, 12.5, 4);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = '#0EA5E9';
+        ctx.fillRect(-5.5, 3, 11, 2.8);
+      }
+
+      // Small trailing wind ribbon for crisp cliffside readability
+      ctx.strokeStyle = cache.reward === 'piton' ? '#F59E0B' : '#38BDF8';
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.moveTo(4, 3);
+      ctx.quadraticCurveTo(9 + windForce * 4, 7, 7 + windForce * 6, 13);
+      ctx.stroke();
+
+      if ((isNearby || isReadingRoute) && camera.zoom > 0.45) {
+        ctx.rotate(-sway);
+        ctx.fillStyle = cache.reward === 'piton' ? '#FDE68A' : '#E0F2FE';
+        ctx.font = 'bold 9.5px "Plus Jakarta Sans", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(
+          isFreeSolo ? '遗留补给·回耐' : cache.reward === 'piton' ? '+1 岩钉' : '+1 镁粉',
+          0,
+          -12
+        );
+      }
+
+      ctx.restore();
+    }
+  }
+
   // 4I. Active Limb Drag Envelope, Snap Adsorption & Ghost Preview
   if (activeLimbDrag && phase === 'PLAYING' && !climber.isFalling) {
     const joints = getShoulderAndHip(climber);
@@ -2001,39 +2459,44 @@ export function renderGameFrame(params: RenderParams) {
     const maxReachR = maxBoneR + 16;
 
     ctx.save();
-    // Subtle anatomical reach envelope around root
-    ctx.strokeStyle = 'rgba(248, 250, 252, 0.24)';
-    ctx.lineWidth = 1.4;
-    ctx.setLineDash([4, 5]);
-    ctx.beginPath();
-    ctx.arc(root.x, root.y, maxReachR, 0, Math.PI * 2);
-    ctx.stroke();
-
-    // Drag vector line from limb end to targetPos
     const snap = activeLimbDrag.snappedHold;
-    const lineColor = snap
-      ? activeLimbDrag.canGrab
-        ? '#34D399'
-        : '#EF4444'
-      : 'rgba(245, 158, 11, 0.85)';
-    ctx.strokeStyle = lineColor;
-    ctx.lineWidth = 2;
-    ctx.setLineDash([5, 4]);
-    ctx.beginPath();
-    ctx.moveTo(dragLimb.pos.x, dragLimb.pos.y);
-    ctx.lineTo(
-      snap ? snap.x : activeLimbDrag.targetPos.x,
-      snap ? snap.y : activeLimbDrag.targetPos.y
-    );
-    ctx.stroke();
-    ctx.setLineDash([]);
+
+    if (showHoldHints) {
+      // Subtle anatomical reach envelope around root (Beginner/Intro tiers only)
+      ctx.strokeStyle = 'rgba(248, 250, 252, 0.24)';
+      ctx.lineWidth = 1.4;
+      ctx.setLineDash([4, 5]);
+      ctx.beginPath();
+      ctx.arc(root.x, root.y, maxReachR, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // Drag vector line from limb end to targetPos
+      const lineColor = snap
+        ? activeLimbDrag.canGrab
+          ? '#34D399'
+          : '#EF4444'
+        : 'rgba(245, 158, 11, 0.85)';
+      ctx.strokeStyle = lineColor;
+      ctx.lineWidth = 2;
+      ctx.setLineDash([5, 4]);
+      ctx.beginPath();
+      ctx.moveTo(dragLimb.pos.x, dragLimb.pos.y);
+      ctx.lineTo(
+        snap ? snap.x : activeLimbDrag.targetPos.x,
+        snap ? snap.y : activeLimbDrag.targetPos.y
+      );
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
 
     if (activeLimbDrag.isTouch && activeLimbDrag.aimWorldPos && activeLimbDrag.hasMovedOut) {
-      ctx.strokeStyle = snap
-        ? activeLimbDrag.canGrab
-          ? 'rgba(52, 211, 153, 0.85)'
-          : 'rgba(239, 68, 68, 0.85)'
-        : 'rgba(251, 191, 36, 0.85)';
+      ctx.strokeStyle = showHoldHints
+        ? snap
+          ? activeLimbDrag.canGrab
+            ? 'rgba(52, 211, 153, 0.85)'
+            : 'rgba(239, 68, 68, 0.85)'
+          : 'rgba(251, 191, 36, 0.85)'
+        : 'rgba(244, 241, 234, 0.65)';
       ctx.lineWidth = 1.6;
       ctx.beginPath();
       ctx.arc(activeLimbDrag.aimWorldPos.x, activeLimbDrag.aimWorldPos.y, 7.5, 0, Math.PI * 2);
@@ -2044,8 +2507,8 @@ export function renderGameFrame(params: RenderParams) {
       ctx.fill();
     }
 
-    if (snap) {
-      // Adsorption ring on snapped hold
+    if (showHoldHints && snap) {
+      // Adsorption ring on snapped hold (Beginner/Intro tiers only)
       const pulse = 1 + Math.sin(timeSec * 8) * 0.08;
       const ringR = (snap.radius + 8) * pulse;
       ctx.strokeStyle = activeLimbDrag.canGrab ? '#34D399' : '#EF4444';
@@ -2072,7 +2535,7 @@ export function renderGameFrame(params: RenderParams) {
         );
         ctx.stroke();
       }
-    } else if (activeLimbDrag.hasMovedOut && activeLimbDrag.originHoldId !== null) {
+    } else if (!snap && activeLimbDrag.hasMovedOut && activeLimbDrag.originHoldId !== null) {
       // Release cue in open air (only when detaching a previously anchored limb)
       const badgeY = activeLimbDrag.isTouch ? dragLimb.pos.y - 30 : dragLimb.pos.y - 22;
       ctx.fillStyle = 'rgba(20, 24, 32, 0.85)';
@@ -2091,8 +2554,10 @@ export function renderGameFrame(params: RenderParams) {
     ctx.restore();
   }
 
-  // 4I-B. Ghost Limb Stretch Preview & Aim Curve
+  // 4I-B. Ghost Limb Stretch Preview & Aim Curve (Beginner/Intro tiers only, never in Roadbook or Intermediate+)
   if (
+    showHoldHints &&
+    !isReadingRoute &&
     hover?.hold &&
     phase === 'PLAYING' &&
     !climber.isFalling &&
@@ -2535,6 +3000,30 @@ export function renderGameFrame(params: RenderParams) {
       ctx.stroke();
     }
     ctx.restore();
+  }
+
+  // 5C. Dynamic Sunbreak Golden Light Shafts & Wind-Lull Stillness Shimmer
+  if (phase === 'PLAYING' && microWindow && sceneAlpha > 0.05) {
+    const progress = Math.max(0, Math.min(1, microWindow.timer / Math.max(0.1, microWindow.duration)));
+    const fadeEnvelope =
+      progress < 0.14 ? progress / 0.14 : progress > 0.84 ? (1 - progress) / 0.16 : 1;
+    if (microWindow.kind === 'sunbreak' && fadeEnvelope > 0.02) {
+      ctx.save();
+      ctx.globalAlpha = sceneAlpha * fadeEnvelope * 0.24;
+      const sunGrad = ctx.createLinearGradient(width * 0.18, 0, width * 0.82, height * 0.88);
+      sunGrad.addColorStop(0, 'rgba(254, 243, 199, 0.95)');
+      sunGrad.addColorStop(0.52, 'rgba(251, 191, 36, 0.35)');
+      sunGrad.addColorStop(1, 'rgba(251, 191, 36, 0)');
+      ctx.fillStyle = sunGrad;
+      ctx.beginPath();
+      ctx.moveTo(width * 0.08, 0);
+      ctx.lineTo(width * 0.56, 0);
+      ctx.lineTo(width * 0.94, height);
+      ctx.lineTo(width * 0.38, height);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
   }
 
   // 6. Illustrated Storybook Panel Framing Vignette (softened during pure-holds route reading)

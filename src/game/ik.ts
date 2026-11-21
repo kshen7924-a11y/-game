@@ -715,6 +715,7 @@ export function updateClimberPhysics(
   staminaRecoveredDelta: number;
   netStaminaRatePerSec: number;
   activeTremor?: { hold: Hold; intensity: number; isFoot: boolean } | null;
+  fragileCrackEvent?: { stage: 1 | 2 | 3; hold: Hold } | null;
 } {
   const limbIds: LimbId[] = ['leftHand', 'rightHand', 'leftFoot', 'rightFoot'];
   const safeDt = Number.isFinite(dt) ? Math.max(0.001, Math.min(0.05, dt)) : 1 / 60;
@@ -1265,6 +1266,7 @@ export function updateClimberPhysics(
   let touchingWetHold = false;
   let touchingDecoyHold = false;
   let activeTremor: { hold: Hold; intensity: number; isFoot: boolean } | null = null;
+  let fragileCrackEvent: { stage: 1 | 2 | 3; hold: Hold } | null = null;
 
   const occupiedHoldIds = new Set<string>();
   for (const id of limbIds) {
@@ -1408,7 +1410,15 @@ export function updateClimberPhysics(
 
     if (hold.type === 'fragile' && limb.load > 0.48 && !standingLedge) {
       const decoyCrackBoost = hold.isDecoy ? 1.2 : 1.0;
+      const prevCrack = hold.crackProgress;
       hold.crackProgress += dt * (0.16 + limb.load * 0.14) * decoyCrackBoost;
+      if (prevCrack < 0.85 && hold.crackProgress >= 0.85 && hold.crackProgress < 1) {
+        fragileCrackEvent = { stage: 3, hold };
+      } else if (prevCrack < 0.62 && hold.crackProgress >= 0.62 && (!fragileCrackEvent || fragileCrackEvent.stage < 2)) {
+        fragileCrackEvent = { stage: 2, hold };
+      } else if (prevCrack < 0.28 && hold.crackProgress >= 0.28 && !fragileCrackEvent) {
+        fragileCrackEvent = { stage: 1, hold };
+      }
       if (hold.crackProgress >= 1) {
         hold.broken = true;
         limb.holdId = null;
@@ -1449,6 +1459,10 @@ export function updateClimberPhysics(
 
   if (clampedFlow > 0 && !touchingDecoyHold) {
     totalDrainPerSec *= 1 - clampedFlow * 0.16;
+  }
+  // Alpine Flow state (3+ consecutive clean moves): tangible -10% stamina drain efficiency
+  if ((climber.flowCombo ?? 0) >= 3 && !touchingDecoyHold) {
+    totalDrainPerSec *= 0.9;
   }
 
   if (!standingLedge && anchoredHands.length > 0) {
@@ -1610,5 +1624,6 @@ export function updateClimberPhysics(
     staminaRecoveredDelta,
     netStaminaRatePerSec,
     activeTremor,
+    fragileCrackEvent,
   };
 }

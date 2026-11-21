@@ -21,8 +21,10 @@ import {
   RockFacet,
   RouteConfig,
   RouteId,
+  RoutePitchSection,
   RouteWallAnalysis,
   Vec2,
+  WallSupplyCache,
 } from './types';
 
 export const PIXELS_PER_METER = 30;
@@ -726,6 +728,10 @@ export function isRouteBookSupported(route: RouteConfig): boolean {
   return route.tier >= ROUTE_BOOK_MIN_TIER;
 }
 
+export function hasHoldHintsEnabled(route: RouteConfig): boolean {
+  return route.tier < ROUTE_BOOK_MIN_TIER;
+}
+
 export function isMasterRoute(route: RouteConfig): boolean {
   return route.tier >= MASTER_MIN_TIER;
 }
@@ -912,6 +918,84 @@ export interface MountainWorld {
   cairnStones: Vec2[];
   difficultyProfile: AltitudeDifficultyBin[];
   wallAnalysis: RouteWallAnalysis;
+  pitchSections: RoutePitchSection[];
+  supplyCaches: WallSupplyCache[];
+}
+
+export function buildPitchSectionsForRoute(route: RouteConfig): RoutePitchSection[] {
+  const byId: Record<RouteId, Array<Omit<RoutePitchSection, 'id' | 'index'>>> = {
+    kids: [
+      { name: '山谷阳坡', subtitle: '宽大花岗岩板 · 舒展起步', minRatio: 0, maxRatio: 0.38, mood: 'calm' },
+      { name: '浅纹岩脊', subtitle: '手脚交替 · 建立节奏', minRatio: 0.38, maxRatio: 0.74, mood: 'flow' },
+      { name: '天鹅翼冠顶', subtitle: '开阔缓台 · 迈向山顶', minRatio: 0.74, maxRatio: 1.01, mood: 'summit' },
+    ],
+    intro: [
+      { name: '花岗岩裙壁', subtitle: '开阔起步 · 熟悉重心平移', minRatio: 0, maxRatio: 0.36, mood: 'calm' },
+      { name: '晨雾脆岩带', subtitle: '留心裂纹岩点 · 轻快换手', minRatio: 0.36, maxRatio: 0.72, isCrux: true, mood: 'crux' },
+      { name: '白马脊顶', subtitle: '雾散见峰 · 稳步冲顶', minRatio: 0.72, maxRatio: 1.01, mood: 'summit' },
+    ],
+    beginner: [
+      { name: '拱门基座', subtitle: '自然岩阶 · 稳固发力', minRatio: 0, maxRatio: 0.3, mood: 'calm' },
+      { name: '侧拉岩弧', subtitle: '顺侧拉移重心 · 横移穿行', minRatio: 0.3, maxRatio: 0.56, isCrux: true, mood: 'crux' },
+      { name: '半山拱廊', subtitle: '岩台喘息 · 重整呼吸', minRatio: 0.56, maxRatio: 0.78, mood: 'flow' },
+      { name: '皇冠冲顶段', subtitle: '拱顶花岗壁 · 一鼓作气', minRatio: 0.78, maxRatio: 1.01, mood: 'summit' },
+    ],
+    'beginner-plus': [
+      { name: '峭壁悬廊', subtitle: '山风渐起 · 选准主线', minRatio: 0, maxRatio: 0.32, mood: 'flow' },
+      { name: '凌空大屋檐', subtitle: '反扣翻越 · 经典悬空核心段', minRatio: 0.32, maxRatio: 0.64, isCrux: true, mood: 'crux' },
+      { name: '飞檐横渡', subtitle: '摆荡借力 · 直面暴露感', minRatio: 0.64, maxRatio: 0.84, mood: 'flow' },
+      { name: '绝壁天台', subtitle: '风过山肩 · 登临顶石', minRatio: 0.84, maxRatio: 1.01, mood: 'summit' },
+    ],
+    intermediate: [
+      { name: '岩脊起攀', subtitle: '循花岗岩脉 · 步步向上', minRatio: 0, maxRatio: 0.28, mood: 'calm' },
+      { name: '蛇纹跃抓带', subtitle: '蹬台衔接 · 动态跨越岩脊', minRatio: 0.28, maxRatio: 0.58, isCrux: true, mood: 'crux' },
+      { name: '半山风口台', subtitle: '阵风掠壁 · 把握静默窗口', minRatio: 0.58, maxRatio: 0.8, mood: 'flow' },
+      { name: '半穹顶岩脊', subtitle: '长距高露 · 决胜山巅', minRatio: 0.8, maxRatio: 1.01, mood: 'summit' },
+    ],
+    'intermediate-plus': [
+      { name: '砂岩双壁', subtitle: '峡谷夹壁 · 精准控重心', minRatio: 0, maxRatio: 0.28, mood: 'flow' },
+      { name: '垂直指缝段', subtitle: '连贯指缝 · 谨防支点打滑', minRatio: 0.28, maxRatio: 0.58, isCrux: true, mood: 'crux' },
+      { name: '云间营台', subtitle: '薄雾渐浓 · 调整镁粉节奏', minRatio: 0.58, maxRatio: 0.82, mood: 'flow' },
+      { name: '月光直冲段', subtitle: '孤缝通天 · 冲破云层', minRatio: 0.82, maxRatio: 1.01, mood: 'summit' },
+    ],
+    advanced: [
+      { name: '玄武岩基柱', subtitle: '六棱柱壁 · 辨明真假岩缝', minRatio: 0, maxRatio: 0.26, mood: 'flow' },
+      { name: '杜兰斯烟囱缝', subtitle: '紧凑支撑 · 谨慎控耐', minRatio: 0.26, maxRatio: 0.56, isCrux: true, mood: 'crux' },
+      { name: '玄柱钥匙桥', subtitle: '横移跨柱 · 避开死胡同', minRatio: 0.56, maxRatio: 0.82, isCrux: true, mood: 'crux' },
+      { name: '塔顶高原', subtitle: '雨雾渐消 · 登顶巨塔', minRatio: 0.82, maxRatio: 1.01, mood: 'summit' },
+    ],
+    'advanced-crux': [
+      { name: '冰谷下壁', subtitle: '寒壁陡立 · 提前规划路书', minRatio: 0, maxRatio: 0.26, mood: 'flow' },
+      { name: '莲瓣仰角壁', subtitle: '屋檐反扣 · 连续高耗难点', minRatio: 0.26, maxRatio: 0.56, isCrux: true, mood: 'crux' },
+      { name: '孤针横渡段', subtitle: '悬空单线 · 寻找隐秘补给', minRatio: 0.56, maxRatio: 0.82, isCrux: true, mood: 'crux' },
+      { name: '青莲塔尖', subtitle: '冰雪高壁 · 孤峰问顶', minRatio: 0.82, maxRatio: 1.01, mood: 'summit' },
+    ],
+    'master-1': [
+      { name: '困难裂隙', subtitle: '北壁入口 · 凛风扑面', minRatio: 0, maxRatio: 0.26, mood: 'flow' },
+      { name: '白色蜘蛛冰场', subtitle: '冰岩混合 · 警惕落冰与阵风', minRatio: 0.26, maxRatio: 0.58, isCrux: true, mood: 'crux' },
+      { name: '出口冰槽', subtitle: '狭长险关 · 严守耐力底线', minRatio: 0.58, maxRatio: 0.84, isCrux: true, mood: 'crux' },
+      { name: '峰顶雪檐', subtitle: '暴雪绝巅 · 最后冲刺', minRatio: 0.84, maxRatio: 1.01, mood: 'summit' },
+    ],
+    'master-2': [
+      { name: '北壁雪坡', subtitle: '极寒起攀 · 读清冰岩走势', minRatio: 0, maxRatio: 0.25, mood: 'flow' },
+      { name: '施密特险段', subtitle: '陡直暗冰 · 每步皆须精确', minRatio: 0.25, maxRatio: 0.56, isCrux: true, mood: 'crux' },
+      { name: '寒锋横渡墙', subtitle: '暴雪风隙 · 果断通过钥匙孔', minRatio: 0.56, maxRatio: 0.83, isCrux: true, mood: 'crux' },
+      { name: '金字塔刃脊', subtitle: '孤锋绝顶 · 破冰登巅', minRatio: 0.83, maxRatio: 1.01, mood: 'summit' },
+    ],
+    'master-3': [
+      { name: '酋长岩下壁', subtitle: '光滑花岗 · 步入极限试炼', minRatio: 0, maxRatio: 0.24, mood: 'flow' },
+      { name: '跃抓核心段', subtitle: '全线极难 · 动态连贯突破', minRatio: 0.24, maxRatio: 0.54, isCrux: true, mood: 'crux' },
+      { name: '黎明横渡墙', subtitle: '细微指点 · 冷静掌控呼吸', minRatio: 0.54, maxRatio: 0.82, isCrux: true, mood: 'crux' },
+      { name: '人类之巅', subtitle: '晨光破晓 · 迎光登顶', minRatio: 0.82, maxRatio: 1.01, mood: 'summit' },
+    ],
+  };
+
+  const list = byId[route.id] ?? byId.intermediate;
+  return list.map((p, index) => ({
+    ...p,
+    id: `${route.id}-pitch-${index + 1}`,
+    index,
+  }));
 }
 
 /**
@@ -1067,7 +1151,10 @@ export function getLevelGenerationStrategy(
         corridorClarity: 'medium',
         viableBranchCount: tier - 2,
         staminaDilemmaForks: tier === 4 ? 1 : 0,
-        enabledCruxLogics: tier === 4 ? ['sidepull_gate', 'stamina_dilemma'] : ['sidepull_gate'],
+        enabledCruxLogics:
+          tier === 4
+            ? ['sidepull_gate', 'undercling_mantle', 'stamina_dilemma']
+            : ['sidepull_gate'],
         asymmetricSkipChance: 0.06,
       },
       decorativeDeadEnd: {
@@ -1174,16 +1261,16 @@ export function getLevelGenerationStrategy(
     };
   }
 
-  // Tier 9..11: Master Alpine Puzzle
+  // Tier 9..11: Master Alpine Puzzle — dense full-wall rock field that conceals the true line
   const masterLevel = tier - 9; // 0, 1, 2
   return {
     tier,
     label:
       masterLevel === 0
-        ? '大师一阶 · 读线迷宫（黄金诱饵 + 钥匙孔门控）'
+        ? '大师一阶 · 隐线岩迷宫（高密岩壁 + 黄金诱饵 + 钥匙孔门控）'
         : masterLevel === 1
-          ? '大师二阶 · 绝壁博弈（多层假路 + 耐力双选）'
-          : '大师终阶 · 神山终极读线（全机制复合思考壁）',
+          ? '大师二阶 · 绝壁隐脉（多层交织假路 + 耐力双选）'
+          : '大师终阶 · 神山无痕巨壁（全壁高密隐线 + 复合路书试炼）',
     corePath: {
       stepLen: 42.0 + masterLevel * 0.75,
       corridorClarity: 'master_puzzle',
@@ -1198,26 +1285,26 @@ export function getLevelGenerationStrategy(
       asymmetricSkipChance: 0.3 + masterLevel * 0.04,
     },
     decorativeDeadEnd: {
-      lineCount: Math.max(10 + masterLevel * 2, Math.round((7 + masterLevel * 0.8) * heightFactor)),
-      holdsPerLine: [3, 4],
-      minDistFromCore: 124,
-      minDistFromDecoy: 116,
-      radiusScale: 0.86,
+      lineCount: Math.max(18 + masterLevel * 4, Math.round((11 + masterLevel * 1.4) * heightFactor)),
+      holdsPerLine: [4, 7],
+      minDistFromCore: 82,
+      minDistFromDecoy: 68,
+      radiusScale: 0.98,
     },
     farDistractor: {
-      clusterCount: Math.max(22 + masterLevel * 4, Math.round((12 + masterLevel) * heightFactor)),
-      clusterSize: [2, 4],
-      minDistFromCore: 120,
-      minDistFromDecoy: 116,
-      phantomIslandCount: 7 + masterLevel * 2,
+      clusterCount: Math.max(36 + masterLevel * 6, Math.round((18 + masterLevel * 2) * heightFactor)),
+      clusterSize: [3, 5],
+      minDistFromCore: 76,
+      minDistFromDecoy: 64,
+      phantomIslandCount: 12 + masterLevel * 3,
     },
     masterDecoyPath: {
       enabled: true,
-      falseGoldenHighways: 5 + masterLevel,
-      flankDecoyBranches: 6 + masterLevel,
-      stepsPerDecoy: [5, 7],
+      falseGoldenHighways: 9 + masterLevel * 2,
+      flankDecoyBranches: 11 + masterLevel * 2,
+      stepsPerDecoy: [6, 9],
       lureHeadSteps: 3,
-      tipMinIsolationFromCore: 106,
+      tipMinIsolationFromCore: 88,
     },
   };
 }
@@ -2168,7 +2255,10 @@ export function generateMountain(route: RouteConfig): MountainWorld {
   const pickMainType = (isPrimary: boolean, progress: number): HoldType => {
     const r = rng();
     if (tier === 1) return r < 0.72 ? 'jug' : 'ledge';
-    if (tier === 2) return r < 0.66 ? 'jug' : r < 0.86 ? 'ledge' : 'crack';
+    if (tier === 2) {
+      if (!isPrimary && progress > 0.34 && r < 0.14) return 'fragile';
+      return r < 0.64 ? 'jug' : r < 0.85 ? 'ledge' : 'crack';
+    }
     if (tier === 3) return r < 0.54 ? 'jug' : r < 0.88 ? 'crack' : 'crimp';
     if (tier === 4) return r < 0.44 ? 'jug' : r < 0.82 ? 'crack' : 'crimp';
     if (tier === 5) return isPrimary ? (r < 0.38 ? 'jug' : 'crack') : r < 0.64 ? 'crack' : 'crimp';
@@ -2235,10 +2325,10 @@ export function generateMountain(route: RouteConfig): MountainWorld {
         motif: 'flow',
       });
     } else if (tier <= 4) {
-      // Tier 3-4: 1 clear diagonal sidepull traverse + organic flow
+      // Tier 3-4: 1 clear diagonal sidepull traverse + High Exposure roof undercling on Tier 4 upper pitch
       const dir: -1 | 1 = (seg + tier) % 2 === 0 ? 1 : -1;
       const y1 = p0.y - segH * 0.34;
-      const y2 = p0.y - segH * 0.56;
+      const y2 = p0.y - segH * 0.58;
       const shift = dir * (58 + (tier - 3) * 20);
       spineWaypoints.push({
         x: clampClimbX(p0.x - dir * 24, y1, 48),
@@ -2248,7 +2338,7 @@ export function generateMountain(route: RouteConfig): MountainWorld {
       spineWaypoints.push({
         x: clampClimbX(p0.x + shift, y2, 48),
         y: y2,
-        motif: 'traverse',
+        motif: tier === 4 && seg === 0 ? 'roof_undercling' : 'traverse',
         traverseDir: dir,
       });
     } else if (tier <= 6) {
@@ -2496,7 +2586,7 @@ export function generateMountain(route: RouteConfig): MountainWorld {
         if (fy < -24 && canPlaceHold(fx, fy, 24)) {
           pushHold(fx, fy, footType, zone, baseRadius, isWetHold(footType, progress), true, 'core_path');
         }
-      } else if (motif === 'roof_undercling' && tier >= 5) {
+      } else if (motif === 'roof_undercling' && tier >= 4) {
         // Undercling Mantle: inverted grip arc paired with high opposing foothold, ending in a mantle ledge
         const side = prevSideSign;
         prevSideSign *= -1;
@@ -2792,6 +2882,54 @@ export function generateMountain(route: RouteConfig): MountainWorld {
         lastPlaced = { x: tx, y: ty };
       }
 
+      // On Master tiers, sprout a realistic 2-3 hold secondary sub-branch mid-decoy to mask dead-ends
+      if (tier >= 9 && s === 2 && lastPlaced) {
+        const subDir = -dirX;
+        let subX = lastPlaced.x + subDir * (26 + rng() * 14);
+        let subY = lastPlaced.y - (26 + rng() * 10);
+        const subLen = 2 + (rng() < 0.55 ? 1 : 0);
+        for (let sb = 0; sb < subLen; sb++) {
+          const sbBounds = getCliffBounds(subY, mountainHeight);
+          if (
+            subX < sbBounds.left + 26 ||
+            subX > sbBounds.right - 26 ||
+            subY < -mountainHeight + 70 ||
+            subY > -46
+          ) {
+            break;
+          }
+          if (minDistToList(subX, subY, coreHolds) < Math.max(82, minIso - 4)) break;
+          if (canPlaceHold(subX, subY, 24)) {
+            const subProgress = Math.max(0, Math.min(1, -subY / mountainHeight));
+            const subZone = subProgress < 0.35 ? 0 : subProgress < 0.7 ? 1 : 2;
+            const subType: HoldType =
+              sb === subLen - 1
+                ? route.palette === 'glacial'
+                  ? 'ice'
+                  : 'fragile'
+                : rng() < 0.45
+                  ? 'crack'
+                  : rng() < 0.78
+                    ? 'crimp'
+                    : 'jug';
+            const subPlaced = pushHold(
+              subX,
+              subY,
+              subType,
+              subZone,
+              undefined,
+              isWetHold(subType, subProgress, 0.06),
+              false,
+              'master_decoy_path'
+            );
+            decoyHolds.push(subPlaced);
+            placedIds.push(subPlaced.id);
+          }
+          subX += subDir * (18 + rng() * 14);
+          subY -= 32 + rng() * 10;
+        }
+      }
+
       // Drift cleanly away from the core corridor into blank alpine rock
       tx += isGolden ? dirX * (16 + rng() * 14) : dirX * (20 + rng() * 16);
       ty -= 35 + rng() * 11;
@@ -3045,6 +3183,147 @@ export function generateMountain(route: RouteConfig): MountainWorld {
     }
   }
 
+  // 4c. Master Full-Wall Camouflage Seams & Natural Rock Field (Tier >= 9)
+  // Eliminates the artificial empty moat around the core path so the real route blends
+  // naturally into a dense alpine rock face, making Roadbook scouting & revision essential.
+  if (tier >= 9) {
+    const masterLevel = tier - 9;
+    const keyholeZones = cruxPlacements
+      .filter((c) => c.logic === 'keyhole_bridge')
+      .map((c) => ({ x: c.x, y: c.y }));
+    const nearKeyhole = (x: number, y: number) =>
+      keyholeZones.some((k) => Math.hypot(x - k.x, y - k.y) < 92);
+
+    // Check that camouflage holds don't accidentally bridge a decoy tip back upward to core_path
+    const decoyTipCoords = decoyPaths.map((d) => ({ x: d.tipX, y: d.tipY }));
+    const bridgesDecoyTip = (x: number, y: number) =>
+      decoyTipCoords.some((tip) => Math.hypot(x - tip.x, y - tip.y) < 88);
+
+    // 4c-i: Interwoven competing rock seams across the full cliff width
+    const seamCount = 24 + masterLevel * 6;
+    for (let sm = 0; sm < seamCount; sm++) {
+      const progress = 0.05 + ((sm + 0.15 + rng() * 0.7) / seamCount) * 0.88;
+      const startY = -progress * mountainHeight;
+      if (startY > -72 || startY < -mountainHeight + 76) continue;
+
+      const bounds = getCliffBounds(startY, mountainHeight);
+      const usableSpan = Math.max(80, bounds.right - bounds.left - 56);
+      let sx = bounds.left + 28 + rng() * usableSpan;
+      let sy = startY;
+      const seamSteps = 3 + Math.floor(rng() * 4);
+      const slopeDir: -1 | 1 = rng() < 0.5 ? -1 : 1;
+      const lateralDrift = 10 + rng() * 18;
+
+      for (let st = 0; st < seamSteps; st++) {
+        const b = getCliffBounds(sy, mountainHeight);
+        if (sx < b.left + 26 || sx > b.right - 26 || sy > -56 || sy < -mountainHeight + 68) {
+          break;
+        }
+        const dCore = minDistToList(sx, sy, coreHolds);
+        // Blend right up to the edges of the main corridor (>= 58px) without overlapping core or bridging keyholes/tips
+        if (
+          dCore >= 58 &&
+          !nearKeyhole(sx, sy) &&
+          !bridgesDecoyTip(sx, sy) &&
+          canPlaceHold(sx, sy, 28)
+        ) {
+          const p = Math.max(0, Math.min(1, -sy / mountainHeight));
+          const zone = p < 0.35 ? 0 : p < 0.7 ? 1 : 2;
+          const r = rng();
+          let cType: HoldType;
+          if (st === seamSteps - 1) {
+            cType = route.palette === 'glacial' && r < 0.5 ? 'ice' : r < 0.85 ? 'fragile' : 'crimp';
+          } else if (route.palette === 'glacial') {
+            cType =
+              r < 0.22
+                ? 'jug'
+                : r < 0.48
+                  ? 'crack'
+                  : r < 0.72
+                    ? 'crimp'
+                    : r < 0.88
+                      ? 'ice'
+                      : r < 0.95
+                        ? 'fragile'
+                        : 'tremor';
+          } else {
+            cType =
+              r < 0.24
+                ? 'jug'
+                : r < 0.52
+                  ? 'crack'
+                  : r < 0.78
+                    ? 'crimp'
+                    : r < 0.92
+                      ? 'fragile'
+                      : 'tremor';
+          }
+          pushHold(
+            sx,
+            sy,
+            cType,
+            zone,
+            undefined,
+            isWetHold(cType, p, 0.05),
+            false,
+            'far_distractor'
+          );
+        }
+        sx += slopeDir * (lateralDrift + (rng() - 0.5) * 14);
+        sy -= 32 + rng() * 14;
+      }
+    }
+
+    // 4c-ii: Dense organic micro-holds scattered across open rock faces to break up silhouette lines
+    const scatterTarget = 55 + masterLevel * 18;
+    for (let sc = 0; sc < scatterTarget; sc++) {
+      const progress = 0.05 + rng() * 0.89;
+      const sy = -progress * mountainHeight;
+      if (sy > -58 || sy < -mountainHeight + 66) continue;
+      const b = getCliffBounds(sy, mountainHeight);
+      const sx = b.left + 26 + rng() * Math.max(40, b.right - b.left - 52);
+      const dCore = minDistToList(sx, sy, coreHolds);
+      if (
+        dCore < 56 ||
+        nearKeyhole(sx, sy) ||
+        bridgesDecoyTip(sx, sy) ||
+        !canPlaceHold(sx, sy, 29)
+      ) {
+        continue;
+      }
+      const zone = progress < 0.35 ? 0 : progress < 0.7 ? 1 : 2;
+      const r = rng();
+      const sType: HoldType =
+        route.palette === 'glacial'
+          ? r < 0.34
+            ? 'crimp'
+            : r < 0.62
+              ? 'crack'
+              : r < 0.8
+                ? 'ice'
+                : r < 0.92
+                  ? 'fragile'
+                  : 'jug'
+          : r < 0.38
+            ? 'crimp'
+            : r < 0.68
+              ? 'crack'
+              : r < 0.86
+                ? 'fragile'
+                : 'jug';
+      pushHold(
+        sx,
+        sy,
+        sType,
+        zone,
+        undefined,
+        isWetHold(sType, progress, 0.04),
+        false,
+        'far_distractor'
+      );
+    }
+  }
+
   // Step 3: Pre-placed weathered rusty pitons on mid/high routes (tier >= 4)
   const rustyPitons: Piton[] = [];
   if (tier >= 4 && mainLineNodes.length >= 8) {
@@ -3066,6 +3345,58 @@ export function generateMountain(route: RouteConfig): MountainWorld {
         reliable: rng() < 0.58,
       });
     }
+  }
+
+  // Step 3B: Optional off-axis Abandoned Wall Supply Caches (Tier >= 2, risk-reward detour)
+  const supplyCaches: WallSupplyCache[] = [];
+  if (tier >= 2 && mainLineNodes.length >= 6) {
+    const cacheFractions = tier >= 6 ? [0.34, 0.68] : [0.46];
+    const cacheLorePool: Array<{ reward: 'piton' | 'chalk'; label: string; note: string }> = [
+      { reward: 'piton', label: '遗落岩钉包', note: '前人遗留的铬钼岩钉，静挂在侧壁岩缝中' },
+      { reward: 'chalk', label: '避风镁粉袋', note: '岩檐下干燥完好的备用镁粉袋，附着旧路书残页' },
+      { reward: 'piton', label: '首攀旧装备', note: '褪色扁带上拴着一枚完好钢钉，见证当年攀登' },
+      { reward: 'chalk', label: '登山者粉袋', note: '细密白粉尚余大半，在凛冽山风里格外珍贵' },
+    ];
+
+    cacheFractions.forEach((frac, idx) => {
+      const nodeIdx = Math.max(
+        2,
+        Math.min(mainLineNodes.length - 3, Math.floor(mainLineNodes.length * frac))
+      );
+      const anchor = mainLineNodes[nodeIdx];
+      const side: -1 | 1 = (idx + tier) % 2 === 0 ? 1 : -1;
+      const bounds = getCliffBounds(anchor.y, mountainHeight);
+      let flankX = anchor.x + side * (46 + rng() * 12);
+      if (flankX < bounds.left + 32 || flankX > bounds.right - 32) {
+        flankX = anchor.x - side * (46 + rng() * 12);
+      }
+      flankX = Math.max(bounds.left + 30, Math.min(bounds.right - 30, flankX));
+      const flankY = anchor.y - 8 + (rng() - 0.5) * 14;
+
+      // Ensure there is a reachable flank hold right beneath the cache so detours are 100% fair
+      if (canPlaceHold(flankX, flankY + 6, 22)) {
+        pushHold(
+          flankX,
+          flankY + 6,
+          tier >= 7 ? 'crack' : 'jug',
+          anchor.zone,
+          undefined,
+          false,
+          true,
+          'core_path'
+        );
+      }
+      const lore = cacheLorePool[(tier + idx) % cacheLorePool.length];
+      supplyCaches.push({
+        id: `supply-cache-${idx}`,
+        x: flankX,
+        y: flankY - 12,
+        reward: lore.reward,
+        label: lore.label,
+        note: lore.note,
+        collected: false,
+      });
+    });
   }
 
   const isGlacial = route.palette === 'glacial';
@@ -3308,6 +3639,7 @@ export function generateMountain(route: RouteConfig): MountainWorld {
   }
 
   const wallAnalysis = analyzeStaminaAndHoldDensity(holds, mountainHeight, 1.0, route);
+  const pitchSections = buildPitchSectionsForRoute(route);
 
   const world: MountainWorld = {
     route,
@@ -3324,6 +3656,8 @@ export function generateMountain(route: RouteConfig): MountainWorld {
     cairnStones,
     difficultyProfile,
     wallAnalysis,
+    pitchSections,
+    supplyCaches,
   };
 
   routeRoleBreakdownMap.set(world, {

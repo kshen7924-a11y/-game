@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { GameHUD } from './components/GameHUD';
+import { IntroStillnessOverlay } from './components/IntroStillnessOverlay';
 import { SummitOverlay } from './components/SummitOverlay';
 import { TitleOverlay } from './components/TitleOverlay';
 import { soundEngine, stopHaptic, triggerHaptic, triggerHapticPreset } from './game/audio';
@@ -21,14 +22,14 @@ import {
   updateClimberPhysics,
 } from './game/ik';
 import {
+  BADGES,
   CLIMBER_SKINS,
-  estimateRoadbookStamina,
   evaluateClimbAssessment,
   generateMountain,
-  generateSuggestedRoadbook,
   getDailyChallengeRoute,
   getRouteById,
   getWeatherAtAltitude,
+  hasHoldHintsEnabled,
   isMasterRoute,
   isRouteBookSupported,
   LOADOUT_OPTIONS,
@@ -68,12 +69,19 @@ import {
   LimbDragState,
   LimbId,
   LoadoutId,
+  MicroWeatherWindow,
   OverallRatingGrade,
   Particle,
   PelvisDragState,
   Piton,
+  RoadbookAttemptReview,
+  RoadbookFallHotspot,
+  RoadbookHealthDropRecord,
+  RoadbookSavedSlot,
   RouteConfig,
   RouteId,
+  RoutePitchSection,
+  RouteRoadbookRecord,
   SummitSequenceStage,
   TutorialState,
   Vec2,
@@ -288,6 +296,108 @@ const DAILY_STORAGE_KEY = 'cairn_daily_completed_v1';
 const SKIN_STORAGE_KEY = 'cairn_selected_skin_v1';
 const NAME_STORAGE_KEY = 'cairn_climber_name_v1';
 const GENDER_STORAGE_KEY = 'cairn_climber_gender_v1';
+const ROADBOOK_STORAGE_KEY = 'cairn_route_roadbooks_v1';
+
+function getRouteRoadbookKey(route: RouteConfig): string {
+  return route.isDailyChallenge && route.dailyDateKey
+    ? `daily-${route.dailyDateKey}`
+    : route.id;
+}
+
+function createEmptyRoadbookRecord(): RouteRoadbookRecord {
+  return {
+    savedPins: [],
+    savedAt: null,
+    archives: [],
+    lastAttempt: null,
+    fallHotspots: [],
+  };
+}
+
+function loadAllRoadbookRecords(): Record<string, RouteRoadbookRecord> {
+  try {
+    const raw = window.localStorage.getItem(ROADBOOK_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object') return {};
+    return parsed as Record<string, RouteRoadbookRecord>;
+  } catch {
+    return {};
+  }
+}
+
+function loadRouteRoadbookRecord(route: RouteConfig): RouteRoadbookRecord {
+  const key = getRouteRoadbookKey(route);
+  const all = loadAllRoadbookRecords();
+  const existing = all[key];
+  if (!existing || typeof existing !== 'object') {
+    return createEmptyRoadbookRecord();
+  }
+  return {
+    savedPins: Array.isArray(existing.savedPins)
+      ? existing.savedPins.filter((id): id is string => typeof id === 'string')
+      : [],
+    savedAt: typeof existing.savedAt === 'number' ? existing.savedAt : null,
+    archives: Array.isArray(existing.archives)
+      ? existing.archives
+          .filter(
+            (slot): slot is RoadbookSavedSlot =>
+              Boolean(slot) &&
+              typeof slot.id === 'string' &&
+              typeof slot.label === 'string' &&
+              Array.isArray(slot.pins)
+          )
+          .slice(0, 3)
+      : [],
+    lastAttempt:
+      existing.lastAttempt && typeof existing.lastAttempt === 'object'
+        ? existing.lastAttempt
+        : null,
+    fallHotspots: Array.isArray(existing.fallHotspots)
+      ? existing.fallHotspots
+          .filter(
+            (spot): spot is RoadbookFallHotspot =>
+              Boolean(spot) &&
+              typeof spot.x === 'number' &&
+              typeof spot.y === 'number' &&
+              typeof spot.count === 'number'
+          )
+          .slice(0, 8)
+      : [],
+  };
+}
+
+function saveRouteRoadbookRecord(routeKey: string, record: RouteRoadbookRecord): void {
+  try {
+    const all = loadAllRoadbookRecords();
+    all[routeKey] = record;
+    window.localStorage.setItem(ROADBOOK_STORAGE_KEY, JSON.stringify(all));
+  } catch {
+    // Ignore storage quota / privacy mode errors
+  }
+}
+
+function pinsEqual(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+function downsampleTrail(points: Vec2[], maxCount = 120): Vec2[] {
+  if (points.length <= maxCount) {
+    return points.map((p) => ({ x: Math.round(p.x), y: Math.round(p.y) }));
+  }
+  const out: Vec2[] = [];
+  const step = (points.length - 1) / (maxCount - 1);
+  for (let i = 0; i < maxCount; i++) {
+    const idx = i === maxCount - 1 ? points.length - 1 : Math.round(i * step);
+    const p = points[idx];
+    out.push({ x: Math.round(p.x), y: Math.round(p.y) });
+  }
+  return out;
+}
 
 const LEGACY_BADGE_MAP: Record<string, RouteId> = {
   '5.6': 'intro',
@@ -787,6 +897,15 @@ export default function App() {
   const avalancheTimerRef = useRef(16);
   const rockEchoTimerRef = useRef(7.5);
   const betaPinsRef = useRef<string[]>([]);
+  const betaCursorRef = useRef<number>(0);
+  const attemptGrabbedHoldIdsRef = useRef<string[]>([]);
+  const attemptHealthDropsRef = useRef<RoadbookHealthDropRecord[]>([]);
+  const attemptMinHealthRef = useRef<number>(100);
+  const attemptMinStaminaRef = useRef<number>(100);
+  const lastStaminaWarnPosRef = useRef<Vec2 | null>(null);
+  const attemptRecordedRef = useRef<boolean>(false);
+  const roadbookRecordRef = useRef<RouteRoadbookRecord | null>(null);
+  const showAttemptReviewRef = useRef<boolean>(true);
   const lastSlipNoteRef = useRef<string | null>(null);
   const lastLimbTapRef = useRef<{ limbId: LimbId; time: number } | null>(null);
   const staminaRateRef = useRef(0);
@@ -815,6 +934,7 @@ export default function App() {
   const summitStageRef = useRef<SummitSequenceStage>('PAN_REVEAL');
   const summitCamStartRef = useRef<{ x: number; y: number; zoom: number } | null>(null);
   const fallStartYRef = useRef(0);
+  const fallStartPosRef = useRef<Vec2>({ x: 0, y: 0 });
   const pointerDownPosRef = useRef<Vec2 | null>(null);
   const peekPointerIdRef = useRef<number | null>(null);
   const activeLimbDragRef = useRef<LimbDragState | null>(null);
@@ -826,7 +946,35 @@ export default function App() {
   const lastPointerImpulseMsRef = useRef(0);
   const lastSafeTorsoVelYRef = useRef(0);
 
+  // 3-Second "岩间静谧" Pre-Climb Intro Cutscene + Dynamic Pacing / Micro-Weather Refs
+  const INTRO_DURATION_SEC = 3.0;
+  const introCutsceneRef = useRef<{
+    active: boolean;
+    elapsedSec: number;
+    pendingRoadbook: boolean;
+    startCamY: number;
+    startZoom: number;
+  }>({
+    active: false,
+    elapsedSec: 0,
+    pendingRoadbook: false,
+    startCamY: -220,
+    startZoom: 0.72,
+  });
+  const microWindowRef = useRef<MicroWeatherWindow | null>(null);
+  const microWindowCooldownRef = useRef(18);
+  const activePitchIndexRef = useRef(0);
+  const pitchBannerTimerRef = useRef<number | null>(null);
+  const dynoChargeTickAccRef = useRef(0);
+
   const [phase, setPhase] = useState<GamePhase>('TITLE_MENU');
+  const [introElapsed, setIntroElapsed] = useState<number | null>(null);
+  const [pitchBanner, setPitchBanner] = useState<{
+    name: string;
+    subtitle: string;
+    isCrux?: boolean;
+    index: number;
+  } | null>(null);
   const [hoverInfo, setHoverInfo] = useState<HoverInfo | null>(null);
   const [activeDragReason, setActiveDragReason] = useState<string | null>(null);
   const [tutorial, setTutorial] = useState<TutorialState>(tutorialRef.current);
@@ -838,6 +986,9 @@ export default function App() {
   const [summitProgress, setSummitProgress] = useState(0);
   const [summitStage, setSummitStage] = useState<SummitSequenceStage>('PAN_REVEAL');
   const [betaPins, setBetaPins] = useState<string[]>([]);
+  const [betaCursor, setBetaCursor] = useState(0);
+  const [roadbookRecord, setRoadbookRecord] = useState<RouteRoadbookRecord | null>(null);
+  const [showAttemptReview, setShowAttemptReview] = useState(true);
   const [fallDiagnosis, setFallDiagnosis] = useState<string | null>(null);
   const [climbAssessment, setClimbAssessment] = useState<ClimbAssessment | null>(null);
   const [, setHudTick] = useState(0);
@@ -1102,8 +1253,113 @@ export default function App() {
     []
   );
 
+  const recordCurrentAttempt = useCallback(
+    (outcome: 'FALLEN' | 'SUMMIT' | 'ABORTED', diagnosis?: string | null) => {
+      const route = worldRef.current.route;
+      if (!isRouteBookSupported(route)) return;
+      if (attemptRecordedRef.current) return;
+      if (outcome === 'ABORTED' && statsRef.current.movesMade < 2) return;
+
+      attemptRecordedRef.current = true;
+      const climber = climberRef.current;
+      const routeKey = getRouteRoadbookKey(route);
+      const baseRecord = roadbookRecordRef.current ?? loadRouteRoadbookRecord(route);
+      const now = Date.now();
+
+      const resolvedFallPos: Vec2 | undefined =
+        outcome === 'FALLEN'
+          ? fallStartPosRef.current.y < -8
+            ? {
+                x: Math.round(fallStartPosRef.current.x),
+                y: Math.round(fallStartPosRef.current.y),
+              }
+            : { x: Math.round(climber.torsoPos.x), y: Math.round(climber.torsoPos.y) }
+          : undefined;
+
+      const rawTrail = downsampleTrail(climber.routeHistory, 120);
+      if (resolvedFallPos) {
+        const lastPt = rawTrail[rawTrail.length - 1];
+        if (!lastPt || Math.hypot(lastPt.x - resolvedFallPos.x, lastPt.y - resolvedFallPos.y) > 10) {
+          rawTrail.push(resolvedFallPos);
+        }
+      }
+
+      const review: RoadbookAttemptReview = {
+        timestamp: now,
+        outcome,
+        maxAltitudeM: Number(statsRef.current.maxAltitudeM.toFixed(1)),
+        routeHeightM: route.heightM,
+        movesMade: statsRef.current.movesMade,
+        elapsedSec: Math.round(statsRef.current.elapsedSec),
+        fallPos: resolvedFallPos,
+        fallDiagnosis: diagnosis ?? null,
+        trail: rawTrail,
+        grabbedHoldIds: attemptGrabbedHoldIdsRef.current.slice(-160),
+        events: routeEventsRef.current.slice(-40),
+        plannedPinsSnapshot: [...betaPinsRef.current],
+        finalHealth: Math.round(climber.health),
+        minHealth: Math.round(Math.min(attemptMinHealthRef.current, climber.health)),
+        minStamina: Math.round(Math.min(attemptMinStaminaRef.current, climber.stamina)),
+        healthDrops: attemptHealthDropsRef.current.slice(-32),
+      };
+
+      const nextHotspots: RoadbookFallHotspot[] = [...(baseRecord.fallHotspots ?? [])];
+      if (resolvedFallPos) {
+        const fallAltM = Number(Math.max(0, -resolvedFallPos.y / PIXELS_PER_METER).toFixed(1));
+        const clusterIdx = nextHotspots.findIndex(
+          (spot) => Math.hypot(spot.x - resolvedFallPos.x, spot.y - resolvedFallPos.y) <= 78
+        );
+        if (clusterIdx >= 0) {
+          const prev = nextHotspots[clusterIdx];
+          const nextCount = prev.count + 1;
+          nextHotspots[clusterIdx] = {
+            x: Math.round((prev.x * prev.count + resolvedFallPos.x) / nextCount),
+            y: Math.round((prev.y * prev.count + resolvedFallPos.y) / nextCount),
+            altitudeM: Number(((prev.altitudeM * prev.count + fallAltM) / nextCount).toFixed(1)),
+            count: nextCount,
+            lastTimestamp: now,
+          };
+        } else {
+          nextHotspots.push({
+            x: resolvedFallPos.x,
+            y: resolvedFallPos.y,
+            altitudeM: fallAltM,
+            count: 1,
+            lastTimestamp: now,
+          });
+        }
+        nextHotspots.sort((a, b) => b.count - a.count || b.lastTimestamp - a.lastTimestamp);
+        if (nextHotspots.length > 8) {
+          nextHotspots.length = 8;
+        }
+      }
+
+      const updated: RouteRoadbookRecord = {
+        ...baseRecord,
+        lastAttempt: review,
+        fallHotspots: nextHotspots,
+      };
+      roadbookRecordRef.current = updated;
+      setRoadbookRecord(updated);
+      saveRouteRoadbookRecord(routeKey, updated);
+    },
+    []
+  );
+
   const startRoute = useCallback(
-    (route: RouteConfig) => {
+    (
+      route: RouteConfig,
+      options?: { skipIntro?: boolean; openRoadbookAtY?: number }
+    ) => {
+      // Preserve mid-climb trace for roadbook review if restarting the same route
+      if (
+        phaseRef.current === 'PLAYING' &&
+        worldRef.current.route.id === route.id &&
+        statsRef.current.movesMade >= 2
+      ) {
+        recordCurrentAttempt('ABORTED');
+      }
+
       soundEngine.init();
       setSelectedRouteId(route.id);
 
@@ -1123,6 +1379,8 @@ export default function App() {
 
       const freshClimber = createInitialClimber(freshWorld, selectedLoadoutRef.current);
       climberRef.current = freshClimber;
+      fallStartYRef.current = freshClimber.torsoPos.y;
+      fallStartPosRef.current = { x: freshClimber.torsoPos.x, y: freshClimber.torsoPos.y };
       pitonsRef.current = isFreeSolo ? [] : freshWorld.rustyPitons.map((p) => ({ ...p }));
       particlesRef.current = [];
       const initialLimb: LimbId | null = null;
@@ -1134,8 +1392,28 @@ export default function App() {
       setActiveDragReason(null);
       usedRouteReadRef.current = false;
       routeEventsRef.current = [];
-      betaPinsRef.current = [];
-      setBetaPins([]);
+
+      const supportsBook = isRouteBookSupported(route);
+      const loadedRecord = supportsBook ? loadRouteRoadbookRecord(route) : null;
+      const validSavedPins = loadedRecord
+        ? loadedRecord.savedPins.filter((id) => map.has(id))
+        : [];
+      roadbookRecordRef.current = loadedRecord;
+      setRoadbookRecord(loadedRecord);
+      betaPinsRef.current = validSavedPins;
+      setBetaPins(validSavedPins);
+      betaCursorRef.current = 0;
+      setBetaCursor(0);
+      attemptGrabbedHoldIdsRef.current = [];
+      attemptHealthDropsRef.current = [];
+      attemptMinHealthRef.current = freshClimber.health;
+      attemptMinStaminaRef.current = freshClimber.stamina;
+      lastStaminaWarnPosRef.current = null;
+      attemptRecordedRef.current = false;
+      const hasPrevAttempt = Boolean(loadedRecord?.lastAttempt);
+      showAttemptReviewRef.current = hasPrevAttempt;
+      setShowAttemptReview(hasPrevAttempt);
+
       lastSlipNoteRef.current = null;
       setFallDiagnosis(null);
       trailPlaybackProgressRef.current = null;
@@ -1147,13 +1425,13 @@ export default function App() {
       setSummitProgress(0);
       setSummitStage('PAN_REVEAL');
       preloadArtPackForRoute(route);
-      const supportsBook = isRouteBookSupported(route);
-      isReadingRouteRef.current = supportsBook;
-      peekOffsetYRef.current = 0;
+
+      const enterRoadbookDirectly = Boolean(options?.skipIntro && supportsBook);
+      isReadingRouteRef.current = enterRoadbookDirectly;
       peekPointerIdRef.current = null;
       pointerDownPosRef.current = null;
       isDraggingPeekRef.current = false;
-      setIsReadingRoute(supportsBook);
+      setIsReadingRoute(enterRoadbookDirectly);
 
       const reachSet = getReachableHoldIds(freshClimber, freshWorld.holds, initialLimb);
       reachableIdsRef.current = reachSet;
@@ -1161,6 +1439,10 @@ export default function App() {
       if (tutorialAutoHideTimerRef.current) {
         window.clearTimeout(tutorialAutoHideTimerRef.current);
         tutorialAutoHideTimerRef.current = null;
+      }
+      if (pitchBannerTimerRef.current) {
+        window.clearTimeout(pitchBannerTimerRef.current);
+        pitchBannerTimerRef.current = null;
       }
       stallTimerRef.current = 0;
       cruxWarnedBinsRef.current = new Set();
@@ -1177,6 +1459,11 @@ export default function App() {
       incidentCooldownRef.current = 15;
       lastIncidentTypeRef.current = null;
       incidentAppliedWetRef.current = false;
+      microWindowRef.current = null;
+      microWindowCooldownRef.current = 16;
+      activePitchIndexRef.current = 0;
+      setPitchBanner(null);
+      dynoChargeTickAccRef.current = 0;
       tremorSoundAccRef.current = 0;
       heartbeatAccRef.current = 0;
       breathAccRef.current = 1.4;
@@ -1202,17 +1489,62 @@ export default function App() {
       setTutorial(tutState);
 
       const baseZoom = Math.min(1.04, Math.max(0.7, window.innerWidth / 440));
-      const startZoom = baseZoom;
-      const startCamY = -84;
-      cameraRef.current = {
-        x: 0,
-        y: startCamY,
-        zoom: startZoom,
-        targetX: 0,
-        targetY: startCamY,
-        targetZoom: startZoom,
-        shake: 0,
-      };
+      if (enterRoadbookDirectly) {
+        const baseCamY = freshClimber.torsoPos.y - 42;
+        const minPeek = -(freshWorld.mountainHeight + freshClimber.torsoPos.y + 40);
+        const targetPeek =
+          typeof options?.openRoadbookAtY === 'number'
+            ? Math.max(minPeek, Math.min(120, options.openRoadbookAtY - baseCamY))
+            : 0;
+        peekOffsetYRef.current = targetPeek;
+        const initY = baseCamY + targetPeek;
+        cameraRef.current = {
+          x: 0,
+          y: initY,
+          zoom: baseZoom,
+          targetX: 0,
+          targetY: initY,
+          targetZoom: baseZoom,
+          shake: 0,
+        };
+        introCutsceneRef.current = {
+          active: false,
+          elapsedSec: INTRO_DURATION_SEC,
+          pendingRoadbook: false,
+          startCamY: initY,
+          startZoom: baseZoom,
+        };
+        setIntroElapsed(null);
+        showBanner(
+          hasPrevAttempt
+            ? '复盘模式 · 红色为坠落热点，黄色为体力/耐力风险区，可直接修改路书并存档'
+            : '路书读线 · 点击岩点编排路线并存档',
+          2800
+        );
+      } else {
+        peekOffsetYRef.current = 0;
+        const introStartZoom = baseZoom * 0.82;
+        const introStartY = -Math.min(270, Math.max(200, freshWorld.mountainHeight * 0.25));
+        cameraRef.current = {
+          x: 0,
+          y: introStartY,
+          zoom: introStartZoom,
+          targetX: 0,
+          targetY: introStartY,
+          targetZoom: introStartZoom,
+          shake: 0,
+        };
+        introCutsceneRef.current = {
+          active: true,
+          elapsedSec: 0,
+          pendingRoadbook: supportsBook,
+          startCamY: introStartY,
+          startZoom: introStartZoom,
+        };
+        setIntroElapsed(0);
+        setStatusBanner(null);
+        soundEngine.playStillnessIntro();
+      }
 
       setFallDiagnosis(null);
       setClimbAssessment(null);
@@ -1229,7 +1561,7 @@ export default function App() {
         staminaSampleCount: 0,
         keyActionAttempts: 0,
         keyActionErrors: 0,
-        betaPinsPlanned: 0,
+        betaPinsPlanned: validSavedPins.length,
         betaPinsFollowed: 0,
         roadbookFlowHits: 0,
       };
@@ -1239,26 +1571,55 @@ export default function App() {
       setHoverInfo(null);
       setSummitProgress(0);
       setHudTick((t) => t + 1);
-      showBanner(
-        supportsBook
-          ? isFreeSolo
-            ? `${route.tierLabel}（${route.grade}）· 徒手开攀前读线：规划路书后开始攀登（耗体-50%，无保护）`
-            : `${route.tierLabel}（${route.grade}）· 开攀前读线：滑动览壁并点选岩点规划路书`
-          : isFreeSolo
-            ? `${route.tierLabel}（${route.grade}）· 徒手攀登：耗体-50%，无保护失败只能重头开始`
-            : route.isDailyChallenge
-              ? `每日挑战 · ${route.tierLabel}（${route.grade}）`
-              : tutVariant === 'advanced'
-                ? `${route.tierLabel}（${route.grade}）· 进阶教学：双击或拖离松手，拖动腰部移重心`
-                : `${route.tierLabel}（${route.grade}）· 按住四肢关节拖向岩点抓握`,
-        3000
-      );
     },
-    [dismissTacticalHint, showBanner]
+    [dismissTacticalHint, recordCurrentAttempt, showBanner]
   );
 
+  const completeIntroCutscene = useCallback(() => {
+    if (!introCutsceneRef.current.active) return;
+    const { pendingRoadbook } = introCutsceneRef.current;
+    introCutsceneRef.current.active = false;
+    introCutsceneRef.current.elapsedSec = INTRO_DURATION_SEC;
+    setIntroElapsed(null);
+
+    const route = worldRef.current.route;
+    const isFreeSolo = selectedLoadoutRef.current === 'free-solo';
+    const tutVariant = tutorialRef.current.variant;
+    const hasSaved = betaPinsRef.current.length > 0;
+    const hasReview = Boolean(roadbookRecordRef.current?.lastAttempt);
+
+    if (pendingRoadbook) {
+      isReadingRouteRef.current = true;
+      setIsReadingRoute(true);
+    }
+
+    // Snap camera target onto climber idle stance cleanly
+    const responsiveZoom = Math.min(1.04, Math.max(0.7, window.innerWidth / 440));
+    cameraRef.current.targetX = 0;
+    cameraRef.current.targetY = -84;
+    cameraRef.current.targetZoom = responsiveZoom;
+
+    showBanner(
+      pendingRoadbook
+        ? hasSaved || hasReview
+          ? `${route.tierLabel}（${route.grade}）· 已载入上次路书与复盘，可直接修改并存档`
+          : isFreeSolo
+            ? `${route.tierLabel}（${route.grade}）· 徒手开攀前读线：自定路书后开攀（无保护）`
+            : `${route.tierLabel}（${route.grade}）· 开攀前读线：览壁辨岩并标定路书`
+        : isFreeSolo
+          ? `${route.tierLabel}（${route.grade}）· 徒手攀登：耗体-50%，无保护失败只能重头开始`
+          : route.isDailyChallenge
+            ? `每日挑战 · ${route.tierLabel}（${route.grade}）`
+            : tutVariant === 'advanced'
+              ? `${route.tierLabel}（${route.grade}）· 进阶教学：双击或拖离松手，拖动腰部移重心`
+              : `${route.tierLabel}（${route.grade}）· 按住四肢关节拖向岩点抓握`,
+      2900
+    );
+    setHudTick((t) => t + 1);
+  }, [showBanner]);
+
   const handleToggleRouteRead = useCallback(() => {
-    if (phaseRef.current !== 'PLAYING') return;
+    if (phaseRef.current !== 'PLAYING' || introCutsceneRef.current.active) return;
     if (!isRouteBookSupported(worldRef.current.route)) return;
 
     const next = !isReadingRouteRef.current;
@@ -1382,6 +1743,8 @@ export default function App() {
   const handleClearBetaPins = useCallback(() => {
     betaPinsRef.current = [];
     setBetaPins([]);
+    betaCursorRef.current = 0;
+    setBetaCursor(0);
     soundEngine.playLimbTick();
     showBanner('已清空路书序列', 1300);
   }, [showBanner]);
@@ -1391,33 +1754,103 @@ export default function App() {
     const next = betaPinsRef.current.slice(0, -1);
     betaPinsRef.current = next;
     setBetaPins(next);
+    const clampedCursor = Math.min(betaCursorRef.current, next.length);
+    betaCursorRef.current = clampedCursor;
+    setBetaCursor(clampedCursor);
     soundEngine.playLimbTick();
     showBanner(`已撤回至第 ${next.length} 步`, 1100);
   }, [showBanner]);
 
-  const handleAutoSuggestBetaPins = useCallback(() => {
-    if (phaseRef.current !== 'PLAYING' || !isRouteBookSupported(worldRef.current.route)) return;
-    const world = worldRef.current;
-    const climber = climberRef.current;
-    const suggested = generateSuggestedRoadbook(
-      world,
-      climber.torsoPos,
-      10,
-      selectedLoadoutRef.current
-    );
-    if (suggested.length === 0) {
-      showBanner('附近已接近顶峰平台，可直接向上抓取登顶', 1500);
-      return;
+  const handleSaveRoadbook = useCallback(() => {
+    const route = worldRef.current.route;
+    if (!isRouteBookSupported(route)) return;
+    const routeKey = getRouteRoadbookKey(route);
+    const baseRecord = roadbookRecordRef.current ?? loadRouteRoadbookRecord(route);
+    const pinsToSave = [...betaPinsRef.current];
+    const now = Date.now();
+
+    let nextArchives = [...baseRecord.archives];
+    if (pinsToSave.length > 0) {
+      const existingSameIdx = nextArchives.findIndex((s) => pinsEqual(s.pins, pinsToSave));
+      if (existingSameIdx >= 0) {
+        const matched: RoadbookSavedSlot = {
+          ...nextArchives[existingSameIdx],
+          updatedAt: now,
+        };
+        nextArchives = [
+          matched,
+          ...nextArchives.filter((_, i) => i !== existingSameIdx),
+        ].slice(0, 3);
+      } else {
+        const versionNum =
+          nextArchives.reduce((maxV, s) => {
+            const m = s.label.match(/v(\d+)/i);
+            return m ? Math.max(maxV, Number(m[1])) : maxV;
+          }, 0) + 1;
+        const newSlot: RoadbookSavedSlot = {
+          id: `rb-${now}-${Math.random().toString(36).slice(2, 6)}`,
+          label: `v${versionNum}`,
+          updatedAt: now,
+          pins: pinsToSave,
+          bestAltitudeM: baseRecord.lastAttempt?.maxAltitudeM,
+          summited: baseRecord.lastAttempt?.outcome === 'SUMMIT',
+        };
+        nextArchives = [newSlot, ...nextArchives].slice(0, 3);
+      }
     }
-    usedRouteReadRef.current = true;
-    betaPinsRef.current = suggested;
-    setBetaPins(suggested);
-    statsRef.current.betaPinsPlanned += suggested.length;
-    peekOffsetYRef.current = Math.min(peekOffsetYRef.current, -140);
+
+    const updated: RouteRoadbookRecord = {
+      ...baseRecord,
+      savedPins: pinsToSave,
+      savedAt: now,
+      archives: nextArchives,
+    };
+    roadbookRecordRef.current = updated;
+    setRoadbookRecord(updated);
+    saveRouteRoadbookRecord(routeKey, updated);
     soundEngine.playLimbTick();
     triggerHapticPreset('tick');
-    showBanner(`已生成 ${suggested.length} 步最优参考路书（已自动避开干扰死胡同）`, 2300);
+    showBanner(
+      pinsToSave.length > 0
+        ? `路书已存档（共 ${pinsToSave.length} 步）`
+        : '已保存空路书存档',
+      1700
+    );
   }, [showBanner]);
+
+  const handleRevertRoadbook = useCallback(() => {
+    const saved = roadbookRecordRef.current?.savedPins ?? [];
+    const validSaved = saved.filter((id) => holdsMapRef.current.has(id));
+    betaPinsRef.current = validSaved;
+    setBetaPins(validSaved);
+    const clampedCursor = Math.min(betaCursorRef.current, validSaved.length);
+    betaCursorRef.current = clampedCursor;
+    setBetaCursor(clampedCursor);
+    soundEngine.playLimbTick();
+    showBanner(`已还原至上次存档（${validSaved.length} 步）`, 1400);
+  }, [showBanner]);
+
+  const handleLoadRoadbookSlot = useCallback(
+    (slotId: string) => {
+      const slot = roadbookRecordRef.current?.archives.find((s) => s.id === slotId);
+      if (!slot) return;
+      const validPins = slot.pins.filter((id) => holdsMapRef.current.has(id));
+      betaPinsRef.current = validPins;
+      setBetaPins(validPins);
+      betaCursorRef.current = 0;
+      setBetaCursor(0);
+      soundEngine.playLimbTick();
+      showBanner(`已载入存档 ${slot.label}（${validPins.length} 步）`, 1500);
+    },
+    [showBanner]
+  );
+
+  const handleToggleAttemptReview = useCallback(() => {
+    const next = !showAttemptReviewRef.current;
+    showAttemptReviewRef.current = next;
+    setShowAttemptReview(next);
+    soundEngine.playLimbTick();
+  }, []);
 
   const clampPeekOffset = useCallback((val: number): number => {
     const minPeek = isReadingRouteRef.current
@@ -1425,6 +1858,37 @@ export default function App() {
       : -320;
     return Math.max(minPeek, Math.min(120, val));
   }, []);
+
+  const handleFocusLastFall = useCallback(() => {
+    const review = roadbookRecordRef.current?.lastAttempt;
+    if (!review) return;
+    const focusY =
+      review.fallPos?.y ??
+      (review.trail.length > 0 ? review.trail[review.trail.length - 1].y : null);
+    if (focusY === null) return;
+    const climberBaseCamY = climberRef.current.torsoPos.y - 42;
+    peekOffsetYRef.current = clampPeekOffset(focusY - climberBaseCamY);
+    if (!showAttemptReviewRef.current) {
+      showAttemptReviewRef.current = true;
+      setShowAttemptReview(true);
+    }
+    soundEngine.playLimbTick();
+    showBanner(
+      review.fallPos
+        ? `已定位至上次坠落点（${review.maxAltitudeM.toFixed(1)}m）`
+        : `已定位至上次轨迹终点（${review.maxAltitudeM.toFixed(1)}m）`,
+      1600
+    );
+  }, [clampPeekOffset, showBanner]);
+
+  const handleReviewRoadbookFromResult = useCallback(() => {
+    const review = roadbookRecordRef.current?.lastAttempt;
+    const focusY = review?.fallPos?.y;
+    startRoute(worldRef.current.route, {
+      skipIntro: true,
+      openRoadbookAtY: typeof focusY === 'number' ? focusY : undefined,
+    });
+  }, [startRoute]);
 
   const handleJumpReadCamera = useCallback(
     (action: 'up' | 'down' | 'reset') => {
@@ -1455,7 +1919,7 @@ export default function App() {
   );
 
   const handleShakeOutHand = useCallback(() => {
-    if (phaseRef.current !== 'PLAYING' || isReadingRouteRef.current) return;
+    if (phaseRef.current !== 'PLAYING' || isReadingRouteRef.current || introCutsceneRef.current.active) return;
     const climber = climberRef.current;
     if (climber.isFalling || climber.dynoFlight) return;
 
@@ -1487,7 +1951,8 @@ export default function App() {
     soundEngine.playLimbTick();
     soundEngine.playBreath(
       Math.max(0.35, 1 - climber.stamina / climber.maxStamina),
-      'recovery'
+      'recovery',
+      climberGenderRef.current
     );
     triggerHapticPreset('shakeOut');
     reachableIdsRef.current = getReachableHoldIds(
@@ -1503,7 +1968,7 @@ export default function App() {
   }, [advanceAdvancedTutorial, dismissTacticalHint, showBanner]);
 
   const handlePlacePiton = useCallback(() => {
-    if (phaseRef.current !== 'PLAYING' || isReadingRouteRef.current) return;
+    if (phaseRef.current !== 'PLAYING' || isReadingRouteRef.current || introCutsceneRef.current.active) return;
     const climber = climberRef.current;
     if (climber.isFalling || climber.pitonsLeft <= 0) return;
 
@@ -1548,7 +2013,7 @@ export default function App() {
   }, [dismissTacticalHint, showBanner, spawnParticles]);
 
   const handleApplyChalk = useCallback(() => {
-    if (phaseRef.current !== 'PLAYING' || isReadingRouteRef.current) return;
+    if (phaseRef.current !== 'PLAYING' || isReadingRouteRef.current || introCutsceneRef.current.active) return;
     const climber = climberRef.current;
     if (climber.isFalling || climber.chalkUses <= 0) return;
 
@@ -1629,6 +2094,8 @@ export default function App() {
     const rf = botPair[1] ?? botPair[0] ?? rh;
 
     climber.torsoPos = { x: cpX, y: cpY - 40 };
+    fallStartYRef.current = cpY - 40;
+    fallStartPosRef.current = { x: cpX, y: cpY - 40 };
     climber.torsoVel = { x: 0, y: 0 };
     climber.leanBias = 0;
     climber.pelvisOffset = { x: 0, y: 0 };
@@ -1658,6 +2125,8 @@ export default function App() {
     stopHaptic();
     setActiveDragReason(null);
     lastSlipNoteRef.current = null;
+    lastStaminaWarnPosRef.current = null;
+    attemptRecordedRef.current = false;
     setFallDiagnosis(null);
     climber.pitonsLeft = Math.max(climber.pitonsLeft, 4);
     climber.chalkUses = Math.max(climber.chalkUses, 3);
@@ -1724,23 +2193,16 @@ export default function App() {
       if (!closestHold) return null;
 
       const selected = lockedLimbRef.current;
+      const showHints = hasHoldHintsEnabled(worldRef.current.route);
       if (isReadingRouteRef.current && isRouteBookSupported(worldRef.current.route)) {
-        let previewHint = `${describeHold(closestHold)} · 点击编入路书`;
         const curPins = betaPinsRef.current;
         const idx = curPins.indexOf(closestHold.id);
-        if (idx === curPins.length - 1 && idx >= 0) {
-          previewHint = `${describeHold(closestHold)} · 点击撤销第 ${idx + 1} 步`;
-        } else if (idx >= 0) {
-          previewHint = `${describeHold(closestHold)} · 点击移除第 ${idx + 1} 步`;
-        } else if (curPins.length > 0) {
-          const prevHold = holdsMapRef.current.get(curPins[curPins.length - 1]);
-          if (prevHold) {
-            const stepD = Math.round(Math.hypot(closestHold.x - prevHold.x, closestHold.y - prevHold.y));
-            const spanDesc =
-              stepD > 132 ? '跨度过大' : stepD > 95 ? '长距/跃' : '稳妥';
-            previewHint = `${describeHold(closestHold)} · 距上步${stepD}px(${spanDesc})`;
-          }
-        }
+        const previewHint =
+          idx === curPins.length - 1 && idx >= 0
+            ? `第 ${idx + 1} 步 · 点击撤销`
+            : idx >= 0
+              ? `第 ${idx + 1} 步 · 点击移出路书`
+              : `点击编入第 ${curPins.length + 1} 步`;
         return {
           hold: closestHold,
           suggestedLimb: selected ?? 'rightHand',
@@ -1757,7 +2219,7 @@ export default function App() {
           suggestedLimb: 'rightHand',
           reachable: false,
           dynoEligible: false,
-          stabilityHint: `${describeHold(closestHold)}`,
+          stabilityHint: showHints ? `${describeHold(closestHold)}` : '',
           worldPos,
         };
       }
@@ -1775,11 +2237,13 @@ export default function App() {
         isActivelyDraggingHand &&
         isValidHandDynoTarget(climber, holdsMapRef.current, selected, closestHold);
 
-      const stabilityHint = reachable
-        ? describeHold(closestHold)
-        : dynoEligible
-          ? `${describeHold(closestHold)} · 稳住长按蓄满松手跃抓`
-          : evalRes.reason ?? '超出伸展极限 · 先抬脚或调重心';
+      const stabilityHint = !showHints
+        ? ''
+        : reachable
+          ? describeHold(closestHold)
+          : dynoEligible
+            ? `${describeHold(closestHold)} · 稳住长按蓄满松手跃抓`
+            : evalRes.reason ?? '超出伸展极限 · 先抬脚或调重心';
 
       return {
         hold: closestHold,
@@ -1857,45 +2321,41 @@ export default function App() {
     climber.limbs.leftHand.pos = { x: summitLedge.x - 18, y: peakTopY - 86 };
     climber.limbs.rightHand.pos = { x: summitLedge.x + 18, y: peakTopY - 86 };
     climber.routeHistory.push({ x: summitLedge.x, y: peakTopY - 48 });
+    recordCurrentAttempt('SUMMIT');
     spawnParticles(summitLedge.x, peakTopY - 56, 22, 'spark', '#FDE68A', 96);
     soundEngine.playSummitChord();
-    soundEngine.playBreath(0.36, 'recovery');
+    soundEngine.playBreath(0.36, 'recovery', climberGenderRef.current);
     triggerHapticPreset('summit');
-  }, [recordSummitSuccess, spawnParticles]);
+  }, [recordCurrentAttempt, recordSummitSuccess, spawnParticles]);
 
   const handleAdvanceSummitStage = useCallback(() => {
     if (phaseRef.current !== 'SUMMIT') return;
-    if (summitStageRef.current === 'QUOTE_REVEAL') {
+    if (summitStageRef.current === 'PIONEER_REVEAL') {
+      summitStageRef.current = 'QUOTE_REVEAL';
+      setSummitStage('QUOTE_REVEAL');
+      soundEngine.playLimbTick();
+    } else if (summitStageRef.current === 'QUOTE_REVEAL') {
       summitStageRef.current = 'MODAL_READY';
       setSummitStage('MODAL_READY');
+      soundEngine.playComboChime(4, 0);
     }
   }, []);
 
-  const markRoadbookProgress = useCallback(
-    (hold: Hold) => {
-      const pinIdx = betaPinsRef.current.indexOf(hold.id);
-      if (pinIdx >= 0) {
-        statsRef.current.betaPinsFollowed += 1;
-        statsRef.current.roadbookFlowHits += 1;
-        roadbookFlowTimerRef.current = 6.5;
-        const remainingPins =
-          pinIdx <= 1
-            ? betaPinsRef.current.slice(pinIdx + 1)
-            : betaPinsRef.current.filter((id) => id !== hold.id);
-        betaPinsRef.current = remainingPins;
-        setBetaPins(remainingPins);
-      } else if (hold.isDecoy) {
-        roadbookFlowTimerRef.current = 0;
-        if (
-          selectedLoadoutRef.current === 'free-solo' &&
-          (hold.type === 'fragile' || hold.type === 'ice' || hold.wet)
-        ) {
-          showBanner('误入高危干扰点 · 徒手无保护注意防滑与退路！', 1800);
-        }
-      }
-    },
-    [showBanner]
-  );
+  const markRoadbookProgress = useCallback((hold: Hold) => {
+    const curPins = betaPinsRef.current;
+    const curCursor = betaCursorRef.current;
+    const matchedIdx = curPins.indexOf(hold.id, curCursor);
+    if (matchedIdx >= 0) {
+      statsRef.current.betaPinsFollowed += 1;
+      statsRef.current.roadbookFlowHits += 1;
+      roadbookFlowTimerRef.current = 6.5;
+      const nextCursor = Math.min(curPins.length, matchedIdx + 1);
+      betaCursorRef.current = nextCursor;
+      setBetaCursor(nextCursor);
+    } else if (hold.isDecoy) {
+      roadbookFlowTimerRef.current = 0;
+    }
+  }, []);
 
   const launchValidatedDyno = useCallback(
     (limbId: LimbId, hold: Hold, dynoCharge: DynoChargeState | null | undefined): boolean => {
@@ -1981,7 +2441,8 @@ export default function App() {
       }
       soundEngine.playBreath(
         Math.max(0.45, 1 - climber.stamina / climber.maxStamina),
-        'exertion'
+        'exertion',
+        climberGenderRef.current
       );
       triggerHapticPreset('dynoLaunch');
       routeEventsRef.current.push({
@@ -2035,11 +2496,20 @@ export default function App() {
         weatherRef.current.type === 'snowstorm' ||
         (worldRef.current.route.palette === 'glacial' && curAltRatio > 0.3) ||
         curAltRatio > 0.72;
+      const stereoPan = Math.max(-0.82, Math.min(0.82, (hold.x - climber.torsoPos.x) / 95));
       soundEngine.playGrab(hold.type, {
         isFoot: !limb.isHand,
         isSnowy,
         wet: !!hold.wet,
+        pan: stereoPan,
+        load: limb.load,
       });
+      if (
+        selectedLoadoutRef.current !== 'free-solo' &&
+        dist(limb.pos, hold) >= 56
+      ) {
+        soundEngine.playGearClink(stereoPan, 0.55);
+      }
       const grabHaptic =
         hold.type === 'ice'
           ? 'grabIce'
@@ -2056,7 +2526,7 @@ export default function App() {
           0.32,
           Math.min(1, 1 - climber.stamina / climber.maxStamina)
         );
-        soundEngine.playBreath(grabExertion, 'exertion');
+        soundEngine.playBreath(grabExertion, 'exertion', climberGenderRef.current);
       }
 
       // Strip any residual upward velocity on grab so climbing never stacks into an unnatural hop
@@ -2069,6 +2539,10 @@ export default function App() {
       limb.reachT = 0;
       limb.holdId = hold.id;
       limb.strain = Math.max(0, limb.strain - 0.16);
+      const grabbedIds = attemptGrabbedHoldIdsRef.current;
+      if (grabbedIds[grabbedIds.length - 1] !== hold.id) {
+        grabbedIds.push(hold.id);
+      }
 
       // Flow Combo cadence boost for rhythmic consecutive moves
       const nowElapsed = statsRef.current.elapsedSec;
@@ -2080,7 +2554,7 @@ export default function App() {
       lastMoveElapsedRef.current = nowElapsed;
       climber.flowCombo = flowComboRef.current;
       if (flowComboRef.current >= 2) {
-        soundEngine.playComboChime(flowComboRef.current);
+        soundEngine.playComboChime(flowComboRef.current, stereoPan);
       }
 
       // Dynamic Move 1: High-Step Technique (pure stamina & hand-strain relief, zero upward Impulse Y)
@@ -2099,6 +2573,9 @@ export default function App() {
         climber.stamina = Math.min(climber.maxStamina, climber.stamina + 3);
         statsRef.current.staminaRecovered += Math.max(0, climber.stamina - prevS);
         soundEngine.playSpringLaunch();
+        if (selectedLoadoutRef.current !== 'free-solo') {
+          soundEngine.playGearClink(stereoPan, 0.72);
+        }
         spawnParticles(hold.x, hold.y, 6, 'spark', '#4ADE80', 52);
         spawnParticles(hold.x, hold.y, 1, 'ring', '#4ADE80', 0);
         showBanner('高脚挂蹬 · 省力回耐 +3耐', 1100);
@@ -2221,36 +2698,20 @@ export default function App() {
         let nextPins: string[];
         if (existingIdx === curPins.length - 1 && existingIdx >= 0) {
           nextPins = curPins.slice(0, -1);
-          showBanner(`已撤回第 ${existingIdx + 1} 步路书`, 1200);
+          showBanner(`已撤回第 ${existingIdx + 1} 步`, 1100);
         } else if (existingIdx >= 0) {
           nextPins = curPins.filter((id) => id !== holdId);
-          showBanner(`已移除第 ${existingIdx + 1} 步路书`, 1200);
+          showBanner(`已移出第 ${existingIdx + 1} 步`, 1100);
         } else {
-          const prevHold =
-            curPins.length > 0 ? holdsMapRef.current.get(curPins[curPins.length - 1]) : null;
           nextPins = [...curPins, holdId];
           statsRef.current.betaPinsPlanned += 1;
-          if (prevHold) {
-            const stepD = Math.hypot(info.hold.x - prevHold.x, info.hold.y - prevHold.y);
-            if (stepD > 132) {
-              showBanner(
-                `第 ${nextPins.length} 步 · 注意：跨度过大(${Math.round(stepD)}px)，建议中间补点`,
-                2200
-              );
-            } else if (stepD > 95) {
-              showBanner(
-                `第 ${nextPins.length} 步 · 长距(${Math.round(stepD)}px)，攀时需移重心或跃抓`,
-                1900
-              );
-            } else {
-              showBanner(`第 ${nextPins.length} 步 · ${describeHold(info.hold)}（衔接稳妥）`, 1600);
-            }
-          } else {
-            showBanner(`第 1 步 · ${describeHold(info.hold)}`, 1600);
-          }
+          showBanner(`已标记第 ${nextPins.length} 步`, 1100);
         }
         betaPinsRef.current = nextPins;
         setBetaPins(nextPins);
+        const clampedCursor = Math.min(betaCursorRef.current, nextPins.length);
+        betaCursorRef.current = clampedCursor;
+        setBetaCursor(clampedCursor);
         soundEngine.playLimbTick();
         hoverRef.current = info;
         setHoverInfo(info);
@@ -2263,10 +2724,13 @@ export default function App() {
 
       if (!info.reachable) {
         const limbLabel = climber.limbs[info.suggestedLimb].label;
+        const showHints = hasHoldHintsEnabled(worldRef.current.route);
         showBanner(
           info.dynoEligible
             ? '拖手瞄准高点长按蓄满后松手跃抓'
-            : `${limbLabel}：${info.stabilityHint}`,
+            : showHints && info.stabilityHint
+              ? `${limbLabel}：${info.stabilityHint}`
+              : `${limbLabel}：无法抓握此岩点`,
           1400
         );
         return;
@@ -2283,7 +2747,7 @@ export default function App() {
   const handlePointerDown = useCallback(
     (e: React.PointerEvent<HTMLCanvasElement>) => {
       soundEngine.init();
-      if (phaseRef.current !== 'PLAYING') return;
+      if (phaseRef.current !== 'PLAYING' || introCutsceneRef.current.active) return;
       const climber = climberRef.current;
       if (climber.isFalling || climber.dynoFlight) return;
 
@@ -2564,8 +3028,9 @@ export default function App() {
         }
 
         if (closestHold) {
+          const showHints = hasHoldHintsEnabled(worldRef.current.route);
           const evalRes = evaluateHoldGrab(climber, drag.limbId, closestHold);
-          if (evalRes.ok && prevSnapId !== closestHold.id) {
+          if (showHints && evalRes.ok && prevSnapId !== closestHold.id) {
             soundEngine.playLimbTick();
             triggerHapticPreset('tick');
           }
@@ -2578,7 +3043,9 @@ export default function App() {
             drag.hasMovedOut &&
             isValidHandDynoTarget(climber, holdsMapRef.current, drag.limbId, closestHold);
 
-          setActiveDragReason(evalRes.ok || dynoEligibleDrag ? null : evalRes.reason);
+          setActiveDragReason(
+            !showHints || evalRes.ok || dynoEligibleDrag ? null : evalRes.reason
+          );
 
           if (evalRes.ok) {
             // Smooth magnetic snap toward hold while remaining clamped to anatomical bone length
@@ -2615,11 +3082,13 @@ export default function App() {
             suggestedLimb: drag.limbId,
             reachable: evalRes.ok,
             dynoEligible: dynoEligibleDrag,
-            stabilityHint: evalRes.ok
-              ? describeHold(closestHold)
-              : dynoEligibleDrag
-                ? `${describeHold(closestHold)} · 稳住长按蓄满跃抓`
-                : evalRes.reason ?? '无法抓握',
+            stabilityHint: !showHints
+              ? ''
+              : evalRes.ok
+                ? describeHold(closestHold)
+                : dynoEligibleDrag
+                  ? `${describeHold(closestHold)} · 稳住长按蓄满跃抓`
+                  : evalRes.reason ?? '无法抓握',
             worldPos: aimPos,
           };
           hoverRef.current = previewHover;
@@ -3156,11 +3625,27 @@ export default function App() {
                   p.hit = true;
                   curInc.dodged = false;
                   soundEngine.playRockImpact();
-                  soundEngine.playBreath(0.92, 'gasp');
+                  soundEngine.playBreath(0.92, 'gasp', climberGenderRef.current);
                   triggerHapticPreset('rockImpact');
                   cam.shake = 11;
+                  const prevIceHealth = climber.health;
                   climber.health = Math.max(8, climber.health - 12);
+                  const iceHealthLost = Math.round(prevIceHealth - climber.health);
                   climber.stamina = Math.max(0, climber.stamina - 10);
+                  attemptMinHealthRef.current = Math.min(attemptMinHealthRef.current, climber.health);
+                  attemptMinStaminaRef.current = Math.min(attemptMinStaminaRef.current, climber.stamina);
+                  if (iceHealthLost > 0) {
+                    attemptHealthDropsRef.current.push({
+                      x: Math.round(climber.torsoPos.x),
+                      y: Math.round(climber.torsoPos.y),
+                      altitudeM: Number(Math.max(0, -climber.torsoPos.y / PIXELS_PER_METER).toFixed(1)),
+                      healthLost: iceHealthLost,
+                      healthAfter: Math.round(climber.health),
+                      staminaAfter: Math.round(climber.stamina),
+                      kind: 'icefall',
+                      label: `落冰 -${iceHealthLost}体`,
+                    });
+                  }
                   climber.torsoVel.y = Math.min(78, Math.max(0, climber.torsoVel.y + 32));
                   climber.torsoVel.x = Math.max(
                     -55,
@@ -3203,19 +3688,85 @@ export default function App() {
         weatherIncidentRef.current = null;
       }
 
+      const isIntroActive = curPhase === 'PLAYING' && introCutsceneRef.current.active;
+      const isPausedReading = curPhase === 'PLAYING' && isReadingRouteRef.current;
+
+      // Dynamic Micro-Weather Timing Windows (Wind Lull & Sunbreak) on active climbs
+      if (
+        curPhase === 'PLAYING' &&
+        !isIntroActive &&
+        !isPausedReading &&
+        !climber.isFalling &&
+        !weatherIncidentRef.current
+      ) {
+        const curWin = microWindowRef.current;
+        if (!curWin) {
+          if (!climber.isResting && altRatio >= 0.14 && altRatio <= 0.9) {
+            microWindowCooldownRef.current -= dt;
+            if (microWindowCooldownRef.current <= 0) {
+              microWindowCooldownRef.current = 20 + Math.random() * 9;
+              if (weather.type === 'rain' || weather.type === 'mist') {
+                microWindowRef.current = {
+                  kind: 'sunbreak',
+                  label: '破云放晴窗口',
+                  hint: '岩面暂干 · 顺势提速',
+                  timer: 0,
+                  duration: 8.0,
+                };
+                soundEngine.playAlpineHarmonic('sunbreak');
+              } else if (world.route.windMultiplier >= 0.45) {
+                microWindowRef.current = {
+                  kind: 'wind_lull',
+                  label: '风隙静默窗口',
+                  hint: '山风骤歇 · 跃抓横移良机',
+                  timer: 0,
+                  duration: 5.5,
+                };
+              }
+            }
+          }
+        } else {
+          curWin.timer += dt;
+          if (curWin.kind === 'wind_lull') {
+            effectiveWindForce *= 0.14;
+          } else if (curWin.kind === 'sunbreak') {
+            effectiveWeather = {
+              ...effectiveWeather,
+              chalkDrainMult: Math.max(0.75, effectiveWeather.chalkDrainMult * 0.55),
+              fogOpacity: effectiveWeather.fogOpacity * 0.42,
+              visibilityRadius: Math.min(1.15, effectiveWeather.visibilityRadius + 0.24),
+            };
+          }
+          if (curWin.timer >= curWin.duration) {
+            microWindowRef.current = null;
+          }
+        }
+      } else if (weatherIncidentRef.current || climber.isFalling) {
+        microWindowRef.current = null;
+      }
+
+      const adrenalineDuck = isIntroActive
+        ? 0.45
+        : curPhase === 'PLAYING' && climber.isFalling
+          ? 0.92
+          : curPhase === 'PLAYING' && climber.stamina < 25
+            ? ((25 - climber.stamina) / 25) * 0.72
+            : 0;
+      const windLullFactor = microWindowRef.current?.kind === 'wind_lull' ? 0.16 : 1;
+
       soundEngine.updateEnvironment(
         altRatio * world.route.windMultiplier,
         effectiveWindForce,
         effectiveWeather.type,
         effectiveWeather.intensity,
         altM,
-        world.route.palette
+        world.route.palette,
+        adrenalineDuck,
+        windLullFactor
       );
 
-      const isPausedReading = curPhase === 'PLAYING' && isReadingRouteRef.current;
-
       // Altitude-coupled environmental soundscape events: distant avalanche rumbles & canyon rock echoes
-      if (curPhase === 'PLAYING' && !isPausedReading && !climber.isFalling) {
+      if (curPhase === 'PLAYING' && !isIntroActive && !isPausedReading && !climber.isFalling) {
         const altFactor = Math.min(1, altM / 120);
         const allowAvalanche =
           altM >= 12 || altRatio >= 0.22 || world.route.palette === 'glacial';
@@ -3285,11 +3836,104 @@ export default function App() {
       }
 
       if (curPhase === 'PLAYING') {
-        if (!isReadingRouteRef.current) {
+        if (introCutsceneRef.current.active) {
+          // 3-second "岩间静谧" pre-climb intro: hold cliff establishing view, then pan cleanly to climber
+          const intro = introCutsceneRef.current;
+          intro.elapsedSec += dt;
+          setIntroElapsed(intro.elapsedSec);
+          const responsiveZoom = Math.min(1.04, Math.max(0.68, width / 440));
+          const panStart = 0.85;
+          const panRaw = Math.max(
+            0,
+            Math.min(1, (intro.elapsedSec - panStart) / Math.max(0.4, INTRO_DURATION_SEC - panStart))
+          );
+          const panU = panRaw * panRaw * panRaw * (panRaw * (panRaw * 6 - 15) + 10);
+          cam.targetX = 0;
+          cam.targetY = intro.startCamY + (-84 - intro.startCamY) * panU;
+          cam.targetZoom =
+            intro.startZoom + (responsiveZoom - intro.startZoom) * panU;
+
+          if (intro.elapsedSec >= INTRO_DURATION_SEC) {
+            completeIntroCutscene();
+          }
+        } else if (!isReadingRouteRef.current) {
           statsRef.current.elapsedSec += dt;
           statsRef.current.altitudeM = altM;
           if (altM > statsRef.current.maxAltitudeM) {
             statsRef.current.maxAltitudeM = altM;
+          }
+
+          // Signature Pitch Section Transition Detection & Nameplate Cue
+          const pitches = world.pitchSections;
+          if (pitches && pitches.length > 0 && statsRef.current.movesMade > 0) {
+            const matchedPitch =
+              pitches.find((p) => altRatio >= p.minRatio && altRatio < p.maxRatio) ??
+              pitches[pitches.length - 1];
+            if (matchedPitch && matchedPitch.index !== activePitchIndexRef.current) {
+              activePitchIndexRef.current = matchedPitch.index;
+              setPitchBanner({
+                name: matchedPitch.name,
+                subtitle: matchedPitch.subtitle,
+                isCrux: matchedPitch.isCrux,
+                index: matchedPitch.index,
+              });
+              if (pitchBannerTimerRef.current) {
+                window.clearTimeout(pitchBannerTimerRef.current);
+              }
+              pitchBannerTimerRef.current = window.setTimeout(() => {
+                setPitchBanner(null);
+              }, 3600);
+              if (matchedPitch.index > 0) {
+                soundEngine.playAlpineHarmonic(matchedPitch.isCrux ? 'tension' : 'calm');
+              }
+            }
+          }
+
+          // Abandoned Wall Supply Cache Discovery (risk-reward flank detour)
+          if (world.supplyCaches && world.supplyCaches.length > 0 && !climber.isFalling) {
+            for (const cache of world.supplyCaches) {
+              if (cache.collected) continue;
+              const limbNear = (['leftHand', 'rightHand', 'leftFoot', 'rightFoot'] as LimbId[]).some(
+                (id) => dist(climber.limbs[id].pos, cache) <= 30
+              );
+              if (limbNear || dist(climber.torsoPos, cache) <= 38) {
+                cache.collected = true;
+                const isFreeSoloRun = selectedLoadoutRef.current === 'free-solo';
+                soundEngine.playSupplyCollect();
+                triggerHapticPreset('chalk');
+                spawnParticles(
+                  cache.x,
+                  cache.y,
+                  12,
+                  'spark',
+                  cache.reward === 'piton' ? '#FBBF24' : '#38BDF8',
+                  68
+                );
+                spawnParticles(cache.x, cache.y, 1, 'ring', '#FDE68A', 0);
+                routeEventsRef.current.push({
+                  x: cache.x,
+                  y: cache.y,
+                  kind: 'supply',
+                  label: cache.label,
+                });
+                if (isFreeSoloRun) {
+                  const prevS = climber.stamina;
+                  climber.stamina = Math.min(climber.maxStamina, climber.stamina + 14);
+                  statsRef.current.staminaRecovered += Math.max(0, climber.stamina - prevS);
+                  showBanner(
+                    `发现「${cache.label}」· ${cache.note}（徒手振奋 +14耐）`,
+                    3000
+                  );
+                } else if (cache.reward === 'piton') {
+                  climber.pitonsLeft = Math.min(12, climber.pitonsLeft + 1);
+                  showBanner(`发现「${cache.label}」· +1 岩钉（${cache.note}）`, 3000);
+                } else {
+                  climber.chalkUses = Math.min(8, climber.chalkUses + 1);
+                  climber.chalk = Math.min(100, climber.chalk + 25);
+                  showBanner(`发现「${cache.label}」· +1 镁粉（${cache.note}）`, 3000);
+                }
+              }
+            }
           }
 
           if (manualPelvisTimerRef.current > 0) {
@@ -3323,6 +3967,7 @@ export default function App() {
             if (!chargeValid) {
               dynoChargeRef.current = null;
               dynoFullNotifiedRef.current = false;
+              dynoChargeTickAccRef.current = 0;
             } else {
               const nextDwell = (charge.dwellSec ?? 0) + dt;
               charge.dwellSec = nextDwell;
@@ -3335,6 +3980,17 @@ export default function App() {
                   ? DYNO_CHARGE_DURATION_BOOST_SEC
                   : DYNO_CHARGE_DURATION_NORMAL_SEC;
                 charge.progress = Math.min(1, charge.progress + dt / chargeDuration);
+                if (charge.progress > 0.08 && charge.progress < DYNO_MIN_RELEASE_PROGRESS) {
+                  dynoChargeTickAccRef.current += dt;
+                  if (dynoChargeTickAccRef.current >= 0.19) {
+                    dynoChargeTickAccRef.current = 0;
+                    const pan = Math.max(
+                      -0.82,
+                      Math.min(0.82, (charge.hold.x - climber.torsoPos.x) / 95)
+                    );
+                    soundEngine.playDynoChargeTick(charge.progress, pan);
+                  }
+                }
                 if (
                   charge.progress >= DYNO_MIN_RELEASE_PROGRESS &&
                   !dynoFullNotifiedRef.current
@@ -3347,9 +4003,39 @@ export default function App() {
             }
           } else {
             dynoFullNotifiedRef.current = false;
+            dynoChargeTickAccRef.current = 0;
           }
 
           // Adaptive heartbeat pulse coupled to stamina depletion, low health, and falling adrenaline
+          attemptMinHealthRef.current = Math.min(attemptMinHealthRef.current, climber.health);
+          attemptMinStaminaRef.current = Math.min(attemptMinStaminaRef.current, climber.stamina);
+          if (
+            !climber.isFalling &&
+            !climber.isResting &&
+            climber.stamina <= 16 &&
+            statsRef.current.movesMade >= 1
+          ) {
+            const lastWarn = lastStaminaWarnPosRef.current;
+            if (
+              !lastWarn ||
+              Math.hypot(climber.torsoPos.x - lastWarn.x, climber.torsoPos.y - lastWarn.y) >= 72
+            ) {
+              lastStaminaWarnPosRef.current = {
+                x: Math.round(climber.torsoPos.x),
+                y: Math.round(climber.torsoPos.y),
+              };
+              attemptHealthDropsRef.current.push({
+                x: Math.round(climber.torsoPos.x),
+                y: Math.round(climber.torsoPos.y),
+                altitudeM: Number(Math.max(0, -climber.torsoPos.y / PIXELS_PER_METER).toFixed(1)),
+                healthLost: 0,
+                healthAfter: Math.round(climber.health),
+                staminaAfter: Math.round(climber.stamina),
+                kind: 'stamina_critical',
+                label: `耐力临界 ${Math.round(climber.stamina)}%`,
+              });
+            }
+          }
           const staminaPct = climber.stamina / climber.maxStamina;
           const healthPct = climber.health / 100;
           const lowStaminaStress = climber.stamina < 34 ? (34 - climber.stamina) / 34 : 0;
@@ -3390,14 +4076,18 @@ export default function App() {
               breathAccRef.current += dt;
               if (breathAccRef.current >= 2.35) {
                 breathAccRef.current = 0;
-                soundEngine.playBreath(Math.max(0.28, breathExertion), 'recovery');
+                soundEngine.playBreath(
+                  Math.max(0.28, breathExertion),
+                  'recovery',
+                  climberGenderRef.current
+                );
               }
             } else if (breathExertion >= 0.14) {
               breathAccRef.current += dt;
               const breathInterval = 2.75 - breathExertion * 1.72;
               if (breathAccRef.current >= breathInterval) {
                 breathAccRef.current = 0;
-                soundEngine.playBreath(breathExertion, 'normal');
+                soundEngine.playBreath(breathExertion, 'normal', climberGenderRef.current);
               }
             } else {
               breathAccRef.current = Math.min(breathAccRef.current, 1.1);
@@ -3406,6 +4096,7 @@ export default function App() {
 
           if (!climber.isFalling) {
             fallStartYRef.current = climber.torsoPos.y;
+            fallStartPosRef.current = { x: climber.torsoPos.x, y: climber.torsoPos.y };
             const activeLoadout =
               LOADOUT_OPTIONS.find((l) => l.id === selectedLoadoutRef.current) ??
               LOADOUT_OPTIONS[1];
@@ -3463,6 +4154,22 @@ export default function App() {
               tremorSoundAccRef.current = 0.25;
             }
 
+            // Escalating stone-fracture crack warnings on Fragile Holds
+            if (phys.fragileCrackEvent) {
+              const { stage, hold: crackHold } = phys.fragileCrackEvent;
+              const pan = Math.max(-0.82, Math.min(0.82, (crackHold.x - climber.torsoPos.x) / 95));
+              soundEngine.playFragileCrack(stage, pan);
+              triggerHaptic(stage === 3 ? 14 : 7, stage === 3 ? 'high' : 'low');
+              spawnParticles(
+                crackHold.x,
+                crackHold.y + 4,
+                stage * 3,
+                'dust',
+                stage === 3 ? '#F59E0B' : '#CBD5E1',
+                42
+              );
+            }
+
             reachableIdsRef.current = getReachableHoldIds(
               climber,
               world.holds,
@@ -3476,17 +4183,26 @@ export default function App() {
                 flowComboRef.current = 0;
                 climber.flowCombo = 0;
                 soundEngine.playSlip();
-                soundEngine.playBreath(0.85, 'gasp');
+                soundEngine.playBreath(0.85, 'gasp', climberGenderRef.current);
                 triggerHapticPreset('slip');
                 spawnParticles(landedHold.x, landedHold.y, 12, 'dust', '#38BDF8', 85);
                 lastSlipNoteRef.current = '腾空跃抓冰湿岩点且未涂镁粉，指尖打滑脱手';
                 showBanner('跃抓打滑！冰湿岩面未擦镁粉', 1600);
               } else {
+                const landPan = Math.max(
+                  -0.82,
+                  Math.min(0.82, (landedHold.x - climber.torsoPos.x) / 95)
+                );
                 soundEngine.playGrab(landedHold.type, {
                   isFoot: false,
                   isSnowy: landedHold.type === 'ice',
                   wet: !!landedHold.wet,
+                  pan: landPan,
+                  load: 0.9,
                 });
+                if (selectedLoadoutRef.current !== 'free-solo') {
+                  soundEngine.playGearClink(landPan, 0.78);
+                }
                 triggerHapticPreset(landedHold.type === 'ice' ? 'grabIce' : 'grabHand');
                 cam.shake = 4.5;
                 spawnParticles(landedHold.x, landedHold.y, 10, 'chalk', '#F8FAFC', 55);
@@ -3496,7 +4212,7 @@ export default function App() {
                 lastMoveElapsedRef.current = statsRef.current.elapsedSec;
                 climber.flowCombo = flowComboRef.current;
                 if (flowComboRef.current >= 2) {
-                  soundEngine.playComboChime(flowComboRef.current);
+                  soundEngine.playComboChime(flowComboRef.current, landPan);
                 }
 
                 if (landedHold.type === 'swing') {
@@ -3508,17 +4224,21 @@ export default function App() {
                 }
 
                 climber.routeHistory.push({ x: climber.torsoPos.x, y: climber.torsoPos.y });
-                const dynoPinIdx = betaPinsRef.current.indexOf(landedHold.id);
+                const dynoGrabbedIds = attemptGrabbedHoldIdsRef.current;
+                if (dynoGrabbedIds[dynoGrabbedIds.length - 1] !== landedHold.id) {
+                  dynoGrabbedIds.push(landedHold.id);
+                }
+                const dynoPinIdx = betaPinsRef.current.indexOf(
+                  landedHold.id,
+                  betaCursorRef.current
+                );
                 if (dynoPinIdx >= 0) {
                   statsRef.current.betaPinsFollowed += 1;
                   statsRef.current.roadbookFlowHits += 1;
                   roadbookFlowTimerRef.current = 6.5;
-                  const remaining =
-                    dynoPinIdx <= 1
-                      ? betaPinsRef.current.slice(dynoPinIdx + 1)
-                      : betaPinsRef.current.filter((id) => id !== landedHold.id);
-                  betaPinsRef.current = remaining;
-                  setBetaPins(remaining);
+                  const nextCursor = Math.min(betaPinsRef.current.length, dynoPinIdx + 1);
+                  betaCursorRef.current = nextCursor;
+                  setBetaCursor(nextCursor);
                 } else if (landedHold.isDecoy) {
                   roadbookFlowTimerRef.current = 0;
                 }
@@ -3577,7 +4297,7 @@ export default function App() {
             if (phys.slippedLimb) {
               statsRef.current.keyActionErrors += 1;
               soundEngine.playSlip();
-              soundEngine.playBreath(0.78, 'gasp');
+              soundEngine.playBreath(0.78, 'gasp', climberGenderRef.current);
               triggerHapticPreset('slip');
               const slippedLimbLabel = climber.limbs[phys.slippedLimb].label;
               const slippedPos = climber.limbs[phys.slippedLimb].pos;
@@ -3605,6 +4325,28 @@ export default function App() {
                             ? `${slippedLimbLabel}受力过载且重心失衡，发生滑脱`
                             : `耐力耗尽导致${slippedLimbLabel}无力脱手`;
               lastSlipNoteRef.current = reasonText;
+              if (phys.slipReason === 'stamina_exhausted') {
+                const lastWarn = lastStaminaWarnPosRef.current;
+                if (
+                  !lastWarn ||
+                  Math.hypot(climber.torsoPos.x - lastWarn.x, climber.torsoPos.y - lastWarn.y) >= 48
+                ) {
+                  lastStaminaWarnPosRef.current = {
+                    x: Math.round(climber.torsoPos.x),
+                    y: Math.round(climber.torsoPos.y),
+                  };
+                  attemptHealthDropsRef.current.push({
+                    x: Math.round(climber.torsoPos.x),
+                    y: Math.round(climber.torsoPos.y),
+                    altitudeM: Number(Math.max(0, -climber.torsoPos.y / PIXELS_PER_METER).toFixed(1)),
+                    healthLost: 0,
+                    healthAfter: Math.round(climber.health),
+                    staminaAfter: 0,
+                    kind: 'stamina_critical',
+                    label: '耐力耗尽临界',
+                  });
+                }
+              }
               const routeFailArr = (failSpotsByRouteRef.current[world.route.id] ??= []);
               routeFailArr.push(climber.torsoPos.y);
               showBanner(`${slippedLimbLabel} 打滑脱手！`, 1400);
@@ -3635,7 +4377,8 @@ export default function App() {
                 ) {
                   soundEngine.playSnowCrunch(0.85);
                 }
-                soundEngine.playBreath(0.42, 'recovery');
+                soundEngine.playBivouacChime();
+                soundEngine.playBreath(0.42, 'recovery', climberGenderRef.current);
                 triggerHaptic(15, 'medium');
                 showBanner(
                   isFreeSoloRun
@@ -3664,7 +4407,7 @@ export default function App() {
                 statsRef.current.keyActionErrors += 1;
               }
               soundEngine.playSlip();
-              soundEngine.playBreath(0.96, 'gasp');
+              soundEngine.playBreath(0.96, 'gasp', climberGenderRef.current);
               triggerHapticPreset('fall');
               const routeFailArr = (failSpotsByRouteRef.current[world.route.id] ??= []);
               routeFailArr.push(fallStartYRef.current);
@@ -3757,7 +4500,7 @@ export default function App() {
                   if (catchingPiton.isRusty && !catchingPiton.reliable) {
                     catchingPiton.integrity = 0;
                     soundEngine.playSlip();
-                    soundEngine.playBreath(0.95, 'gasp');
+                    soundEngine.playBreath(0.95, 'gasp', climberGenderRef.current);
                     triggerHapticPreset('fall');
                     cam.shake = 10;
                     spawnParticles(catchingPiton.x, catchingPiton.y, 14, 'spark', '#D97706', 110);
@@ -3780,8 +4523,29 @@ export default function App() {
                     // Absorb sudden arrest energy smoothly so climber transitions into a heavy pendulum
                     climber.torsoVel.y = Math.min(130, Math.max(12, climber.torsoVel.y * 0.45));
                     climber.torsoVel.x = Math.max(-75, Math.min(75, climber.torsoVel.x * 0.45));
+                    const prevCatchHealth = climber.health;
                     climber.health = Math.max(0, climber.health - Math.min(22, 6 + fallDist * 0.04));
+                    const catchHealthLost = Math.round(prevCatchHealth - climber.health);
                     climber.stamina = Math.max(32, climber.stamina);
+                    attemptMinHealthRef.current = Math.min(attemptMinHealthRef.current, climber.health);
+                    if (catchHealthLost > 0) {
+                      const rx = Math.round(
+                        fallStartPosRef.current.y < -8 ? fallStartPosRef.current.x : catchingPiton.x
+                      );
+                      const ry = Math.round(
+                        fallStartPosRef.current.y < -8 ? fallStartPosRef.current.y : catchingPiton.y
+                      );
+                      attemptHealthDropsRef.current.push({
+                        x: rx,
+                        y: ry,
+                        altitudeM: Number(Math.max(0, -ry / PIXELS_PER_METER).toFixed(1)),
+                        healthLost: catchHealthLost,
+                        healthAfter: Math.round(climber.health),
+                        staminaAfter: Math.round(climber.stamina),
+                        kind: 'rope_catch',
+                        label: `冲坠 -${catchHealthLost}体`,
+                      });
+                    }
                     statsRef.current.fallsCaught += 1;
                     routeEventsRef.current.push({
                       x: catchingPiton.x,
@@ -3790,7 +4554,7 @@ export default function App() {
                       label: '冲坠拉停',
                     });
                     soundEngine.playRopeCatch();
-                    soundEngine.playBreath(0.86, 'exertion');
+                    soundEngine.playBreath(0.86, 'exertion', climberGenderRef.current);
                     triggerHapticPreset('ropeCatch');
                     cam.shake = 9;
                     spawnParticles(catchingPiton.x, catchingPiton.y, 12, 'spark', '#F97316', 105);
@@ -3805,15 +4569,36 @@ export default function App() {
                   climber.isFalling = false;
                   climber.ropeCatch = null;
                   climber.torsoVel = { x: 0, y: 0 };
+                  const prevFatalHealth = climber.health;
                   climber.health = 0;
+                  attemptMinHealthRef.current = 0;
+                  if (prevFatalHealth > 0) {
+                    const rx = Math.round(
+                      fallStartPosRef.current.y < -8 ? fallStartPosRef.current.x : climber.torsoPos.x
+                    );
+                    const ry = Math.round(
+                      fallStartPosRef.current.y < -8 ? fallStartPosRef.current.y : climber.torsoPos.y
+                    );
+                    attemptHealthDropsRef.current.push({
+                      x: rx,
+                      y: ry,
+                      altitudeM: Number(Math.max(0, -ry / PIXELS_PER_METER).toFixed(1)),
+                      healthLost: Math.round(prevFatalHealth),
+                      healthAfter: 0,
+                      staminaAfter: Math.round(climber.stamina),
+                      kind: 'fall_fatal',
+                      label: `重坠 -${Math.round(prevFatalHealth)}体`,
+                    });
+                  }
                   cam.shake = 12;
                   soundEngine.playRopeCatch();
                   triggerHapticPreset('ropeCatch');
-                  setFallDiagnosis(
+                  const fallDiag =
                     selectedLoadoutRef.current === 'free-solo'
                       ? `${lastSlipNoteRef.current ?? '高处失去支撑'}；徒手攀登无绳索与岩钉保护，只能从头重攀`
-                      : `${lastSlipNoteRef.current ?? '高处失去支撑'}，且上方及横向范围内缺少已固定的岩钉保护`
-                  );
+                      : `${lastSlipNoteRef.current ?? '高处失去支撑'}，且上方及横向范围内缺少已固定的岩钉保护`;
+                  setFallDiagnosis(fallDiag);
+                  recordCurrentAttempt('FALLEN', fallDiag);
                   phaseRef.current = 'FALLEN';
                   setPhase('FALLEN');
                   break;
@@ -3893,9 +4678,9 @@ export default function App() {
                   ropeCatchTimeRef.current = 0;
 
                   if (climber.health <= 0) {
-                    setFallDiagnosis(
-                      `${lastSlipNoteRef.current ?? '多次冲坠损耗体力'}，最终伤重不支`
-                    );
+                    const fallDiag = `${lastSlipNoteRef.current ?? '多次冲坠损耗体力'}，最终伤重不支`;
+                    setFallDiagnosis(fallDiag);
+                    recordCurrentAttempt('FALLEN', fallDiag);
                     phaseRef.current = 'FALLEN';
                     setPhase('FALLEN');
                   } else {
@@ -3978,21 +4763,23 @@ export default function App() {
             : 0;
         }
 
-        const responsiveZoom = Math.min(1.04, Math.max(0.68, width / 440));
-        // Keep identical camera zoom in Route-Reading mode so original-position holds never jump
-        const readZoomMult = 1;
-        const activeDrag = activeLimbDragRef.current;
-        const dragLeadX =
-          activeDrag?.hasMovedOut && activeDrag.aimWorldPos
-            ? Math.max(-20, Math.min(20, (activeDrag.aimWorldPos.x - climber.torsoPos.x) * 0.16))
-            : 0;
-        const dragLeadY =
-          activeDrag?.hasMovedOut && activeDrag.aimWorldPos
-            ? Math.max(-28, Math.min(18, (activeDrag.aimWorldPos.y - climber.torsoPos.y) * 0.2))
-            : 0;
-        cam.targetX = climber.torsoPos.x * 0.72 + dragLeadX;
-        cam.targetY = climber.torsoPos.y - 42 + peekOffsetYRef.current + dragLeadY;
-        cam.targetZoom = responsiveZoom * readZoomMult;
+        if (!introCutsceneRef.current.active) {
+          const responsiveZoom = Math.min(1.04, Math.max(0.68, width / 440));
+          // Keep identical camera zoom in Route-Reading mode so original-position holds never jump
+          const readZoomMult = 1;
+          const activeDrag = activeLimbDragRef.current;
+          const dragLeadX =
+            activeDrag?.hasMovedOut && activeDrag.aimWorldPos
+              ? Math.max(-20, Math.min(20, (activeDrag.aimWorldPos.x - climber.torsoPos.x) * 0.16))
+              : 0;
+          const dragLeadY =
+            activeDrag?.hasMovedOut && activeDrag.aimWorldPos
+              ? Math.max(-28, Math.min(18, (activeDrag.aimWorldPos.y - climber.torsoPos.y) * 0.2))
+              : 0;
+          cam.targetX = climber.torsoPos.x * 0.72 + dragLeadX;
+          cam.targetY = climber.torsoPos.y - 42 + peekOffsetYRef.current + dragLeadY;
+          cam.targetZoom = responsiveZoom * readZoomMult;
+        }
       } else if (curPhase === 'SUMMIT') {
         summitProgressRef.current = Math.min(1, summitProgressRef.current + dt * 0.14);
         const sp = summitProgressRef.current;
@@ -4108,7 +4895,7 @@ export default function App() {
       cam.zoom += (cam.targetZoom - cam.zoom) * Math.min(1, dt * zoomLerp);
       cam.shake = Math.max(0, cam.shake - dt * 28);
 
-      // Promote Summit sequence PAN_REVEAL -> QUOTE_REVEAL strictly after the panoramic pan
+      // Promote Summit sequence PAN_REVEAL -> PIONEER_REVEAL (Act 1) strictly after the panoramic pan
       // has completed and the camera has settled onto the full mountain silhouette.
       if (curPhase === 'SUMMIT' && summitStageRef.current === 'PAN_REVEAL') {
         const sp = summitProgressRef.current;
@@ -4117,8 +4904,8 @@ export default function App() {
           Math.abs(cam.targetY - cam.y) < 18 &&
           Math.abs(cam.targetZoom - cam.zoom) < 0.02;
         if ((sp >= 0.86 && cameraSettled) || sp >= 0.94) {
-          summitStageRef.current = 'QUOTE_REVEAL';
-          setSummitStage('QUOTE_REVEAL');
+          summitStageRef.current = 'PIONEER_REVEAL';
+          setSummitStage('PIONEER_REVEAL');
         }
       }
 
@@ -4164,6 +4951,7 @@ export default function App() {
         windForce: effectiveWindForce,
         weather: effectiveWeather,
         weatherIncident: weatherIncidentRef.current,
+        microWindow: microWindowRef.current,
         isReadingRoute: isReadingRouteRef.current,
         summitProgress: summitProgressRef.current,
         skin: activeSkin,
@@ -4173,6 +4961,10 @@ export default function App() {
         trailPlaybackProgress: trailPlaybackProgressRef.current,
         nearbyRecyclablePitonId: nearbyRecyclable?.id ?? null,
         betaPins: betaPinsRef.current,
+        betaCursor: betaCursorRef.current,
+        attemptReview: roadbookRecordRef.current?.lastAttempt ?? null,
+        fallHotspots: roadbookRecordRef.current?.fallHotspots ?? [],
+        showAttemptReview: showAttemptReviewRef.current,
         activeLimbDrag: activeLimbDragRef.current,
         activePelvisDrag: activePelvisDragRef.current,
         highlightPelvis:
@@ -4238,7 +5030,7 @@ export default function App() {
       cancelAnimationFrame(rafId);
       window.removeEventListener('resize', handleResize);
     };
-  }, [showBanner, showTacticalHint, spawnParticles, triggerSummit]);
+  }, [completeIntroCutscene, recordCurrentAttempt, showBanner, showTacticalHint, spawnParticles, triggerSummit]);
 
   // PC Keyboard Shortcuts for fast commercial play
   useEffect(() => {
@@ -4246,6 +5038,17 @@ export default function App() {
       if (phaseRef.current !== 'PLAYING') return;
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
       const key = e.key.toLowerCase();
+
+      if (introCutsceneRef.current.active) {
+        if (
+          (key === ' ' || key === 'enter' || key === 'escape') &&
+          introCutsceneRef.current.elapsedSec >= 0.55
+        ) {
+          e.preventDefault();
+          completeIntroCutscene();
+        }
+        return;
+      }
 
       if (key === ' ' || (key === 'enter' && isReadingRouteRef.current)) {
         if (isRouteBookSupported(worldRef.current.route)) {
@@ -4348,6 +5151,7 @@ export default function App() {
       window.removeEventListener('blur', onWindowBlur);
     };
   }, [
+    completeIntroCutscene,
     handleApplyChalk,
     handleJumpReadCamera,
     handlePlacePiton,
@@ -4372,21 +5176,12 @@ export default function App() {
   const hasCheckpoint = !isFreeSoloLoadout && climberRef.current.lastCheckpointY < 0;
   const activeRoute = worldRef.current.route;
   const supportsRouteBook = isRouteBookSupported(activeRoute);
+  const showHoldHints = hasHoldHintsEnabled(activeRoute);
   const isPreClimbReading = supportsRouteBook && isReadingRoute && statsRef.current.movesMade === 0;
-  const nextBetaHold =
-    supportsRouteBook && betaPins.length > 0 ? holdsMapRef.current.get(betaPins[0]) : undefined;
-  const nextBetaHoldHint =
-    nextBetaHold && !nextBetaHold.broken ? describeHold(nextBetaHold) : null;
-  const roadbookEstimate =
-    phase === 'PLAYING' && supportsRouteBook && (isReadingRoute || betaPins.length > 0)
-      ? estimateRoadbookStamina(
-          worldRef.current,
-          betaPins,
-          climberRef.current,
-          weatherRef.current,
-          selectedLoadout
-        )
-      : null;
+  const savedRoadbookPins = roadbookRecord?.savedPins ?? [];
+  const hasSavedRoadbook = savedRoadbookPins.length > 0;
+  const hasUnsavedRoadbook = !pinsEqual(betaPins, savedRoadbookPins);
+  const betaRemainingCount = Math.max(0, betaPins.length - betaCursor);
   const nearbyRecyclablePiton = pitonsRef.current.some(
     (p) => !p.isRusty && p.integrity > 0 && dist(p, climberRef.current.torsoPos) <= 74
   );
@@ -4420,82 +5215,141 @@ export default function App() {
         style={{ touchAction: 'none' }}
         className={`block h-full w-full ${
           phase === 'PLAYING'
-            ? hoverInfo?.hold
-              ? hoverInfo.reachable || hoverInfo.dynoEligible
+            ? isReadingRoute
+              ? hoverInfo?.hold
                 ? 'cursor-pointer'
-                : 'cursor-not-allowed'
-              : 'cursor-crosshair'
+                : 'cursor-crosshair'
+              : !showHoldHints
+                ? 'cursor-crosshair'
+                : hoverInfo?.hold
+                  ? hoverInfo.reachable || hoverInfo.dynoEligible
+                    ? 'cursor-pointer'
+                    : 'cursor-not-allowed'
+                  : 'cursor-crosshair'
             : 'cursor-default'
         }`}
       />
 
-      {phase === 'PLAYING' && (
-        <GameHUD
-          route={activeRoute}
-          climberName={displayClimberName}
-          climberGender={climberGender}
-          difficultyProfile={worldRef.current.difficultyProfile}
-          weather={weatherRef.current}
-          weatherIncident={weatherIncidentRef.current}
-          climber={climberRef.current}
-          stats={statsRef.current}
-          hover={hoverInfo}
-          tutorial={tutorial}
-          muted={muted}
-          supportsRouteBook={supportsRouteBook}
-          isReadingRoute={isReadingRoute}
-          isPreClimbReading={isPreClimbReading}
-          dynoProgress={
-            dynoChargeRef.current && dynoChargeRef.current.progress > 0.01
-              ? dynoChargeRef.current.progress
-              : null
-          }
-          isDraggingLimb={activeLimbDragRef.current !== null}
-          nearbyRecyclablePiton={nearbyRecyclablePiton}
-          betaPinsCount={betaPins.length}
-          nextBetaHoldHint={nextBetaHoldHint}
-          canShakeOut={canShakeOut}
-          onPlacePiton={handlePlacePiton}
-          onApplyChalk={handleApplyChalk}
-          onToggleRouteRead={handleToggleRouteRead}
-          onClearBetaPins={handleClearBetaPins}
-          onUndoBetaPin={handleUndoBetaPin}
-          onAutoSuggestBetaPins={handleAutoSuggestBetaPins}
-          onJumpReadCamera={handleJumpReadCamera}
-          onInspectBin={handleInspectAltitudeBin}
-          onShakeOutHand={handleShakeOutHand}
-          onToggleMute={handleToggleMute}
-          onRestart={() => startRoute(worldRef.current.route)}
-          activeDragReason={activeDragReason}
-          tacticalHint={tacticalHint}
-          onDismissHint={dismissTacticalHint}
-          isFreeSolo={isFreeSoloLoadout}
-          staminaRatePerSec={staminaRateRef.current}
-          roadbookEstimate={roadbookEstimate}
-          roadbookFlowActive={roadbookFlowTimerRef.current > 0.2}
-          onSpringHold={isStandingOnSpringHold(climberRef.current, holdsMapRef.current)}
-          onBackToMenu={() => {
-            isReadingRouteRef.current = false;
-            setIsReadingRoute(false);
-            dynoChargeRef.current = null;
-            dynoFullNotifiedRef.current = false;
-            activeLimbDragRef.current = null;
-            activePelvisDragRef.current = null;
-            weatherIncidentRef.current = null;
-            manualPelvisTimerRef.current = 0;
-            peekPointerIdRef.current = null;
-            pointerDownPosRef.current = null;
-            stopHaptic();
-            setActiveDragReason(null);
-            peekOffsetYRef.current = 0;
-            setStatusBanner(null);
-            phaseRef.current = 'TITLE_MENU';
-            setPhase('TITLE_MENU');
-          }}
-        />
-      )}
+      {phase === 'PLAYING' && (() => {
+        const activeBadge = BADGES.find((b) => b.id === activeRoute.id) ?? BADGES[0];
+        const curAltRatioHud = Math.max(
+          0,
+          Math.min(1, statsRef.current.altitudeM / Math.max(1, activeRoute.heightM))
+        );
+        const pitchSections = worldRef.current.pitchSections ?? [];
+        const currentPitch: RoutePitchSection | null =
+          pitchSections.find((p) => curAltRatioHud >= p.minRatio && curAltRatioHud < p.maxRatio) ??
+          pitchSections[pitchSections.length - 1] ??
+          null;
+        const bivouacRatios = worldRef.current.ledges
+          .filter((l) => l.isBivouac && l.id !== 'base-camp')
+          .map((l) => Math.max(0, Math.min(1, -l.y / Math.max(1, worldRef.current.mountainHeight))));
 
-      {statusBanner && (
+        return (
+          <>
+            <GameHUD
+              route={activeRoute}
+              climberName={displayClimberName}
+              climberGender={climberGender}
+              difficultyProfile={worldRef.current.difficultyProfile}
+              weather={weatherRef.current}
+              weatherIncident={weatherIncidentRef.current}
+              microWindow={microWindowRef.current}
+              introActive={introElapsed !== null}
+              currentPitch={currentPitch}
+              pitchBanner={pitchBanner}
+              pitchSections={pitchSections}
+              bivouacRatios={bivouacRatios}
+              climber={climberRef.current}
+              stats={statsRef.current}
+              hover={hoverInfo}
+              tutorial={tutorial}
+              muted={muted}
+              supportsRouteBook={supportsRouteBook}
+              isReadingRoute={isReadingRoute}
+              isPreClimbReading={isPreClimbReading}
+              dynoProgress={
+                dynoChargeRef.current && dynoChargeRef.current.progress > 0.01
+                  ? dynoChargeRef.current.progress
+                  : null
+              }
+              isDraggingLimb={activeLimbDragRef.current !== null}
+              nearbyRecyclablePiton={nearbyRecyclablePiton}
+              betaPinsCount={betaPins.length}
+              betaRemainingCount={betaRemainingCount}
+              betaCursorStep={betaCursor}
+              hasUnsavedRoadbook={hasUnsavedRoadbook}
+              hasSavedRoadbook={hasSavedRoadbook}
+              roadbookArchives={roadbookRecord?.archives ?? []}
+              lastAttemptReview={roadbookRecord?.lastAttempt ?? null}
+              showAttemptReview={showAttemptReview}
+              canShakeOut={canShakeOut}
+              onPlacePiton={handlePlacePiton}
+              onApplyChalk={handleApplyChalk}
+              onToggleRouteRead={handleToggleRouteRead}
+              onClearBetaPins={handleClearBetaPins}
+              onUndoBetaPin={handleUndoBetaPin}
+              onSaveRoadbook={handleSaveRoadbook}
+              onRevertRoadbook={handleRevertRoadbook}
+              onLoadRoadbookSlot={handleLoadRoadbookSlot}
+              onToggleAttemptReview={handleToggleAttemptReview}
+              onFocusLastFall={handleFocusLastFall}
+              onJumpReadCamera={handleJumpReadCamera}
+              onInspectBin={handleInspectAltitudeBin}
+              onShakeOutHand={handleShakeOutHand}
+              onToggleMute={handleToggleMute}
+              onRestart={() => startRoute(worldRef.current.route)}
+              activeDragReason={activeDragReason}
+              tacticalHint={tacticalHint}
+              onDismissHint={dismissTacticalHint}
+              isFreeSolo={isFreeSoloLoadout}
+              staminaRatePerSec={staminaRateRef.current}
+              roadbookFlowActive={roadbookFlowTimerRef.current > 0.2}
+              onSpringHold={isStandingOnSpringHold(climberRef.current, holdsMapRef.current)}
+              onBackToMenu={() => {
+                if (statsRef.current.movesMade >= 2) {
+                  recordCurrentAttempt('ABORTED');
+                }
+                introCutsceneRef.current.active = false;
+                setIntroElapsed(null);
+                microWindowRef.current = null;
+                setPitchBanner(null);
+                isReadingRouteRef.current = false;
+                setIsReadingRoute(false);
+                dynoChargeRef.current = null;
+                dynoFullNotifiedRef.current = false;
+                activeLimbDragRef.current = null;
+                activePelvisDragRef.current = null;
+                weatherIncidentRef.current = null;
+                manualPelvisTimerRef.current = 0;
+                peekPointerIdRef.current = null;
+                pointerDownPosRef.current = null;
+                stopHaptic();
+                setActiveDragReason(null);
+                peekOffsetYRef.current = 0;
+                setStatusBanner(null);
+                phaseRef.current = 'TITLE_MENU';
+                setPhase('TITLE_MENU');
+              }}
+            />
+
+            {introElapsed !== null && (
+              <IntroStillnessOverlay
+                route={activeRoute}
+                badge={activeBadge}
+                elapsedSec={introElapsed}
+                durationSec={INTRO_DURATION_SEC}
+                bestStyle={bestStyles[activeRoute.id]}
+                isFreeSolo={isFreeSoloLoadout}
+                isFreeSoloCleared={freeSoloRoutes.has(activeRoute.id)}
+                onSkip={completeIntroCutscene}
+              />
+            )}
+          </>
+        );
+      })()}
+
+      {statusBanner && introElapsed === null && (
         <div
           role="status"
           aria-live="polite"
@@ -4552,6 +5406,8 @@ export default function App() {
           fallDiagnosis={fallDiagnosis}
           assessment={climbAssessment}
           isFreeSolo={isFreeSoloLoadout}
+          supportsRouteBook={supportsRouteBook}
+          onReviewRoadbook={handleReviewRoadbookFromResult}
           onToggleTrailPlayback={handleToggleTrailPlayback}
           onRespawnCheckpoint={handleRespawnCheckpoint}
           onRestart={() => startRoute(worldRef.current.route)}

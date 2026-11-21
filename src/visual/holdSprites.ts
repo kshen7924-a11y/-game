@@ -148,6 +148,7 @@ export interface HoldSpriteRenderContext {
   isHovered: boolean;
   isSteppedOn: boolean;
   hoverHighlightColor: string | null;
+  pureArtMode?: boolean;
 }
 
 /**
@@ -166,18 +167,21 @@ export function drawArtPackHold(opts: HoldSpriteRenderContext): boolean {
     isHovered,
     isSteppedOn,
     hoverHighlightColor,
+    pureArtMode = false,
   } = opts;
 
   const spriteIdx = selectHoldSpriteIndex(hold);
-  const specialImg = hold.isDecoy
-    ? pack.specialHoldImgs.decoy
-    : hold.type === 'spring'
-      ? pack.specialHoldImgs.spring
-      : hold.type === 'swing'
-        ? pack.specialHoldImgs.swing
-        : hold.type === 'tremor'
-          ? pack.specialHoldImgs.tremor
-          : null;
+  // In pureArtMode (Intermediate+ & Roadbook), decoys use natural rock sprites so the true line is genuinely concealed
+  const specialImg =
+    !pureArtMode && hold.isDecoy
+      ? pack.specialHoldImgs.decoy
+      : hold.type === 'spring'
+        ? pack.specialHoldImgs.spring
+        : hold.type === 'swing'
+          ? pack.specialHoldImgs.swing
+          : hold.type === 'tremor'
+            ? pack.specialHoldImgs.tremor
+            : null;
 
   const img = specialImg ?? pack.holdImgs[spriteIdx];
   if (!img || img.naturalWidth <= 0 || img.naturalHeight <= 0) {
@@ -186,7 +190,7 @@ export function drawArtPackHold(opts: HoldSpriteRenderContext): boolean {
 
   const spec = HOLD_SPRITE_SPECS[spriteIdx];
   const r = hold.radius;
-  const diegeticMinimal = !!pack.urls.atmosphereGrade?.diegeticMinimalCues;
+  const diegeticMinimal = pureArtMode || !!pack.urls.atmosphereGrade?.diegeticMinimalCues;
   // Subtle deterministic organic size variation (+/- 6%) strictly around contact anchor (0, 0)
   const scaleVar = 0.94 + ((hashHoldId(hold.id) >>> 4) % 13) * 0.01;
   const drawW = r * spec.radiusToWidth * scaleVar;

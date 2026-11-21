@@ -1,12 +1,17 @@
 export type GamePhase = 'TITLE_MENU' | 'PLAYING' | 'SUMMIT' | 'FALLEN';
 
 /**
- * Staged Summit cinematic sequence ensuring full immersion:
- * 1. PAN_REVEAL  — Camera smoothly pans & zooms out to reveal full panoramic mountain silhouette
- * 2. QUOTE_REVEAL — Settled panorama displays the inspirational quote and awaits player acknowledgement
- * 3. MODAL_READY  — Final end-game settlement modal is presented
+ * Staged Summit cinematic sequence ensuring rich storytelling:
+ * 1. PAN_REVEAL     — Camera smoothly pans & zooms out to reveal full panoramic mountain silhouette
+ * 2. PIONEER_REVEAL — Act 1: Real-world first ascensionist biography & historical achievement
+ * 3. QUOTE_REVEAL   — Act 2: Route climbing rating & poetic mountaineering verse
+ * 4. MODAL_READY    — Act 3: Concise settlement modal spotlighting climb review & illuminated badge
  */
-export type SummitSequenceStage = 'PAN_REVEAL' | 'QUOTE_REVEAL' | 'MODAL_READY';
+export type SummitSequenceStage =
+  | 'PAN_REVEAL'
+  | 'PIONEER_REVEAL'
+  | 'QUOTE_REVEAL'
+  | 'MODAL_READY';
 
 export type LimbId = 'leftHand' | 'rightHand' | 'leftFoot' | 'rightFoot';
 
@@ -94,7 +99,7 @@ export interface ClimberSkinConfig {
 export interface ClimbEvent {
   x: number;
   y: number;
-  kind: 'piton' | 'slip' | 'dyno' | 'bivouac';
+  kind: 'piton' | 'slip' | 'dyno' | 'bivouac' | 'supply';
   label: string;
 }
 
@@ -146,6 +151,35 @@ export interface WeatherIncidentState {
   laneWidth: number;
   projectiles: FallingRockProjectile[];
   dodged?: boolean;
+}
+
+export interface MicroWeatherWindow {
+  kind: 'wind_lull' | 'sunbreak';
+  label: string;
+  hint: string;
+  timer: number;
+  duration: number;
+}
+
+export interface RoutePitchSection {
+  id: string;
+  index: number;
+  name: string;
+  subtitle: string;
+  minRatio: number;
+  maxRatio: number;
+  isCrux?: boolean;
+  mood: 'calm' | 'flow' | 'crux' | 'summit';
+}
+
+export interface WallSupplyCache {
+  id: string;
+  x: number;
+  y: number;
+  reward: 'piton' | 'chalk';
+  label: string;
+  note: string;
+  collected: boolean;
 }
 
 export interface AltitudeDifficultyBin {
@@ -488,4 +522,59 @@ export interface TutorialState {
   variant?: 'basic' | 'advanced';
   step: number;
   highlightHoldId: string | null;
+}
+
+export interface RoadbookSavedSlot {
+  id: string;
+  label: string;
+  pins: string[];
+  updatedAt: number;
+  bestAltitudeM?: number;
+  summited?: boolean;
+}
+
+export interface RoadbookHealthDropRecord {
+  x: number;
+  y: number;
+  altitudeM: number;
+  healthLost: number;
+  healthAfter: number;
+  staminaAfter: number;
+  kind: 'icefall' | 'rope_catch' | 'stamina_critical' | 'fall_fatal';
+  label: string;
+}
+
+export interface RoadbookAttemptReview {
+  timestamp: number;
+  outcome: 'FALLEN' | 'SUMMIT' | 'ABORTED';
+  maxAltitudeM: number;
+  routeHeightM: number;
+  movesMade: number;
+  elapsedSec: number;
+  fallPos?: Vec2;
+  fallDiagnosis?: string | null;
+  trail: Vec2[];
+  grabbedHoldIds: string[];
+  events: ClimbEvent[];
+  plannedPinsSnapshot: string[];
+  finalHealth?: number;
+  minHealth?: number;
+  minStamina?: number;
+  healthDrops?: RoadbookHealthDropRecord[];
+}
+
+export interface RoadbookFallHotspot {
+  x: number;
+  y: number;
+  altitudeM: number;
+  count: number;
+  lastTimestamp: number;
+}
+
+export interface RouteRoadbookRecord {
+  savedPins: string[];
+  savedAt: number | null;
+  archives: RoadbookSavedSlot[];
+  lastAttempt: RoadbookAttemptReview | null;
+  fallHotspots?: RoadbookFallHotspot[];
 }

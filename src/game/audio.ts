@@ -1,4 +1,4 @@
-import { WeatherType } from './types';
+import { ClimberGender, WeatherType } from './types';
 
 export type HapticPriority = 'low' | 'medium' | 'high' | 'critical';
 
@@ -135,6 +135,10 @@ export interface GrabSoundOptions {
   isFoot?: boolean;
   isSnowy?: boolean;
   wet?: boolean;
+  /** Stereo pan (-1 left .. +1 right) relative to climber torso */
+  pan?: number;
+  /** Estimated grip load/tension (0..1.4) for subtle tonal coloration */
+  load?: number;
 }
 
 export type BreathMode = 'normal' | 'recovery' | 'exertion' | 'gasp';
@@ -146,6 +150,10 @@ class SoundEngine {
   private compressor: DynamicsCompressorNode | null = null;
   private noiseBuffer: AudioBuffer | null = null;
   private whiteNoiseBuffer: AudioBuffer | null = null;
+
+  // Ambient ducking bus (low-pass + gentle attenuation during low stamina / fall adrenaline)
+  private ambientBus: GainNode | null = null;
+  private ambientDuckFilter: BiquadFilterNode | null = null;
 
   // Ambient Layer 1: Broad alpine wind bed
   private windGain: GainNode | null = null;
@@ -185,10 +193,28 @@ class SoundEngine {
   private lastBreathAt = -10;
   private lastAvalancheAt = -30;
   private lastRockEchoAt = -10;
+  private lastGearClinkAt = -10;
+  private lastHarmonicAt = -30;
   private currentAltM = 0;
 
   private get outputNode(): AudioNode | null {
     return this.masterGain ?? this.ctx?.destination ?? null;
+  }
+
+  private connectWithPan(source: AudioNode, target: AudioNode, pan = 0): AudioNode {
+    if (
+      !this.ctx ||
+      Math.abs(pan) < 0.02 ||
+      typeof this.ctx.createStereoPanner !== 'function'
+    ) {
+      source.connect(target);
+      return source;
+    }
+    const panner = this.ctx.createStereoPanner();
+    panner.pan.value = Math.max(-0.82, Math.min(0.82, pan));
+    source.connect(panner);
+    panner.connect(target);
+    return panner;
   }
 
   private sendToEcho(node: AudioNode, sendAmount: number) {
@@ -360,6 +386,18 @@ class SoundEngine {
     this.echoFeedbackB = echoFeedbackB;
     this.echoWetGain = echoWetGain;
 
+    // Ambient ducking bus (wind, howl, shriek, weather, sub-rumble route here so adrenaline low-passes cleanly)
+    const ambientBus = this.ctx.createGain();
+    ambientBus.gain.value = 1.0;
+    const ambientDuckFilter = this.ctx.createBiquadFilter();
+    ambientDuckFilter.type = 'lowpass';
+    ambientDuckFilter.frequency.value = 14000;
+    ambientDuckFilter.Q.value = 0.7;
+    ambientBus.connect(ambientDuckFilter);
+    ambientDuckFilter.connect(out);
+    this.ambientBus = ambientBus;
+    this.ambientDuckFilter = ambientDuckFilter;
+
     // 1. Low-mid alpine wind bed
     const windNoise = this.ctx.createBufferSource();
     windNoise.buffer = this.noiseBuffer;
@@ -375,7 +413,7 @@ class SoundEngine {
 
     windNoise.connect(windFilter);
     windFilter.connect(windGain);
-    windGain.connect(out);
+    windGain.connect(ambientBus);
     windNoise.start();
 
     this.windFilter = windFilter;
@@ -422,12 +460,12 @@ class SoundEngine {
 
     howlNoise.connect(howlFilter);
     howlFilter.connect(howlGain);
-    howlGain.connect(out);
+    howlGain.connect(ambientBus);
     howlGain.connect(howlEchoSend);
     howlEchoSend.connect(echoInput);
 
     howlOsc.connect(howlOscGain);
-    howlOscGain.connect(out);
+    howlOscGain.connect(ambientBus);
 
     howlNoise.start();
     howlOsc.start();
@@ -463,7 +501,7 @@ class SoundEngine {
 
       shriekNoise.connect(shriekFilter);
       shriekFilter.connect(shriekGain);
-      shriekGain.connect(out);
+      shriekGain.connect(ambientBus);
       shriekGain.connect(howlEchoSend);
 
       shriekNoise.start();
@@ -488,7 +526,7 @@ class SoundEngine {
 
     weatherNoise.connect(weatherFilter);
     weatherFilter.connect(weatherGain);
-    weatherGain.connect(out);
+    weatherGain.connect(ambientBus);
     weatherNoise.start();
 
     this.weatherFilter = weatherFilter;
@@ -509,7 +547,7 @@ class SoundEngine {
 
     subNoise.connect(alpineSubFilter);
     alpineSubFilter.connect(alpineSubGain);
-    alpineSubGain.connect(out);
+    alpineSubGain.connect(ambientBus);
     subNoise.start();
 
     this.alpineSubFilter = alpineSubFilter;
@@ -526,7 +564,9 @@ class SoundEngine {
     weatherType: WeatherType,
     weatherIntensity: number,
     altM = 0,
-    palette: AmbientPalette = 'granite'
+    palette: AmbientPalette = 'granite',
+    adrenalineDuck = 0,
+    windLullFactor = 1
   ) {
     if (!this.ctx || this.muted) return;
     const now = this.ctx.currentTime;
@@ -536,15 +576,25 @@ class SoundEngine {
     // Blend absolute elevation (altM up to 135m) with route elevation progress so short & tall walls both evolve audibly
     const absAltNorm = Math.max(0, Math.min(1, this.currentAltM / 120));
     const altCurve = Math.max(0, Math.min(1, absAltNorm * 0.58 + Math.min(1, clampedRatio) * 0.42));
-    const gustMag = Math.abs(gust);
+    const lullMult = Math.max(0.14, Math.min(1, windLullFactor));
+    const gustMag = Math.abs(gust) * lullMult;
     const glacialBoost = palette === 'glacial' ? 0.16 : palette === 'slate' ? 0.07 : 0;
     const stormBoost = weatherType === 'snowstorm' ? weatherIntensity * 0.35 : 0;
+
+    // Adrenaline / Stillness low-pass ducking on ambient bed (keeps heartbeat & breath crystal clear under crisis)
+    const duck = Math.max(0, Math.min(1, adrenalineDuck));
+    if (this.ambientDuckFilter && this.ambientBus) {
+      const duckCutoff = 14000 * Math.pow(460 / 14000, duck);
+      const duckGain = 1 - duck * 0.34;
+      this.ambientDuckFilter.frequency.setTargetAtTime(duckCutoff, now, 0.25);
+      this.ambientBus.gain.setTargetAtTime(duckGain, now, 0.25);
+    }
 
     // 1. Broad alpine wind bed: rises from sheltered warm low breeze to roaring ridge airflow
     if (this.windFilter && this.windGain) {
       const freq = 205 + altCurve * 440 + gustMag * 220 + glacialBoost * 110;
       const qVal = 1.25 + altCurve * 0.95;
-      const vol = 0.018 + altCurve * 0.038 + gustMag * 0.026 + stormBoost * 0.018;
+      const vol = (0.018 + altCurve * 0.038 + gustMag * 0.026 + stormBoost * 0.018) * lullMult;
       this.windFilter.frequency.setTargetAtTime(freq, now, 0.35);
       this.windFilter.Q.setTargetAtTime(qVal, now, 0.45);
       this.windGain.gain.setTargetAtTime(Math.min(0.088, vol), now, 0.35);
@@ -555,11 +605,12 @@ class SoundEngine {
       const howlPitch = 235 + altCurve * 490 + gustMag * 195 + glacialBoost * 95;
       const howlQ = 7.2 + altCurve * 7.4 + gustMag * 1.8;
       const howlStrength =
-        0.005 +
-        altCurve * 0.028 +
-        gustMag * 0.02 +
-        stormBoost * 0.024 +
-        glacialBoost * 0.009;
+        (0.005 +
+          altCurve * 0.028 +
+          gustMag * 0.02 +
+          stormBoost * 0.024 +
+          glacialBoost * 0.009) *
+        lullMult;
 
       this.howlFilter.frequency.setTargetAtTime(howlPitch, now, 0.4);
       this.howlFilter.Q.setTargetAtTime(Math.min(17, howlQ), now, 0.45);
@@ -571,7 +622,7 @@ class SoundEngine {
         0.4
       );
       if (this.howlEchoSend) {
-        this.howlEchoSend.gain.setTargetAtTime(0.18 + altCurve * 0.36, now, 0.45);
+        this.howlEchoSend.gain.setTargetAtTime((0.18 + altCurve * 0.36) * lullMult, now, 0.45);
       }
     }
 
@@ -581,7 +632,9 @@ class SoundEngine {
       const shriekPitch = 880 + altCurve * 920 + gustMag * 310 + glacialBoost * 180;
       const shriekQ = 9.5 + altCurve * 6.5;
       const shriekVol =
-        shriekPresence * (0.005 + shriekPresence * 0.016 + gustMag * 0.01 + stormBoost * 0.014);
+        shriekPresence *
+        (0.005 + shriekPresence * 0.016 + gustMag * 0.01 + stormBoost * 0.014) *
+        lullMult;
       this.shriekFilter.frequency.setTargetAtTime(shriekPitch, now, 0.45);
       this.shriekFilter.Q.setTargetAtTime(shriekQ, now, 0.5);
       this.shriekGain.gain.setTargetAtTime(Math.min(0.032, shriekVol), now, 0.45);
@@ -596,7 +649,7 @@ class SoundEngine {
       } else if (weatherType === 'snowstorm') {
         this.weatherFilter.type = 'highpass';
         this.weatherFilter.frequency.setTargetAtTime(1320 + altCurve * 560, now, 0.3);
-        this.weatherGain.gain.setTargetAtTime(0.024 * weatherIntensity, now, 0.3);
+        this.weatherGain.gain.setTargetAtTime(0.024 * weatherIntensity * lullMult, now, 0.3);
       } else {
         this.weatherGain.gain.setTargetAtTime(0, now, 0.35);
       }
@@ -852,10 +905,12 @@ class SoundEngine {
     f2End: number,
     peakGain: number,
     attackFrac: number,
-    addVocalWarmth = 0
+    addVocalWarmth = 0,
+    gender: ClimberGender = 'male'
   ) {
     if (!this.ctx || !this.whiteNoiseBuffer || !this.outputNode) return;
     const out = this.outputNode;
+    const fScale = gender === 'female' ? 1.15 : 1.0;
 
     const src = this.ctx.createBufferSource();
     src.buffer = this.whiteNoiseBuffer;
@@ -864,14 +919,14 @@ class SoundEngine {
     // Gentle lowpass ceiling eliminates harsh digital hiss
     const warmthLp = this.ctx.createBiquadFilter();
     warmthLp.type = 'lowpass';
-    warmthLp.frequency.value = 3100;
+    warmthLp.frequency.value = gender === 'female' ? 3550 : 3100;
 
     // Formant 1 (pharynx / throat cavity)
     const f1 = this.ctx.createBiquadFilter();
     f1.type = 'bandpass';
     f1.Q.value = 3.1;
-    f1.frequency.setValueAtTime(f1Start, startTime);
-    f1.frequency.exponentialRampToValueAtTime(Math.max(180, f1End), startTime + duration);
+    f1.frequency.setValueAtTime(f1Start * fScale, startTime);
+    f1.frequency.exponentialRampToValueAtTime(Math.max(180, f1End * fScale), startTime + duration);
 
     const f1Gain = this.ctx.createGain();
     f1Gain.gain.value = 0.72;
@@ -880,8 +935,8 @@ class SoundEngine {
     const f2 = this.ctx.createBiquadFilter();
     f2.type = 'bandpass';
     f2.Q.value = 4.2;
-    f2.frequency.setValueAtTime(f2Start, startTime);
-    f2.frequency.exponentialRampToValueAtTime(Math.max(500, f2End), startTime + duration);
+    f2.frequency.setValueAtTime(f2Start * fScale, startTime);
+    f2.frequency.exponentialRampToValueAtTime(Math.max(500, f2End * fScale), startTime + duration);
 
     const f2Gain = this.ctx.createGain();
     f2Gain.gain.value = 0.42;
@@ -912,12 +967,12 @@ class SoundEngine {
       const vocalGain = this.ctx.createGain();
 
       vocal.type = 'triangle';
-      const baseHz = 128 + Math.random() * 24;
+      const baseHz = (gender === 'female' ? 210 : 126) + Math.random() * 24;
       vocal.frequency.setValueAtTime(baseHz, startTime);
-      vocal.frequency.exponentialRampToValueAtTime(baseHz * 0.82, startTime + duration);
+      vocal.frequency.exponentialRampToValueAtTime(baseHz * 0.84, startTime + duration);
 
       vocalFilter.type = 'bandpass';
-      vocalFilter.frequency.value = f1Start * 0.65;
+      vocalFilter.frequency.value = f1Start * fScale * 0.65;
       vocalFilter.Q.value = 2.4;
 
       vocalGain.gain.setValueAtTime(0.0001, startTime);
@@ -934,11 +989,13 @@ class SoundEngine {
   }
 
   /**
-   * Procedural climber breathing & panting synthesizer coupled to stamina/health fatigue.
-   * @param intensity 0..1 fatigue/exertion level (higher = faster, deeper, breathier panting)
-   * @param mode 'normal' (inhale+exhale cycle) | 'recovery' (long calming sigh) | 'exertion' (short effort breath) | 'gasp' (sharp slip/fall intake)
+   * Procedural climber breathing & panting synthesizer coupled to stamina/health fatigue & climber gender.
    */
-  public playBreath(intensity = 0.4, mode: BreathMode = 'normal') {
+  public playBreath(
+    intensity = 0.4,
+    mode: BreathMode = 'normal',
+    gender: ClimberGender = 'male'
+  ) {
     if (this.muted || !this.ctx || !this.whiteNoiseBuffer) return;
     const now = this.ctx.currentTime;
     const minGap = mode === 'gasp' || mode === 'exertion' ? 0.24 : 0.65;
@@ -946,10 +1003,9 @@ class SoundEngine {
     this.lastBreathAt = now;
 
     const clamped = Math.max(0.08, Math.min(1, intensity));
-    const jitter = 0.93 + Math.random() * 0.14; // organic variation so breaths never sound looped
+    const jitter = 0.93 + Math.random() * 0.14;
 
     if (mode === 'gasp') {
-      // Sharp startled inhale on sudden slip or fall
       this.triggerBreathPhase(
         now,
         0.22 * jitter,
@@ -959,13 +1015,13 @@ class SoundEngine {
         2450 * jitter,
         0.13 + clamped * 0.06,
         0.26,
-        0.016
+        0.016,
+        gender
       );
       return;
     }
 
     if (mode === 'exertion') {
-      // Focused athletic effort exhale ("hss / huh") during dyno or high-strain move
       this.triggerBreathPhase(
         now,
         0.24 * jitter,
@@ -975,13 +1031,13 @@ class SoundEngine {
         1180 * jitter,
         0.095 + clamped * 0.055,
         0.22,
-        0.014 * clamped
+        0.014 * clamped,
+        gender
       );
       return;
     }
 
     if (mode === 'recovery') {
-      // Slow, relieving breath while resting on a ledge or shaking out to recover stamina
       const inhaleDur = 0.46 * jitter;
       const exhaleDur = 0.72 * jitter;
       this.triggerBreathPhase(
@@ -992,7 +1048,9 @@ class SoundEngine {
         1620 * jitter,
         1840 * jitter,
         0.048 + clamped * 0.032,
-        0.42
+        0.42,
+        0,
+        gender
       );
       this.triggerBreathPhase(
         now + inhaleDur + 0.12,
@@ -1003,12 +1061,12 @@ class SoundEngine {
         980 * jitter,
         0.068 + clamped * 0.042,
         0.25,
-        0.008 * clamped
+        0.008 * clamped,
+        gender
       );
       return;
     }
 
-    // Standard climbing panting cycle: speed & depth scale continuously with fatigue
     const inhaleDur = (0.36 - clamped * 0.13) * jitter;
     const pauseDur = (0.11 - clamped * 0.055) * jitter;
     const exhaleDur = (0.46 - clamped * 0.16) * jitter;
@@ -1017,7 +1075,6 @@ class SoundEngine {
     const exhaleVol = 0.046 + clamped * 0.094;
     const vocalWarmth = clamped > 0.48 ? (clamped - 0.45) * 0.022 : 0;
 
-    // Phase 1: Inhale (tighter, slightly brighter resonance)
     this.triggerBreathPhase(
       now,
       inhaleDur,
@@ -1026,10 +1083,11 @@ class SoundEngine {
       (1700 + clamped * 260) * jitter,
       (2050 + clamped * 320) * jitter,
       inhaleVol,
-      0.38
+      0.38,
+      0,
+      gender
     );
 
-    // Phase 2: Exhale (warmer, heavier chest release)
     this.triggerBreathPhase(
       now + inhaleDur + pauseDur,
       exhaleDur,
@@ -1039,7 +1097,8 @@ class SoundEngine {
       (1080 + clamped * 110) * jitter,
       exhaleVol,
       0.24,
-      vocalWarmth
+      vocalWarmth,
+      gender
     );
   }
 
@@ -1236,23 +1295,288 @@ class SoundEngine {
     sweep.stop(now + 0.22);
   }
 
-  public playComboChime(combo: number) {
+  /**
+   * Alpine-styled harmonic chime for Flow Combo cadence (resonant bell/stone overtone in canyon echo).
+   */
+  public playComboChime(combo: number, pan = 0) {
     if (this.muted || !this.ctx || !this.outputNode) return;
     const out = this.outputNode;
     const now = this.ctx.currentTime;
-    const pentatonic = [392, 440, 523.25, 587.33, 659.25, 783.99];
+    // Open D-pentatonic alpine scale (warm, grounded, never arcade-y)
+    const pentatonic = [293.66, 329.63, 392.0, 440.0, 523.25, 587.33, 659.25];
     const freq = pentatonic[Math.min(pentatonic.length - 1, Math.max(0, combo - 2))];
+    const jitter = 0.992 + Math.random() * 0.016;
+
+    // Fundamental resonant bell body
     const osc = this.ctx.createOscillator();
     const gain = this.ctx.createGain();
-    osc.type = 'triangle';
-    osc.frequency.setValueAtTime(freq, now);
-    osc.frequency.exponentialRampToValueAtTime(freq * 1.06, now + 0.12);
-    gain.gain.setValueAtTime(0.075, now);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.16);
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(freq * jitter, now);
+    gain.gain.setValueAtTime(0.001, now);
+    gain.gain.linearRampToValueAtTime(0.052, now + 0.012);
+    gain.gain.exponentialRampToValueAtTime(0.0005, now + 0.42);
     osc.connect(gain);
-    gain.connect(out);
+    const panned = this.connectWithPan(gain, out, pan);
+    this.sendToEcho(panned, 0.48);
     osc.start(now);
-    osc.stop(now + 0.17);
+    osc.stop(now + 0.45);
+
+    // Soft fifth/octave harmonic shimmer (stronger when Alpine Flow >= 3)
+    const overtone = this.ctx.createOscillator();
+    const oGain = this.ctx.createGain();
+    overtone.type = 'triangle';
+    overtone.frequency.setValueAtTime(freq * (combo >= 3 ? 1.5 : 2.0) * jitter, now);
+    oGain.gain.setValueAtTime(0.001, now);
+    oGain.gain.linearRampToValueAtTime(combo >= 3 ? 0.024 : 0.014, now + 0.01);
+    oGain.gain.exponentialRampToValueAtTime(0.0005, now + 0.28);
+    overtone.connect(oGain);
+    this.connectWithPan(oGain, out, pan);
+    overtone.start(now);
+    overtone.stop(now + 0.3);
+  }
+
+  /**
+   * Subtle metallic carabiner / quickdraw rack micro-clink on big reaches or pelvis shifts.
+   */
+  public playGearClink(pan = 0, intensity = 0.65) {
+    if (this.muted || !this.ctx || !this.outputNode) return;
+    const now = this.ctx.currentTime;
+    if (now - this.lastGearClinkAt < 0.32) return;
+    this.lastGearClinkAt = now;
+
+    const out = this.outputNode;
+    const lvl = Math.max(0.2, Math.min(1, intensity));
+    const jitter = 0.94 + Math.random() * 0.12;
+    const freqs = [2480 * jitter, 3790 * jitter];
+    freqs.forEach((f, idx) => {
+      if (!this.ctx) return;
+      const t = now + idx * 0.018;
+      const osc = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(f, t);
+      osc.frequency.exponentialRampToValueAtTime(f * 0.92, t + 0.075);
+      g.gain.setValueAtTime(0.022 * lvl * (idx === 0 ? 1 : 0.65), t);
+      g.gain.exponentialRampToValueAtTime(0.0005, t + 0.08);
+      osc.connect(g);
+      const node = this.connectWithPan(g, out, pan);
+      this.sendToEcho(node, 0.16);
+      osc.start(t);
+      osc.stop(t + 0.09);
+    });
+  }
+
+  /**
+   * Progressive crisp stone-fracture crack warnings as a fragile hold approaches breaking.
+   */
+  public playFragileCrack(stage: 1 | 2 | 3, pan = 0) {
+    if (this.muted || !this.ctx || !this.outputNode) return;
+    const out = this.outputNode;
+    const now = this.ctx.currentTime;
+    const hits = stage === 1 ? 1 : stage === 2 ? 2 : 3;
+
+    for (let i = 0; i < hits; i++) {
+      const t = now + i * (stage === 3 ? 0.042 : 0.065);
+      const jitter = 0.92 + Math.random() * 0.16;
+
+      if (this.whiteNoiseBuffer) {
+        const src = this.ctx.createBufferSource();
+        src.buffer = this.whiteNoiseBuffer;
+        const bp = this.ctx.createBiquadFilter();
+        bp.type = 'bandpass';
+        bp.frequency.setValueAtTime((1650 + stage * 420) * jitter, t);
+        bp.Q.value = 3.2;
+        const g = this.ctx.createGain();
+        g.gain.setValueAtTime(0.075 + stage * 0.028, t);
+        g.gain.exponentialRampToValueAtTime(0.0005, t + 0.045);
+        src.connect(bp);
+        bp.connect(g);
+        const node = this.connectWithPan(g, out, pan);
+        this.sendToEcho(node, 0.25 + stage * 0.08);
+        src.start(t, Math.random());
+        src.stop(t + 0.055);
+      }
+
+      const snap = this.ctx.createOscillator();
+      const sg = this.ctx.createGain();
+      snap.type = 'triangle';
+      const baseHz = (620 + stage * 210) * jitter;
+      snap.frequency.setValueAtTime(baseHz, t);
+      snap.frequency.exponentialRampToValueAtTime(baseHz * 0.38, t + 0.048);
+      sg.gain.setValueAtTime(0.055 + stage * 0.02, t);
+      sg.gain.exponentialRampToValueAtTime(0.0005, t + 0.052);
+      snap.connect(sg);
+      this.connectWithPan(sg, out, pan);
+      snap.start(t);
+      snap.stop(t + 0.06);
+    }
+  }
+
+  /**
+   * Subtle ascending muscle/rope tension tick during deliberate Dyno charge buildup.
+   */
+  public playDynoChargeTick(progress: number, pan = 0) {
+    if (this.muted || !this.ctx || !this.outputNode) return;
+    const out = this.outputNode;
+    const now = this.ctx.currentTime;
+    const p = Math.max(0, Math.min(1, progress));
+    const osc = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    osc.type = 'sine';
+    const freq = 240 + p * 340;
+    osc.frequency.setValueAtTime(freq, now);
+    osc.frequency.exponentialRampToValueAtTime(freq * 1.12, now + 0.055);
+    g.gain.setValueAtTime(0.024 + p * 0.024, now);
+    g.gain.exponentialRampToValueAtTime(0.0005, now + 0.062);
+    osc.connect(g);
+    this.connectWithPan(g, out, pan);
+    osc.start(now);
+    osc.stop(now + 0.07);
+  }
+
+  /**
+   * 3-second "岩间静谧" (Alpine Stillness) pre-climb ceremonial soundscape cue.
+   * Warm low open-fifth drone + crystalline mountain chime fading into canyon echo.
+   */
+  public playStillnessIntro() {
+    if (this.muted || !this.ctx || !this.outputNode) return;
+    const out = this.outputNode;
+    const now = this.ctx.currentTime;
+
+    // 1. Warm hushed low cello-like open fifth (D2 + A2)
+    [73.42, 110.0, 220.0].forEach((freq, idx) => {
+      if (!this.ctx) return;
+      const osc = this.ctx.createOscillator();
+      const lp = this.ctx.createBiquadFilter();
+      const g = this.ctx.createGain();
+      osc.type = idx === 2 ? 'sine' : 'triangle';
+      osc.frequency.setValueAtTime(freq, now);
+      lp.type = 'lowpass';
+      lp.frequency.setValueAtTime(420, now);
+      lp.frequency.linearRampToValueAtTime(760, now + 1.1);
+      lp.frequency.exponentialRampToValueAtTime(280, now + 3.0);
+
+      const peak = idx === 0 ? 0.048 : idx === 1 ? 0.036 : 0.022;
+      g.gain.setValueAtTime(0.0005, now);
+      g.gain.linearRampToValueAtTime(peak, now + 0.75);
+      g.gain.exponentialRampToValueAtTime(0.0005, now + 3.05);
+
+      osc.connect(lp);
+      lp.connect(g);
+      g.connect(out);
+      this.sendToEcho(g, 0.35);
+      osc.start(now);
+      osc.stop(now + 3.15);
+    });
+
+    // 2. Single distant ceremonial alpine bell chime at t + 0.32s
+    [440.0, 659.25].forEach((freq, idx) => {
+      if (!this.ctx) return;
+      const t = now + 0.32 + idx * 0.14;
+      const osc = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, t);
+      g.gain.setValueAtTime(0.0005, t);
+      g.gain.linearRampToValueAtTime(idx === 0 ? 0.046 : 0.028, t + 0.035);
+      g.gain.exponentialRampToValueAtTime(0.0005, t + 2.35);
+      osc.connect(g);
+      g.connect(out);
+      this.sendToEcho(g, 0.62);
+      osc.start(t);
+      osc.stop(t + 2.45);
+    });
+  }
+
+  /**
+   * Warm relief cadence when reaching a mid-wall Bivouac ledge.
+   */
+  public playBivouacChime() {
+    if (this.muted || !this.ctx || !this.outputNode) return;
+    const out = this.outputNode;
+    const now = this.ctx.currentTime;
+    const notes = [293.66, 440.0, 587.33];
+    notes.forEach((freq, idx) => {
+      if (!this.ctx) return;
+      const t = now + idx * 0.11;
+      const osc = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, t);
+      g.gain.setValueAtTime(0.0005, t);
+      g.gain.linearRampToValueAtTime(0.055 - idx * 0.008, t + 0.03);
+      g.gain.exponentialRampToValueAtTime(0.0005, t + 1.55);
+      osc.connect(g);
+      g.connect(out);
+      this.sendToEcho(g, 0.55);
+      osc.start(t);
+      osc.stop(t + 1.65);
+    });
+  }
+
+  /**
+   * Tactile gear-pouch discovery cue when collecting an abandoned wall supply cache.
+   */
+  public playSupplyCollect() {
+    if (this.muted || !this.ctx || !this.outputNode) return;
+    const out = this.outputNode;
+    const now = this.ctx.currentTime;
+    this.playGearClink(0, 0.85);
+    [523.25, 659.25, 783.99].forEach((freq, idx) => {
+      if (!this.ctx) return;
+      const t = now + 0.04 + idx * 0.085;
+      const osc = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(freq, t);
+      g.gain.setValueAtTime(0.0005, t);
+      g.gain.linearRampToValueAtTime(0.055, t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0005, t + 0.55);
+      osc.connect(g);
+      g.connect(out);
+      this.sendToEcho(g, 0.42);
+      osc.start(t);
+      osc.stop(t + 0.6);
+    });
+  }
+
+  /**
+   * Sparse generative alpine musical motif for pitch transitions & sunbreak windows.
+   */
+  public playAlpineHarmonic(mood: 'calm' | 'tension' | 'sunbreak') {
+    if (this.muted || !this.ctx || !this.outputNode) return;
+    const now = this.ctx.currentTime;
+    if (now - this.lastHarmonicAt < 10) return;
+    this.lastHarmonicAt = now;
+
+    const out = this.outputNode;
+    const chord =
+      mood === 'sunbreak'
+        ? [293.66, 369.99, 440.0, 587.33]
+        : mood === 'tension'
+          ? [146.83, 220.0, 261.63]
+          : [196.0, 293.66, 392.0];
+
+    chord.forEach((freq, idx) => {
+      if (!this.ctx) return;
+      const t = now + idx * 0.14;
+      const osc = this.ctx.createOscillator();
+      const lp = this.ctx.createBiquadFilter();
+      const g = this.ctx.createGain();
+      osc.type = mood === 'tension' ? 'triangle' : 'sine';
+      osc.frequency.setValueAtTime(freq, t);
+      lp.type = 'lowpass';
+      lp.frequency.value = mood === 'sunbreak' ? 1400 : 880;
+      g.gain.setValueAtTime(0.0005, t);
+      g.gain.linearRampToValueAtTime(mood === 'sunbreak' ? 0.036 : 0.03, t + 0.45);
+      g.gain.exponentialRampToValueAtTime(0.0005, t + 2.6);
+      osc.connect(lp);
+      lp.connect(g);
+      g.connect(out);
+      this.sendToEcho(g, 0.52);
+      osc.start(t);
+      osc.stop(t + 2.7);
+    });
   }
 
   public playIncidentWarning(kind: 'crosswind_gust' | 'icefall' | 'whiteout_squall') {
@@ -1404,6 +1728,9 @@ class SoundEngine {
     if (this.muted || !this.ctx || !this.outputNode) return;
     const out = this.outputNode;
     const now = this.ctx.currentTime;
+    const pan = options?.pan ?? 0;
+    const loadNorm = Math.max(0, Math.min(1, (options?.load ?? 0.35) / 1.1));
+    const jitter = 0.94 + Math.random() * 0.12;
 
     if (options?.isSnowy) {
       this.playSnowCrunch(options.isFoot ? 1.0 : 0.65);
@@ -1413,7 +1740,7 @@ class SoundEngine {
     const gain = this.ctx.createGain();
 
     const baseFreq =
-      type === 'ice'
+      (type === 'ice'
         ? 470
         : type === 'swing'
           ? 275
@@ -1427,7 +1754,9 @@ class SoundEngine {
                   ? 130
                   : options?.isFoot
                     ? 142
-                    : 178;
+                    : 178) *
+      jitter *
+      (1 + loadNorm * 0.08);
     osc.type = type === 'ice' || type === 'swing' ? 'triangle' : 'sine';
     osc.frequency.setValueAtTime(baseFreq, now);
     osc.frequency.exponentialRampToValueAtTime(
@@ -1439,8 +1768,8 @@ class SoundEngine {
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.11);
 
     osc.connect(gain);
-    gain.connect(out);
-    this.sendToEcho(gain, type === 'ice' || type === 'tremor' ? 0.24 : 0.14);
+    const pannedBody = this.connectWithPan(gain, out, pan);
+    this.sendToEcho(pannedBody, type === 'ice' || type === 'tremor' ? 0.24 : 0.14);
     osc.start(now);
     osc.stop(now + 0.12);
 
@@ -1454,7 +1783,7 @@ class SoundEngine {
       const flt = this.ctx.createBiquadFilter();
       flt.type = 'bandpass';
       flt.frequency.value =
-        type === 'ice'
+        (type === 'ice'
           ? 3400
           : options?.wet
             ? 2100
@@ -1464,22 +1793,23 @@ class SoundEngine {
                 ? 960
                 : options?.isFoot
                   ? 1150
-                  : 1550;
+                  : 1550) * jitter;
       flt.Q.value = type === 'ice' ? 3.4 : 1.7;
 
       const g = this.ctx.createGain();
       const peak =
-        type === 'tremor' || type === 'fragile'
+        (type === 'tremor' || type === 'fragile'
           ? 0.115
           : type === 'ice' || options?.wet
             ? 0.085
-            : 0.055;
+            : 0.055) *
+        (0.9 + loadNorm * 0.22);
       g.gain.setValueAtTime(peak, now);
       g.gain.exponentialRampToValueAtTime(0.001, now + contactDur);
 
       src.connect(flt);
       flt.connect(g);
-      g.connect(out);
+      this.connectWithPan(g, out, pan);
       src.start(now, Math.random());
       src.stop(now + contactDur + 0.02);
     }
@@ -1654,27 +1984,68 @@ class SoundEngine {
     clink.stop(now + 0.11);
   }
 
+  /**
+   * Cinematic alpine summit chord swell timed to the panoramic mountain reveal.
+   * Layered warm low brass/string pad + rising open harmonic shimmer echoing across the valley.
+   */
   public playSummitChord() {
     if (this.muted || !this.ctx || !this.outputNode) return;
     const out = this.outputNode;
     const now = this.ctx.currentTime;
-    const notes = [261.63, 329.63, 392.0, 523.25];
-    notes.forEach((freq, i) => {
+
+    // 1. Warm foundational alpine pad swell (C3 + G3 + D4 + E4)
+    const padVoices = [
+      { freq: 130.81, delay: 0.0, peak: 0.075, type: 'triangle' as OscillatorType },
+      { freq: 196.0, delay: 0.12, peak: 0.062, type: 'triangle' as OscillatorType },
+      { freq: 293.66, delay: 0.28, peak: 0.05, type: 'sine' as OscillatorType },
+      { freq: 329.63, delay: 0.42, peak: 0.054, type: 'sine' as OscillatorType },
+    ];
+
+    padVoices.forEach((v) => {
       if (!this.ctx) return;
+      const t = now + v.delay;
+      const osc = this.ctx.createOscillator();
+      const lp = this.ctx.createBiquadFilter();
+      const gain = this.ctx.createGain();
+
+      osc.type = v.type;
+      osc.frequency.setValueAtTime(v.freq, t);
+      lp.type = 'lowpass';
+      lp.frequency.setValueAtTime(320, t);
+      lp.frequency.exponentialRampToValueAtTime(1650, t + 1.45);
+      lp.frequency.exponentialRampToValueAtTime(520, t + 4.4);
+
+      gain.gain.setValueAtTime(0.0005, t);
+      gain.gain.linearRampToValueAtTime(v.peak, t + 1.05);
+      gain.gain.exponentialRampToValueAtTime(0.0005, t + 4.5);
+
+      osc.connect(lp);
+      lp.connect(gain);
+      gain.connect(out);
+      this.sendToEcho(gain, 0.52);
+      osc.start(t);
+      osc.stop(t + 4.65);
+    });
+
+    // 2. Radiant summit bell shimmer (G4 -> B4 -> C5 -> E5) blooming as panorama opens
+    const shimmer = [392.0, 493.88, 523.25, 659.25];
+    shimmer.forEach((freq, i) => {
+      if (!this.ctx) return;
+      const t = now + 0.55 + i * 0.22;
       const osc = this.ctx.createOscillator();
       const gain = this.ctx.createGain();
       osc.type = 'sine';
-      osc.frequency.setValueAtTime(freq, now + i * 0.14);
+      osc.frequency.setValueAtTime(freq, t);
 
-      gain.gain.setValueAtTime(0.001, now + i * 0.14);
-      gain.gain.linearRampToValueAtTime(0.11, now + i * 0.14 + 0.15);
-      gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.14 + 2.4);
+      gain.gain.setValueAtTime(0.0005, t);
+      gain.gain.linearRampToValueAtTime(0.052 - i * 0.006, t + 0.14);
+      gain.gain.exponentialRampToValueAtTime(0.0005, t + 2.9);
 
       osc.connect(gain);
       gain.connect(out);
-      this.sendToEcho(gain, 0.42);
-      osc.start(now + i * 0.14);
-      osc.stop(now + i * 0.14 + 2.5);
+      this.sendToEcho(gain, 0.64);
+      osc.start(t);
+      osc.stop(t + 3.0);
     });
   }
 }

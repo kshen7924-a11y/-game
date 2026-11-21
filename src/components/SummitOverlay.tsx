@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Mountain, Play, Square } from 'lucide-react';
+import { Play, Square } from 'lucide-react';
 import { BADGES, ROUTES } from '../game/mountain';
 import {
   ClimbAssessment,
@@ -9,10 +9,11 @@ import {
   GamePhase,
   OverallRatingGrade,
   RouteConfig,
+  RouteId,
   SummitSequenceStage,
 } from '../game/types';
 import { AssetRegistry } from '../visual/AssetRegistry';
-import { ClimbBadge } from './ClimbBadge';
+import { RouteMedallionEmblem } from './ClimbBadge';
 
 interface SummitOverlayProps {
   phase: GamePhase;
@@ -35,6 +36,8 @@ interface SummitOverlayProps {
   onBackToMenu: () => void;
   climberName?: string;
   climberGender?: ClimberGender;
+  supportsRouteBook?: boolean;
+  onReviewRoadbook?: () => void;
 }
 
 const RATING_BADGE_STYLE: Record<OverallRatingGrade, string> = {
@@ -98,6 +101,102 @@ const ONSIGHT_QUOTE: SummitQuote = {
   footnote: '盲攀零坠落 · 与山峰最纯粹的相逢',
 };
 
+interface FirstAscentProfile {
+  year: string;
+  pioneer: string;
+  pioneerEn: string;
+  bio: string;
+  achievement: string;
+}
+
+const ROUTE_FIRST_ASCENTS: Record<RouteId, FirstAscentProfile> = {
+  kids: {
+    year: '1933',
+    pioneer: '理查德·伦纳德 · 朱尔斯·艾希霍恩',
+    pioneerEn: 'Richard Leonard & Jules Eichorn',
+    bio: '山脉俱乐部攀岩分部创始人，将现代动态保护技术与花岗岩摩擦脚法引入优胜美地山谷。',
+    achievement: '奠定了天鹅岩缓壁作为优胜美地攀岩摇篮的传统，启蒙了数代大岩壁攀登者。',
+  },
+  intro: {
+    year: '1928',
+    pioneer: '罗伯特·安德希尔 · 米丽娅姆·奥布莱恩',
+    pioneerEn: 'Robert Underhill & Miriam O’Brien',
+    bio: '北美现代技术攀岩先驱伉俪，致力于将阿尔卑斯绳组协作理念带入新英格兰花岗岩壁。',
+    achievement: '在白马岩脊开辟早期经典缓壁线路，开启了美国东海岸花岗岩板攀登的黄金序幕。',
+  },
+  beginner: {
+    year: '1936',
+    pioneer: '摩根·哈里斯 · 肯·亚当 · 奥利夫·戴尔',
+    pioneerEn: 'Morgan Harris, Ken Adam & Olive Dyer',
+    bio: '优胜美地早期技术攀登探索者，在装备极为简陋的年代勇于向谷底高耸岩壁发起首攻。',
+    achievement: '首攀长达十五段的皇家拱门，成为优胜美地山谷史上首条大型多段经典线路。',
+  },
+  'beginner-plus': {
+    year: '1941',
+    pioneer: '弗里茨·维斯纳 · 汉斯·克劳斯',
+    pioneerEn: 'Fritz Wiessner & Hans Kraus',
+    bio: '德裔攀岩传奇与运动医学先驱，以近乎零器械的纯粹自由攀登风格闻名于世。',
+    achievement: '在高空悬廊屋檐完成惊世首攀，铸就肖旺根克山脉最具传奇色彩的传统攀标杆。',
+  },
+  intermediate: {
+    year: '1965',
+    pioneer: '埃里克·贝克 · 吉姆·布里德韦尔 · 克里斯·弗雷德里克斯',
+    pioneerEn: 'Eric Beck, Jim Bridwell & Chris Fredericks',
+    bio: '优胜美地黄金时代“石猴”代表人物，以大胆的传统自由攀与先锋审美改写了岩壁历史。',
+    achievement: '循半穹顶西南壁蜿蜒突起的天然岩脉开辟蛇脊壁，缔造全球最具辨识度的经典路线之一。',
+  },
+  'intermediate-plus': {
+    year: '1971',
+    pioneer: '迈克·韦斯 · 杰夫·洛',
+    pioneerEn: 'Mike Weis & Jeff Lowe',
+    bio: '北美大岩壁与阿尔卑斯混合攀登革新者，以敏锐的读线眼光挑战宏伟红砂岩绝壁。',
+    achievement: '首攀锡安峡谷 360 米垂直红砂岩指缝长墙月光拱壁，见证自由攀登半世纪的飞跃。',
+  },
+  advanced: {
+    year: '1938',
+    pioneer: '杰克·杜兰斯 · 哈里森·巴特沃斯',
+    pioneerEn: 'Jack Durrance & Harrison Butterworth',
+    bio: '美国山地作战与早期传统攀先驱，以冷静的裂隙技术与果敢决断著称。',
+    achievement: '仅凭麻绳与手工铁钉在魔鬼塔六棱玄武岩柱间开辟裂隙首攀，成为北美攀岩史经典地标。',
+  },
+  'advanced-crux': {
+    year: '1968',
+    pioneer: '汤姆·弗罗斯特 · 桑迪·比尔 · 吉姆·麦卡锡',
+    pioneerEn: 'Tom Frost, Sandy Bill & Jim McCarthy',
+    bio: '优胜美地大岩壁黄金一代核心成员，兼具卓越的器械设计与纯粹阿尔卑斯探索精神。',
+    achievement: '深入加拿大“不可攀登峰群”，在极地寒风中首登被誉为世界最美花岗岩尖塔的莲花塔。',
+  },
+  'master-1': {
+    year: '1938',
+    pioneer: '安德尔·赫克迈尔 · 路德维希·弗尔格 · 海因里希·哈勒 · 弗里茨·卡斯帕雷克',
+    pioneerEn: 'Heckmair, Vörg, Harrer & Kasparek',
+    bio: '德奥两支攀登队在暴雪肆虐的岩壁中途相遇并临时结组，以生死托付诠释高山精神。',
+    achievement: '历经三天三夜穿越“白色蜘蛛”雪崩绝壁，攻克阿尔卑斯山脉“最后一道未解难题”艾格峰北壁。',
+  },
+  'master-2': {
+    year: '1931',
+    pioneer: '弗朗茨·施密德 · 托尼·施密德',
+    pioneerEn: 'Franz Schmid & Toni Schmid',
+    bio: '来自慕尼黑的年轻攀登兄弟，为节省旅费骑自行车数百公里奔赴采尔马特山脚。',
+    achievement: '顶着冰雹与雷暴完成马特洪峰北壁史诗级首攀，凭此壮举荣获 1932 年奥运会登山金质勋章。',
+  },
+  'master-3': {
+    year: '2015',
+    pioneer: '汤米·考德威尔 · 凯文·乔格森',
+    pioneerEn: 'Tommy Caldwell & Kevin Jorgeson',
+    bio: '当代大岩壁自由攀登双璧，以七年如一日的勘线执念挑战看似无点可抓的酋长岩东壁。',
+    achievement: '高空吊帐坚守十九天完成黎明之墙全段自由首攀，树立人类大岩壁攀登的最高丰碑。',
+  },
+};
+
+const DAILY_FIRST_ASCENT: FirstAscentProfile = {
+  year: '今日首攀',
+  pioneer: '未知岩壁开拓者',
+  pioneerEn: 'Alpine First Ascent',
+  bio: '每一条尚未被命名的山脊，都在等待第一双读懂岩石纹路的手。',
+  achievement: '在瞬息万变的今日山壁中独立完成首攀勘线，写下属于此日的第一份登顶记录。',
+};
+
 function selectSummitQuote(
   route: RouteConfig,
   climbStyle: ClimbStyle,
@@ -133,86 +232,114 @@ export function SummitOverlay({
   onBackToMenu,
   climberName = '孤影',
   climberGender = 'male',
+  supportsRouteBook = false,
+  onReviewRoadbook,
 }: SummitOverlayProps) {
   const genderLabel = climberGender === 'female' ? '女' : '男';
   const [hideForView, setHideForView] = useState(false);
-  const [imgFailed, setImgFailed] = useState(false);
-  const [fallbackAcknowledged, setFallbackAcknowledged] = useState(false);
-  const [quoteEntered, setQuoteEntered] = useState(false);
-  const [canDismissQuote, setCanDismissQuote] = useState(false);
-  const wideArtSrc = AssetRegistry.getWideEndingPath(route.palette, route.id);
+  const [fallbackStep, setFallbackStep] = useState<0 | 1 | 2>(0);
+  const [stageEntered, setStageEntered] = useState(false);
+  const [canAdvanceStage, setCanAdvanceStage] = useState(false);
+  const [badgeLit, setBadgeLit] = useState(false);
 
   // Authoritative summit sequence stage driven by App.tsx (with graceful standalone fallback)
   const resolvedStage: SummitSequenceStage =
     summitStage ??
     (summitProgress < 0.86
       ? 'PAN_REVEAL'
-      : fallbackAcknowledged
-        ? 'MODAL_READY'
-        : 'QUOTE_REVEAL');
+      : fallbackStep === 0
+        ? 'PIONEER_REVEAL'
+        : fallbackStep === 1
+          ? 'QUOTE_REVEAL'
+          : 'MODAL_READY');
 
   useEffect(() => {
-    setImgFailed(false);
     setHideForView(false);
-    setFallbackAcknowledged(false);
-    setQuoteEntered(false);
-    setCanDismissQuote(false);
+    setFallbackStep(0);
+    setStageEntered(false);
+    setCanAdvanceStage(false);
+    setBadgeLit(false);
   }, [route.id, phase]);
 
-  // Smoothly animate the inspirational quote entrance once App.tsx enters QUOTE_REVEAL,
-  // and guard against accidental premature taps during the first 850ms of the fade-in.
+  // Smooth fade-in and tap guard for Act 1 (PIONEER_REVEAL) and Act 2 (QUOTE_REVEAL)
   useEffect(() => {
-    if (phase !== 'SUMMIT' || resolvedStage !== 'QUOTE_REVEAL') {
-      setQuoteEntered(false);
-      setCanDismissQuote(false);
+    if (
+      phase !== 'SUMMIT' ||
+      (resolvedStage !== 'PIONEER_REVEAL' && resolvedStage !== 'QUOTE_REVEAL')
+    ) {
+      setStageEntered(false);
+      setCanAdvanceStage(false);
       return;
     }
+    setStageEntered(false);
+    setCanAdvanceStage(false);
     const rafId = window.requestAnimationFrame(() => {
-      setQuoteEntered(true);
+      setStageEntered(true);
     });
-    const dismissTimer = window.setTimeout(() => {
-      setCanDismissQuote(true);
-    }, 850);
+    const unlockTimer = window.setTimeout(() => {
+      setCanAdvanceStage(true);
+    }, 550);
     return () => {
       window.cancelAnimationFrame(rafId);
-      window.clearTimeout(dismissTimer);
+      window.clearTimeout(unlockTimer);
     };
   }, [phase, resolvedStage]);
 
-  const handleConfirmQuote = () => {
-    if (!canDismissQuote) return;
+  // Ceremonial badge light-up trigger when Act 3 modal opens
+  useEffect(() => {
+    if (phase !== 'SUMMIT' || resolvedStage !== 'MODAL_READY') {
+      setBadgeLit(false);
+      return;
+    }
+    const rafId = window.requestAnimationFrame(() => {
+      setBadgeLit(true);
+    });
+    return () => window.cancelAnimationFrame(rafId);
+  }, [phase, resolvedStage]);
+
+  const handleConfirmStage = () => {
+    if (!canAdvanceStage) return;
     if (onAdvanceSummitStage) {
       onAdvanceSummitStage();
     } else {
-      setFallbackAcknowledged(true);
+      setFallbackStep((s) => (s < 2 ? ((s + 1) as 0 | 1 | 2) : 2));
     }
   };
 
   useEffect(() => {
-    if (phase !== 'SUMMIT' || resolvedStage !== 'QUOTE_REVEAL' || !canDismissQuote) return;
+    if (
+      phase !== 'SUMMIT' ||
+      (resolvedStage !== 'PIONEER_REVEAL' && resolvedStage !== 'QUOTE_REVEAL') ||
+      !canAdvanceStage
+    ) {
+      return;
+    }
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === ' ' || e.key === 'Enter' || e.key === 'Escape') {
         e.preventDefault();
         if (onAdvanceSummitStage) {
           onAdvanceSummitStage();
         } else {
-          setFallbackAcknowledged(true);
+          setFallbackStep((s) => (s < 2 ? ((s + 1) as 0 | 1 | 2) : 2));
         }
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [phase, resolvedStage, canDismissQuote, onAdvanceSummitStage]);
+  }, [phase, resolvedStage, canAdvanceStage, onAdvanceSummitStage]);
 
   const curIdx = ROUTES.findIndex((r) => r.id === route.id);
   const nextRoute = curIdx >= 0 && curIdx < ROUTES.length - 1 ? ROUTES[curIdx + 1] : null;
   const badge = BADGES.find((b) => b.id === route.id) ?? BADGES[0];
+  const firstAscent = route.isDailyChallenge
+    ? DAILY_FIRST_ASCENT
+    : (ROUTE_FIRST_ASCENTS[route.id] ?? DAILY_FIRST_ASCENT);
 
   const styleTitle =
     climbStyle === 'onsight'
-      ? '盲攀零坠落 ★'
+      ? '盲攀零坠落'
       : climbStyle === 'redpoint'
-        ? '红点零坠落 ◆'
+        ? '红点零坠落'
         : '完攀登顶';
 
   if (phase === 'SUMMIT') {
@@ -244,63 +371,184 @@ export function SummitOverlay({
       );
     }
 
-    // Stage 2 (QUOTE_REVEAL): Full mountain silhouette has settled; present inspirational quote
-    // and wait for the player's click/tap/keypress before opening the final end-game modal.
+    // Act 1 (PIONEER_REVEAL): Real-world first ascensionist biography & historical achievement
+    if (resolvedStage === 'PIONEER_REVEAL') {
+      return (
+        <button
+          type="button"
+          onClick={handleConfirmStage}
+          aria-label="轻触屏幕继续查看攀登评级"
+          className={`fixed inset-0 z-20 flex flex-col items-center justify-between bg-gradient-to-b from-[#0B0F17]/72 via-[#0B0F17]/54 to-[#0B0F17]/86 px-6 py-10 text-center transition-opacity duration-700 ease-out focus:outline-none sm:py-14 ${
+            canAdvanceStage ? 'cursor-pointer' : 'cursor-default'
+          }`}
+          style={{ opacity: stageEntered ? 1 : 0 }}
+        >
+          {/* Top Route Context */}
+          <div className="flex flex-col items-center gap-1.5 pt-2">
+            <div className="text-[11px] font-medium tracking-[0.26em] text-amber-200/85">
+              第一幕 · 历史首攀者
+            </div>
+            <div className="font-display text-lg font-bold tracking-[0.12em] text-white">
+              {route.name}
+            </div>
+            <div className="flex flex-wrap items-center justify-center gap-2 text-[11px] text-slate-300/90">
+              {route.realName && <span>{route.realName}</span>}
+              {route.realName && route.location && <span aria-hidden="true">·</span>}
+              {route.location && <span>{route.location}</span>}
+            </div>
+          </div>
+
+          {/* Centerpiece First Ascensionist Monograph */}
+          <div
+            className="my-auto flex w-full max-w-lg flex-col items-center px-2 transition-transform duration-700 ease-out"
+            style={{
+              transform: stageEntered ? 'translateY(0px)' : 'translateY(14px)',
+            }}
+          >
+            <div className="font-mono-tabular text-xs font-semibold tracking-[0.24em] text-amber-300">
+              {firstAscent.year} · 首攀纪实
+            </div>
+            <h2
+              className="font-display mt-3 text-2xl font-bold leading-snug tracking-[0.04em] text-white sm:text-3xl"
+              style={{ textWrap: 'balance' }}
+            >
+              {firstAscent.pioneer}
+            </h2>
+            <div className="mt-1 text-xs tracking-[0.1em] text-slate-300/85">
+              {firstAscent.pioneerEn}
+            </div>
+
+            <div className="my-5 h-px w-14 bg-gradient-to-r from-transparent via-amber-200/70 to-transparent" />
+
+            <p className="max-w-md text-sm leading-relaxed text-slate-100/92 sm:text-[15px]">
+              {firstAscent.bio}
+            </p>
+
+            <div className="mt-5 w-full max-w-md border-t border-white/15 pt-4">
+              <div className="text-[11px] font-medium tracking-[0.22em] text-amber-200/80">
+                历史成就
+              </div>
+              <p className="mt-1.5 text-sm leading-relaxed text-amber-50/95 sm:text-[15px]">
+                {firstAscent.achievement}
+              </p>
+            </div>
+          </div>
+
+          {/* Bottom Continue Prompt */}
+          <div
+            className="pb-1 text-xs tracking-[0.24em] text-white/85 transition-opacity duration-500 ease-out"
+            style={{ opacity: canAdvanceStage ? 1 : 0 }}
+          >
+            轻触屏幕，查看攀登评级
+          </div>
+        </button>
+      );
+    }
+
+    // Act 2 (QUOTE_REVEAL): Route climbing rating & poetic mountaineering verse
     if (resolvedStage === 'QUOTE_REVEAL') {
-      const quote = selectSummitQuote(route, climbStyle, isFreeSolo || Boolean(assessment?.isFreeSolo));
+      const isFreeSoloRun = isFreeSolo || Boolean(assessment?.isFreeSolo);
+      const quote = selectSummitQuote(route, climbStyle, isFreeSoloRun);
+      const stampUrl = assessment ? AssetRegistry.getRatingStampPath(assessment.ratingGrade) : null;
 
       return (
         <button
           type="button"
-          onClick={handleConfirmQuote}
-          aria-label="轻触屏幕查看登顶战绩"
-          className={`fixed inset-0 z-20 flex flex-col items-center justify-between px-6 py-12 text-center transition-opacity duration-1000 ease-out focus:outline-none sm:py-16 ${
-            canDismissQuote ? 'cursor-pointer' : 'cursor-default'
+          onClick={handleConfirmStage}
+          aria-label="轻触屏幕点亮徽章并查看复盘"
+          className={`fixed inset-0 z-20 flex flex-col items-center justify-between bg-gradient-to-b from-[#0B0F17]/68 via-[#0B0F17]/50 to-[#0B0F17]/84 px-6 py-10 text-center transition-opacity duration-700 ease-out focus:outline-none sm:py-14 ${
+            canAdvanceStage ? 'cursor-pointer' : 'cursor-default'
           }`}
-          style={{ opacity: quoteEntered ? 1 : 0 }}
+          style={{ opacity: stageEntered ? 1 : 0 }}
         >
-          {/* Subtle summit inscription at upper sky */}
+          {/* Top Route & Style Context */}
           <div className="flex flex-col items-center gap-1.5 pt-2">
-            <div className="font-display text-lg font-bold tracking-[0.14em] text-white drop-shadow-[0_2px_10px_rgba(0,0,0,0.9)]">
+            <div className="text-[11px] font-medium tracking-[0.26em] text-amber-200/85">
+              第二幕 · 攀登评级
+            </div>
+            <div className="font-display text-lg font-bold tracking-[0.12em] text-white">
               {route.name}
             </div>
-            <div className="flex items-center gap-2 text-[11px] font-medium tracking-[0.22em] text-amber-100/90 drop-shadow-[0_1px_6px_rgba(0,0,0,0.85)]">
-              <span>{route.isDailyChallenge ? '今日神山' : route.tierLabel}</span>
-              <span className="opacity-55">·</span>
-              <span className="font-mono-tabular">{route.grade}</span>
-              <span className="opacity-55">·</span>
-              <span className="font-mono-tabular">{route.heightM}m</span>
+            <div className="flex items-center gap-2 text-[11px] font-medium tracking-[0.18em] text-amber-100/85">
+              <span>{styleTitle}</span>
+              {isFreeSoloRun && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span className="text-amber-300">徒手无保护</span>
+                </>
+              )}
+              <span aria-hidden="true">·</span>
+              <span className="font-mono-tabular">
+                {route.grade} / {route.heightM}m
+              </span>
             </div>
-            <div className="mt-0.5 h-px w-12 bg-gradient-to-r from-transparent via-amber-200/70 to-transparent" />
           </div>
 
-          {/* Poetic Mountaineering Verse anchored cleanly over lower-middle panorama */}
+          {/* Centerpiece Rating + Poetic Verse */}
           <div
-            className="mt-auto mb-10 flex max-w-lg flex-col items-center transition-transform duration-1000 ease-out sm:mb-14"
+            className="my-auto flex w-full max-w-lg flex-col items-center transition-transform duration-700 ease-out"
             style={{
-              transform: quoteEntered ? 'translateY(0px)' : 'translateY(16px)',
+              transform: stageEntered ? 'translateY(0px)' : 'translateY(14px)',
             }}
           >
-            <p className="font-display text-xl leading-[1.85] font-semibold tracking-[0.1em] text-white drop-shadow-[0_2px_16px_rgba(8,12,20,0.92)] sm:text-2xl sm:leading-[1.9]">
+            {assessment && (
+              <div className="flex flex-col items-center">
+                {stampUrl ? (
+                  <img
+                    src={stampUrl}
+                    alt={`评级 ${assessment.ratingGrade}`}
+                    referrerPolicy="no-referrer"
+                    className="h-20 w-20 object-contain drop-shadow-[0_4px_16px_rgba(0,0,0,0.65)]"
+                  />
+                ) : (
+                  <div
+                    className={`flex h-20 w-20 flex-col items-center justify-center border-2 border-[#F4F1EA] shadow-[4px_4px_0px_rgba(0,0,0,0.55)] ${RATING_BADGE_STYLE[assessment.ratingGrade]}`}
+                  >
+                    <span className="font-display text-3xl font-extrabold leading-none">
+                      {assessment.ratingGrade}
+                    </span>
+                    <span className="mt-1 font-mono-tabular text-[11px] font-bold">
+                      {assessment.overallScore}分
+                    </span>
+                  </div>
+                )}
+
+                <div className="font-display mt-3 text-lg font-bold tracking-[0.12em] text-amber-200">
+                  {assessment.ratingTitle}
+                </div>
+                <div className="mt-1 flex items-center gap-2 text-xs text-slate-200/90 font-mono-tabular">
+                  <span>实评难度 {assessment.assessedGrade}</span>
+                  <span aria-hidden="true">·</span>
+                  <span>{assessment.gradeDeltaLabel}</span>
+                </div>
+              </div>
+            )}
+
+            <div className="my-6 h-px w-16 bg-gradient-to-r from-transparent via-amber-200/75 to-transparent" />
+
+            <p
+              className="font-display text-xl leading-[1.85] font-semibold tracking-[0.08em] text-white drop-shadow-[0_2px_14px_rgba(8,12,20,0.88)] sm:text-2xl sm:leading-[1.9]"
+              style={{ textWrap: 'balance' }}
+            >
               <span className="block">{quote.line1}</span>
               <span className="block">{quote.line2}</span>
             </p>
-            <div className="mt-4 flex items-center gap-3 text-xs tracking-[0.22em] text-amber-100/85 drop-shadow-[0_1px_8px_rgba(8,12,20,0.9)]">
+            <div className="mt-3.5 flex items-center gap-3 text-xs tracking-[0.2em] text-amber-100/85">
               <span className="h-px w-6 bg-amber-200/50" />
               <span>{quote.footnote}</span>
               <span className="h-px w-6 bg-amber-200/50" />
             </div>
-            <div className="mt-2.5 text-[11px] tracking-[0.2em] text-white/80 drop-shadow-[0_1px_8px_rgba(8,12,20,0.92)]">
-              —— {climberName} · 登顶 {route.name}
+            <div className="mt-2 text-[11px] tracking-[0.18em] text-slate-300/85">
+              —— {climberName}
             </div>
           </div>
 
-          {/* Breathing tap-to-continue cue appearing once the quote has settled */}
+          {/* Bottom Continue Prompt */}
           <div
-            className="pb-1 text-xs tracking-[0.24em] text-white/85 drop-shadow-[0_1px_8px_rgba(8,12,20,0.95)] transition-opacity duration-700 ease-out"
-            style={{ opacity: canDismissQuote ? 1 : 0 }}
+            className="pb-1 text-xs tracking-[0.24em] text-white/85 transition-opacity duration-500 ease-out"
+            style={{ opacity: canAdvanceStage ? 1 : 0 }}
           >
-            <span className="animate-pulse">轻触屏幕任意位置，查看登顶战绩</span>
+            轻触屏幕，点亮徽章并复盘
           </div>
         </button>
       );
@@ -322,223 +570,195 @@ export function SummitOverlay({
             onClick={() => setHideForView(false)}
             className="min-h-[44px] border-2 border-[#141820] bg-[#F4F1EA] px-4 py-2 text-xs font-bold text-[#141820] shadow-[3px_3px_0px_#141820] whitespace-nowrap shrink-0"
           >
-            显示战绩
+            显示复盘
           </button>
         </div>
       );
     }
 
+    // Act 3 (MODAL_READY): Concise end-game modal spotlighting illuminated badge & climb review only
+    const isFreeSoloCleared = isFreeSolo || Boolean(assessment?.isFreeSolo);
+
     return (
-      <div className="pointer-events-none fixed inset-0 z-20 flex items-end justify-center p-3 sm:items-center sm:justify-start sm:p-8">
-        <div className="pointer-events-auto flex max-h-[92dvh] w-full max-w-md flex-col overflow-y-auto border-2 border-[#141820] bg-[#F4F1EA] p-4 text-[#141820] shadow-[6px_6px_0px_#141820] sm:p-5">
-          {/* Summit Graphic-Novel Illustration */}
-          <div className="relative aspect-video w-full overflow-hidden border-2 border-[#141820] bg-gradient-to-br from-slate-700 via-slate-800 to-amber-900">
-            {!imgFailed ? (
-              <img
-                src={wideArtSrc}
-                alt={`${route.grade} ${route.name} 登顶广角插画`}
-                referrerPolicy="no-referrer"
-                onError={() => setImgFailed(true)}
-                className="h-full w-full object-cover object-[50%_34%]"
-              />
-            ) : (
-              <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-amber-100">
-                <Mountain className="h-9 w-9" />
-                <span className="text-xs font-semibold">{route.name} · 山巅纪念插画</span>
-              </div>
-            )}
-          </div>
-
-          <div className="mt-3.5 flex flex-wrap items-center gap-1.5 text-xs font-semibold text-[#EA580C]">
-            <span>{styleTitle}</span>
-            {isFreeSolo && (
-              <>
-                <span aria-hidden="true">·</span>
-                <span className="text-red-700">徒手无保护</span>
-              </>
-            )}
-            <span aria-hidden="true">·</span>
-            <span>{route.isDailyChallenge ? `今日神山 (${route.dailyDateKey})` : route.tierLabel}</span>
-            <span aria-hidden="true">·</span>
-            <span className="font-mono-tabular">
-              {route.grade} / {route.heightM}m
-            </span>
-          </div>
-
-          <div className="mt-0.5 flex flex-wrap items-baseline justify-between gap-2">
-            <div>
-              <h2 className="font-display text-2xl font-bold tracking-tight text-[#141820] sm:text-3xl">
-                {route.name}
-              </h2>
-              {(route.realName || route.location) && (
-                <div className="text-[11px] font-medium text-slate-500">
-                  {[route.realName, route.location].filter(Boolean).join(' · ')}
-                </div>
+      <div className="pointer-events-none fixed inset-0 z-20 flex items-end justify-center p-3 sm:items-center sm:p-6">
+        <div className="pointer-events-auto flex max-h-[90dvh] w-full max-w-md flex-col overflow-y-auto border-2 border-[#141820] bg-[#F4F1EA] p-5 text-[#141820] shadow-[6px_6px_0px_#141820]">
+          {/* Compact Header */}
+          <div className="flex items-baseline justify-between gap-3 border-b border-[#141820]/15 pb-3">
+            <h2 className="font-display truncate text-2xl font-bold tracking-tight text-[#141820]">
+              {route.name}
+            </h2>
+            <div className="flex shrink-0 items-center gap-1.5 text-xs font-semibold text-slate-600 font-mono-tabular whitespace-nowrap">
+              <span>{route.grade}</span>
+              <span aria-hidden="true">·</span>
+              <span>{route.heightM}m</span>
+              {assessment && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span className="font-bold text-[#EA580C]">{assessment.ratingGrade}</span>
+                </>
               )}
             </div>
-            <span className="border border-[#141820]/30 bg-[#EAE6DC] px-2 py-0.5 text-[11px] font-bold text-[#141820]">
-              攀登者：{climberName}（{genderLabel}）
-            </span>
           </div>
 
-          <div className="mt-3">
-            <ClimbBadge
-              badge={badge}
-              unlocked
-              bestStyle={climbStyle}
-              isFreeSoloCleared={isFreeSolo || assessment?.isFreeSolo}
-              highlightNew={newlyUnlockedBadge}
-            />
-          </div>
-
-          {/* Tabular Telemetry */}
-          <div className="mt-3.5 grid grid-cols-4 gap-2 border-t border-slate-300 pt-3 text-xs">
-            <div>
-              <div className="text-[11px] text-slate-500">耗时</div>
-              <div className="mt-0.5 font-semibold font-mono-tabular">
-                {formatDuration(stats.elapsedSec)}
-              </div>
-            </div>
-            <div>
-              <div className="text-[11px] text-slate-500">步数</div>
-              <div className="mt-0.5 font-semibold font-mono-tabular">{stats.movesMade}</div>
-            </div>
-            {isFreeSolo || assessment?.isFreeSolo ? (
-              <>
-                <div>
-                  <div className="text-[11px] text-slate-500">保护</div>
-                  <div className="mt-0.5 font-semibold text-red-700">无保护</div>
-                </div>
-                <div>
-                  <div className="text-[11px] text-slate-500">方式</div>
-                  <div className="mt-0.5 font-semibold text-[#B45309]">徒手独攀</div>
-                </div>
-              </>
-            ) : (
-              <>
-                <div>
-                  <div className="text-[11px] text-slate-500">岩钉</div>
-                  <div className="mt-0.5 font-semibold font-mono-tabular">{stats.pitonsPlaced}</div>
-                </div>
-                <div>
-                  <div className="text-[11px] text-slate-500">救险</div>
-                  <div className="mt-0.5 font-semibold font-mono-tabular">{stats.fallsCaught}</div>
-                </div>
-              </>
-            )}
-          </div>
-
-          {/* Post-Climb Smart Technical Difficulty & Overall Rating */}
-          {assessment && (
+          {/* Illuminated Badge Showcase */}
+          <div className="flex flex-col items-center py-5 text-center">
             <div
-              className={`mt-3 border-2 p-2.5 text-xs ${
-                assessment.ratingGrade === 'SSS'
-                  ? 'border-[#B45309] bg-[#FFFBEB]'
-                  : 'border-[#141820] bg-[#EAE6DC]'
-              }`}
+              className="relative flex h-24 w-24 items-center justify-center transition-all duration-500 ease-out"
+              style={{
+                opacity: badgeLit ? 1 : 0,
+                transform: badgeLit ? 'scale(1)' : 'scale(0.86)',
+              }}
             >
-              <div className="flex items-center gap-3">
-                {(() => {
-                  const stampUrl = AssetRegistry.getRatingStampPath(assessment.ratingGrade);
-                  if (stampUrl) {
-                    return (
-                      <div className="relative flex h-14 w-14 shrink-0 items-center justify-center">
-                        <img
-                          src={stampUrl}
-                          alt={`评级 ${assessment.ratingGrade}`}
-                          referrerPolicy="no-referrer"
-                          className="h-14 w-14 object-contain drop-shadow-[0_2px_4px_rgba(20,24,32,0.28)]"
-                        />
-                      </div>
-                    );
-                  }
-                  return (
-                    <div
-                      className={`flex h-14 w-14 shrink-0 flex-col items-center justify-center border-2 border-[#141820] shadow-[2px_2px_0px_#141820] ${RATING_BADGE_STYLE[assessment.ratingGrade]}`}
-                    >
-                      <span className="font-display text-xl font-extrabold leading-none">
-                        {assessment.ratingGrade}
-                      </span>
-                      <span className="mt-0.5 font-mono-tabular text-[10px] font-bold opacity-90">
-                        {assessment.overallScore}分
-                      </span>
-                    </div>
-                  );
-                })()}
+              <div
+                aria-hidden="true"
+                className="pointer-events-none absolute -inset-3 rounded-full opacity-80 blur-md"
+                style={{
+                  background: `radial-gradient(circle, ${badge.accentColor}55 0%, rgba(245,158,11,0.22) 52%, transparent 74%)`,
+                }}
+              />
+              <div className="relative h-20 w-20">
+                <RouteMedallionEmblem
+                  badge={badge}
+                  unlocked
+                  bestStyle={climbStyle}
+                  isFreeSoloCleared={isFreeSoloCleared}
+                />
+              </div>
+            </div>
 
-                <div className="min-w-0 flex-1 space-y-1">
-                  <div className="flex flex-wrap items-baseline justify-between gap-1">
-                    <span className="font-bold text-[#141820]">{assessment.ratingTitle}</span>
+            <div className="mt-2.5 flex items-center gap-2 text-xs font-semibold text-[#EA580C]">
+              <span>{newlyUnlockedBadge ? '徽章新点亮' : '徽章已点亮'}</span>
+              <span aria-hidden="true">·</span>
+              <span>{styleTitle}</span>
+              {isFreeSoloCleared && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span className="text-red-700">徒手</span>
+                </>
+              )}
+            </div>
+            <div className="font-display mt-1 text-xl font-bold tracking-tight text-[#141820]">
+              {badge.title}
+            </div>
+            {badge.emblemMotto && (
+              <div className="mt-0.5 text-xs text-slate-500">{badge.emblemMotto}</div>
+            )}
+          </div>
+
+          {/* Concise Climb Review Telemetry */}
+          <div className="border-t border-[#141820]/15 pt-4">
+            <div className="grid grid-cols-4 gap-2 text-center text-xs">
+              <div>
+                <div className="text-[11px] text-slate-500">耗时</div>
+                <div className="mt-0.5 font-bold font-mono-tabular text-[#141820]">
+                  {formatDuration(stats.elapsedSec)}
+                </div>
+              </div>
+              <div>
+                <div className="text-[11px] text-slate-500">步数</div>
+                <div className="mt-0.5 font-bold font-mono-tabular text-[#141820]">
+                  {stats.movesMade}
+                </div>
+              </div>
+              {isFreeSoloCleared ? (
+                <>
+                  <div>
+                    <div className="text-[11px] text-slate-500">保护</div>
+                    <div className="mt-0.5 font-bold text-red-700">无保护</div>
                   </div>
-                  <div className="text-[11px] text-slate-800">
-                    实际难度{' '}
-                    <span className="font-mono-tabular font-bold text-[#EA580C]">
-                      {assessment.assessedGrade}
-                    </span>{' '}
-                    <span className="text-slate-600">· {assessment.gradeDeltaLabel}</span>
+                  <div>
+                    <div className="text-[11px] text-slate-500">方式</div>
+                    <div className="mt-0.5 font-bold text-[#B45309]">徒手独攀</div>
                   </div>
-                  <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-slate-700 font-mono-tabular">
-                    <span>
-                      耗体 {assessment.staminaConsumedTotal} · 回复 {assessment.staminaRecoveredTotal}（均余 {assessment.avgStaminaRemainingPct}%）
-                    </span>
-                    <span>
-                      失误率 {assessment.keyActionMistakeRatePct}% · {assessment.holdDensityLabel}
-                    </span>
+                </>
+              ) : (
+                <>
+                  <div>
+                    <div className="text-[11px] text-slate-500">岩钉</div>
+                    <div className="mt-0.5 font-bold font-mono-tabular text-[#141820]">
+                      {stats.pitonsPlaced}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] text-slate-500">救险</div>
+                    <div className="mt-0.5 font-bold font-mono-tabular text-[#141820]">
+                      {stats.fallsCaught}
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+
+            {assessment && (
+              <div className="mt-3 grid grid-cols-3 gap-2 border-t border-[#141820]/10 pt-3 text-center text-xs">
+                <div>
+                  <div className="text-[11px] text-slate-500">均余体力</div>
+                  <div className="mt-0.5 font-bold font-mono-tabular text-[#141820]">
+                    {assessment.avgStaminaRemainingPct}%
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[11px] text-slate-500">失误率</div>
+                  <div className="mt-0.5 font-bold font-mono-tabular text-[#141820]">
+                    {assessment.keyActionMistakeRatePct}%
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[11px] text-slate-500">实评难度</div>
+                  <div className="mt-0.5 font-bold font-mono-tabular text-[#EA580C]">
+                    {assessment.assessedGrade}
                   </div>
                 </div>
               </div>
-              <p className="mt-2 border-t border-[#141820]/15 pt-1.5 text-[11px] leading-snug text-slate-700">
-                {assessment.summaryNote}
-              </p>
-              {assessment.roadbookNote && (
-                <p className="mt-1 text-[11px] font-medium leading-snug text-sky-900">
-                  路书读线：{assessment.roadbookNote}
-                </p>
-              )}
-              {assessment.tributeNote && (
-                <div className="mt-2 border-l-4 border-[#B45309] bg-[#FEF3C7]/85 px-2.5 py-2 text-[11px] leading-relaxed text-[#78350F]">
-                  <div className="font-bold text-[#92400E]">
-                    致敬徒手攀登传奇 · Alex Honnold（亚历克斯·霍诺德）
-                  </div>
-                  <p className="mt-0.5">{assessment.tributeNote}</p>
-                </div>
-              )}
-            </div>
-          )}
+            )}
+          </div>
 
-          {/* Clean Two-Tier Action Hierarchy */}
-          <div className="mt-4 space-y-2 border-t border-slate-300 pt-3">
+          {/* Action Row */}
+          <div className="mt-5 space-y-2 border-t border-[#141820]/15 pt-4">
             {nextRoute && !route.isDailyChallenge && (
               <button
                 type="button"
                 onClick={() => onNextRoute(nextRoute)}
                 className="min-h-[44px] w-full border-2 border-[#141820] bg-[#EA580C] px-4 py-2 text-sm font-bold text-white shadow-[3px_3px_0px_#141820] whitespace-nowrap hover:bg-[#DC4C06]"
               >
-                挑战下一线 · {nextRoute.name}（{nextRoute.grade} · {nextRoute.heightM}m）
+                挑战下一线 · {nextRoute.name}
               </button>
             )}
-            <div className="grid grid-cols-3 gap-2">
+            <div
+              className={`grid gap-2 ${
+                supportsRouteBook && onReviewRoadbook ? 'grid-cols-4' : 'grid-cols-3'
+              }`}
+            >
               <button
                 type="button"
                 onClick={() => {
                   setHideForView(true);
                   if (!isPlayingTrail) onToggleTrailPlayback();
                 }}
-                className="min-h-[42px] border-2 border-[#141820] bg-white px-2.5 py-2 text-xs font-semibold text-[#141820] whitespace-nowrap hover:bg-slate-100"
+                className="min-h-[42px] border-2 border-[#141820] bg-white px-2 py-2 text-xs font-semibold text-[#141820] whitespace-nowrap hover:bg-slate-100"
               >
                 轨迹回放
               </button>
+              {supportsRouteBook && onReviewRoadbook && (
+                <button
+                  type="button"
+                  onClick={onReviewRoadbook}
+                  className="min-h-[42px] border-2 border-[#141820] bg-[#141820] px-2 py-2 text-xs font-bold text-[#F4F1EA] whitespace-nowrap hover:bg-slate-800"
+                >
+                  复盘路书
+                </button>
+              )}
               <button
                 type="button"
                 onClick={onRestart}
-                className="min-h-[42px] border-2 border-[#141820] bg-white px-2.5 py-2 text-xs font-semibold text-[#141820] whitespace-nowrap hover:bg-slate-100"
+                className="min-h-[42px] border-2 border-[#141820] bg-white px-2 py-2 text-xs font-semibold text-[#141820] whitespace-nowrap hover:bg-slate-100"
               >
                 重攀
               </button>
               <button
                 type="button"
                 onClick={onBackToMenu}
-                className="min-h-[42px] border-2 border-[#141820] bg-[#EAE6DC] px-2.5 py-2 text-xs font-semibold text-[#141820] whitespace-nowrap hover:bg-slate-200"
+                className="min-h-[42px] border-2 border-[#141820] bg-[#EAE6DC] px-2 py-2 text-xs font-semibold text-[#141820] whitespace-nowrap hover:bg-slate-200"
               >
                 选线
               </button>
@@ -797,6 +1017,15 @@ export function SummitOverlay({
                 className="min-h-[44px] w-full border-2 border-[#141820] bg-[#EA580C] px-4 py-2.5 text-xs font-bold text-white shadow-[3px_3px_0px_#141820] whitespace-nowrap hover:bg-[#DC4C06]"
               >
                 从最近休息台恢复
+              </button>
+            )}
+            {supportsRouteBook && onReviewRoadbook && (
+              <button
+                type="button"
+                onClick={onReviewRoadbook}
+                className="min-h-[44px] w-full border-2 border-[#141820] bg-[#141820] px-4 py-2.5 text-xs font-bold text-[#F4F1EA] shadow-[3px_3px_0px_#EA580C] whitespace-nowrap hover:bg-slate-800"
+              >
+                复盘并修改路书
               </button>
             )}
             <div className="grid grid-cols-2 gap-2">

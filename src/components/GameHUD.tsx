@@ -7,9 +7,13 @@ import {
   CloudRain,
   CloudSnow,
   Compass,
+  Crosshair,
+  Eye,
+  EyeOff,
+  History,
   Pause,
   RotateCcw,
-  Sparkles,
+  Save,
   Sun,
   Trash2,
   Undo2,
@@ -19,6 +23,7 @@ import {
   X,
   Zap,
 } from 'lucide-react';
+import { hasHoldHintsEnabled } from '../game/mountain';
 import {
   ActiveWeather,
   AltitudeDifficultyBin,
@@ -27,8 +32,11 @@ import {
   ClimbStats,
   HoverInfo,
   LimbId,
-  RoadbookStaminaEstimate,
+  MicroWeatherWindow,
+  RoadbookAttemptReview,
+  RoadbookSavedSlot,
   RouteConfig,
+  RoutePitchSection,
   TutorialState,
   WeatherIncidentState,
 } from '../game/types';
@@ -50,14 +58,24 @@ interface GameHUDProps {
   isDraggingLimb?: boolean;
   nearbyRecyclablePiton: boolean;
   betaPinsCount: number;
-  nextBetaHoldHint?: string | null;
+  betaRemainingCount?: number;
+  betaCursorStep?: number;
+  hasUnsavedRoadbook?: boolean;
+  hasSavedRoadbook?: boolean;
+  roadbookArchives?: RoadbookSavedSlot[];
+  lastAttemptReview?: RoadbookAttemptReview | null;
+  showAttemptReview?: boolean;
   canShakeOut: boolean;
   onPlacePiton: () => void;
   onApplyChalk: () => void;
   onToggleRouteRead: () => void;
   onClearBetaPins: () => void;
   onUndoBetaPin: () => void;
-  onAutoSuggestBetaPins: () => void;
+  onSaveRoadbook?: () => void;
+  onRevertRoadbook?: () => void;
+  onLoadRoadbookSlot?: (slotId: string) => void;
+  onToggleAttemptReview?: () => void;
+  onFocusLastFall?: () => void;
   onJumpReadCamera: (action: 'up' | 'down' | 'reset') => void;
   onInspectBin?: (bin: AltitudeDifficultyBin) => void;
   onShakeOutHand: () => void;
@@ -69,11 +87,16 @@ interface GameHUDProps {
   onDismissHint: () => void;
   isFreeSolo?: boolean;
   staminaRatePerSec?: number;
-  roadbookEstimate?: RoadbookStaminaEstimate | null;
   roadbookFlowActive?: boolean;
   onSpringHold?: boolean;
   climberName?: string;
   climberGender?: ClimberGender;
+  introActive?: boolean;
+  currentPitch?: RoutePitchSection | null;
+  pitchBanner?: { name: string; subtitle: string; isCrux?: boolean; index: number } | null;
+  microWindow?: MicroWeatherWindow | null;
+  pitchSections?: RoutePitchSection[];
+  bivouacRatios?: number[];
 }
 
 const LIMB_ITEMS: { id: LimbId; label: string }[] = [
@@ -121,14 +144,24 @@ export function GameHUD({
   isDraggingLimb = false,
   nearbyRecyclablePiton,
   betaPinsCount,
-  nextBetaHoldHint,
+  betaRemainingCount = 0,
+  betaCursorStep = 1,
+  hasUnsavedRoadbook = false,
+  hasSavedRoadbook = false,
+  roadbookArchives = [],
+  lastAttemptReview = null,
+  showAttemptReview = true,
   canShakeOut,
   onPlacePiton,
   onApplyChalk,
   onToggleRouteRead,
   onClearBetaPins,
   onUndoBetaPin,
-  onAutoSuggestBetaPins,
+  onSaveRoadbook,
+  onRevertRoadbook,
+  onLoadRoadbookSlot,
+  onToggleAttemptReview,
+  onFocusLastFall,
   onJumpReadCamera,
   onShakeOutHand,
   onToggleMute,
@@ -139,11 +172,17 @@ export function GameHUD({
   onDismissHint,
   isFreeSolo = false,
   staminaRatePerSec = 0,
-  roadbookEstimate = null,
   roadbookFlowActive = false,
   onSpringHold = false,
   climberName = '孤影',
+  introActive = false,
+  currentPitch = null,
+  pitchBanner = null,
+  microWindow = null,
+  pitchSections = [],
+  bivouacRatios = [],
 }: GameHUDProps) {
+  const showHoldHints = hasHoldHintsEnabled(route);
   const staminaPct = Math.round((climber.stamina / climber.maxStamina) * 100);
   const rateRounded = Math.round(staminaRatePerSec * 10) / 10;
   const rateText =
@@ -195,13 +234,23 @@ export function GameHUD({
     ? Math.max(0, Math.min(1, weatherIncident.timer / Math.max(0.1, weatherIncident.duration)))
     : 0;
 
+  const microWindowRatio = microWindow
+    ? Math.max(0, Math.min(1, microWindow.timer / Math.max(0.1, microWindow.duration)))
+    : 0;
+
   const inlineCues: { key: string; text: string; tone: string }[] = [];
   if (!isReadingRoute && !climber.isFalling) {
     if (leanText) {
       inlineCues.push({ key: 'lean', text: leanText, tone: 'text-amber-300' });
     }
-    if (flowCombo >= 2) {
-      inlineCues.push({ key: 'combo', text: `连攀 ×${flowCombo}`, tone: 'text-amber-200' });
+    if (flowCombo >= 3) {
+      inlineCues.push({
+        key: 'combo',
+        text: `岩间心流 ×${flowCombo} · 省耐-10%`,
+        tone: 'text-amber-200',
+      });
+    } else if (flowCombo === 2) {
+      inlineCues.push({ key: 'combo', text: `连攀 ×${flowCombo}`, tone: 'text-amber-200/90' });
     }
     if (hasSwingBoost) {
       inlineCues.push({ key: 'swing', text: '摆荡增幅', tone: 'text-cyan-300' });
@@ -209,7 +258,11 @@ export function GameHUD({
   }
 
   return (
-    <div className="pointer-events-none fixed inset-0 z-10 flex flex-col justify-between p-2 pt-[max(0.5rem,env(safe-area-inset-top))] sm:p-4">
+    <div
+      className={`pointer-events-none fixed inset-0 z-10 flex flex-col justify-between p-2 pt-[max(0.5rem,env(safe-area-inset-top))] transition-opacity duration-500 sm:p-4 ${
+        introActive ? 'opacity-0' : 'opacity-100'
+      }`}
+    >
       {/* Top Safe Zone: Route Difficulty Header + Compact Stamina/Health/Chalk Bar + Status Strip */}
       <div className="flex flex-col gap-1.5">
         {/* Row 1: Back | Route & Difficulty (Center) | Audio & Restart */}
@@ -412,6 +465,47 @@ export function GameHUD({
             <div className="max-w-[92vw] truncate border border-red-400/55 bg-[#141820]/88 px-2.5 py-0.5 text-[11px] font-medium text-red-300">
               {activeDragReason}
             </div>
+          ) : microWindow && !isReadingRoute ? (
+            <div
+              className={`max-w-[92vw] border px-2.5 py-1 shadow-sm backdrop-blur-sm ${
+                microWindow.kind === 'sunbreak'
+                  ? 'border-amber-300/65 bg-[#1D1810]/88 text-amber-100'
+                  : 'border-emerald-300/60 bg-[#0F1C1A]/88 text-emerald-100'
+              }`}
+            >
+              <div className="flex items-center gap-1.5 truncate text-[11px] font-semibold">
+                {microWindow.kind === 'sunbreak' ? (
+                  <Sun className="h-3.5 w-3.5 shrink-0 text-amber-300" />
+                ) : (
+                  <Wind className="h-3.5 w-3.5 shrink-0 text-emerald-300" />
+                )}
+                <span className="shrink-0 font-bold">{microWindow.label}</span>
+                <span aria-hidden="true" className="opacity-55">·</span>
+                <span className="truncate opacity-90">{microWindow.hint}</span>
+              </div>
+              <div className="mt-1 h-[2px] w-full bg-white/15">
+                <div
+                  className={`h-full transition-[width] duration-100 ${
+                    microWindow.kind === 'sunbreak' ? 'bg-amber-300' : 'bg-emerald-300'
+                  }`}
+                  style={{ width: `${Math.round((1 - microWindowRatio) * 100)}%` }}
+                />
+              </div>
+            </div>
+          ) : pitchBanner && !isReadingRoute ? (
+            <div
+              className={`max-w-[92vw] truncate border px-3 py-0.5 text-[11px] font-medium tracking-wide backdrop-blur-sm ${
+                pitchBanner.isCrux
+                  ? 'border-amber-400/65 bg-[#1C1610]/88 text-amber-200'
+                  : 'border-white/20 bg-[#141820]/84 text-slate-100'
+              }`}
+            >
+              <span className="font-mono-tabular opacity-75">P{pitchBanner.index + 1}</span>
+              <span aria-hidden="true" className="mx-1.5 opacity-45">·</span>
+              <span className="font-bold">{pitchBanner.name}</span>
+              <span aria-hidden="true" className="mx-1.5 opacity-45">·</span>
+              <span className="opacity-85">{pitchBanner.subtitle}</span>
+            </div>
           ) : inlineCues.length > 0 ? (
             <div className="inline-flex max-w-[92vw] items-center gap-1.5 bg-[#141820]/74 px-2.5 py-0.5 text-[11px] font-semibold tracking-wide whitespace-nowrap font-mono-tabular">
               {inlineCues.map((cue, idx) => (
@@ -434,124 +528,215 @@ export function GameHUD({
         {/* Bottom Context Slot (Roadbook / Tutorial / Shake-Out / Quiet Hover) */}
         <div className="flex justify-center">
           {supportsRouteBook && isReadingRoute ? (
-            <div className="pointer-events-auto flex w-full max-w-md flex-col gap-1.5 border border-sky-400/70 bg-[#141820]/94 p-2 text-[11px] text-slate-200 shadow-lg backdrop-blur-sm">
-              <div className="flex flex-wrap items-center justify-between gap-1.5">
-                <span className="font-bold text-sky-300">
-                  {isPreClimbReading ? '开攀前路书读线' : '暂停路书规划'}
-                  {betaPinsCount > 0 ? ` · 已标 ${betaPinsCount} 步` : ''}
-                </span>
-                <span className="text-[10px] text-slate-300">
-                  <span className="text-emerald-300">绿稳</span>{' '}
-                  <span className="text-lime-300">翠跃</span>{' '}
-                  <span className="text-cyan-300">青摆</span>{' '}
-                  <span className="text-fuchsia-300">紫颤</span>{' '}
-                  <span className="text-blue-300">蓝缝</span>{' '}
-                  <span className="text-amber-300">橙脆</span>
+            <div className="pointer-events-auto flex w-full max-w-lg flex-col gap-1.5 border border-white/20 bg-[#141820]/94 p-2.5 text-[11px] text-slate-200 shadow-lg backdrop-blur-sm">
+              <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5">
+                <div className="flex items-center gap-1.5 font-semibold text-[#F4F1EA]">
+                  <span>
+                    {lastAttemptReview
+                      ? '路书复盘与修改'
+                      : isPreClimbReading
+                        ? '开攀前路书规划'
+                        : '暂停路书规划'}
+                  </span>
+                  <span aria-hidden="true" className="text-slate-500">·</span>
+                  <span className="font-mono-tabular text-slate-300">
+                    已标 {betaPinsCount} 步
+                  </span>
+                </div>
+                <span
+                  className={`text-[10px] font-medium ${
+                    hasUnsavedRoadbook
+                      ? 'text-amber-300'
+                      : hasSavedRoadbook
+                        ? 'text-emerald-300/90'
+                        : 'text-slate-400'
+                  }`}
+                >
+                  {hasUnsavedRoadbook
+                    ? '有未保存修改'
+                    : hasSavedRoadbook
+                      ? '已存档'
+                      : '纯岩壁读线 · 无辅助提示'}
                 </span>
               </div>
 
-              <div className="text-[10px] text-slate-300">
-                点岩点按序连线（再点末点撤销）；拖拽或滚轮上下览壁
+              <div className="text-[10px] text-slate-400">
+                点岩点按序连线，再点已标点即可移除修改；拖拽或滚轮上下览壁，实攀中反复验证并存档
               </div>
 
-              {roadbookEstimate && (
-                <div className="border border-white/15 bg-white/5 px-2 py-1 text-[10px] leading-snug">
-                  {roadbookEstimate.pinCount > 0 ? (
-                    <>
-                      <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5 font-mono-tabular">
-                        <span>
-                          路书预算：
-                          <span className="text-amber-300">
-                            耗-{roadbookEstimate.estimatedDrain}
-                          </span>
-                          {' / '}
-                          <span className="text-emerald-300">
-                            回+{roadbookEstimate.estimatedRecovery}
-                          </span>
-                          {' · '}
-                          <span className="text-sky-200">
-                            余{roadbookEstimate.projectedRemainingStamina}%
-                          </span>
-                        </span>
-                        <span className="text-slate-300">
-                          约{roadbookEstimate.estimatedTimeSec}s
-                        </span>
-                      </div>
-                      <div
-                        className={`mt-0.5 ${
-                          roadbookEstimate.decoyHitsCount > 0 || roadbookEstimate.riskySpanCount > 0
-                            ? 'text-red-300'
-                            : 'text-emerald-300/90'
+              {/* Last Attempt Review Bar (Player's own previous attempt trace & fall locator) */}
+              {lastAttemptReview && (
+                <div className="flex flex-wrap items-center justify-between gap-1.5 border-t border-white/10 pt-1.5 text-[10px]">
+                  <div className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-slate-300 font-mono-tabular">
+                    <span
+                      className={
+                        lastAttemptReview.outcome === 'SUMMIT'
+                          ? 'font-semibold text-emerald-300'
+                          : 'font-semibold text-orange-300'
+                      }
+                    >
+                      {lastAttemptReview.outcome === 'SUMMIT'
+                        ? '上次登顶'
+                        : lastAttemptReview.outcome === 'FALLEN'
+                          ? '上次坠落'
+                          : '上次试攀'}
+                    </span>
+                    <span aria-hidden="true" className="text-slate-500">·</span>
+                    <span>
+                      {lastAttemptReview.maxAltitudeM.toFixed(1)}/{lastAttemptReview.routeHeightM}m
+                    </span>
+                    <span aria-hidden="true" className="text-slate-500">·</span>
+                    <span>{lastAttemptReview.movesMade} 步</span>
+                    {(() => {
+                      const riskCount = (lastAttemptReview.healthDrops ?? []).filter(
+                        (d) =>
+                          d.kind === 'stamina_critical' ||
+                          d.healthLost >= 8 ||
+                          d.healthAfter <= 45 ||
+                          d.staminaAfter <= 16
+                      ).length;
+                      if (riskCount > 0) {
+                        return (
+                          <>
+                            <span aria-hidden="true" className="text-slate-500">·</span>
+                            <span className="font-medium text-yellow-300">
+                              风险区 {riskCount}
+                            </span>
+                          </>
+                        );
+                      }
+                      if (typeof lastAttemptReview.minHealth === 'number' && lastAttemptReview.minHealth < 100) {
+                        return (
+                          <>
+                            <span aria-hidden="true" className="text-slate-500">·</span>
+                            <span className="text-yellow-300/90">
+                              低体 {lastAttemptReview.minHealth}
+                            </span>
+                          </>
+                        );
+                      }
+                      return null;
+                    })()}
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1">
+                    {onToggleAttemptReview && (
+                      <button
+                        type="button"
+                        onClick={onToggleAttemptReview}
+                        className={`flex min-h-[28px] items-center gap-1 border px-2 py-0.5 text-[10px] font-medium whitespace-nowrap transition-colors ${
+                          showAttemptReview
+                            ? 'border-orange-400/60 bg-orange-500/20 text-orange-200'
+                            : 'border-white/15 bg-white/5 text-slate-300 hover:bg-white/15'
                         }`}
                       >
-                        {roadbookEstimate.verdictLabel}
-                      </div>
-                      {roadbookEstimate.freeSoloNote && (
-                        <div className="mt-0.5 font-semibold text-amber-200">
-                          {roadbookEstimate.freeSoloNote}
-                        </div>
+                        {showAttemptReview ? (
+                          <Eye className="h-3 w-3 shrink-0" />
+                        ) : (
+                          <EyeOff className="h-3 w-3 shrink-0" />
+                        )}
+                        <span>复盘轨迹</span>
+                      </button>
+                    )}
+                    {lastAttemptReview.outcome === 'FALLEN' &&
+                      lastAttemptReview.fallPos &&
+                      onFocusLastFall && (
+                        <button
+                          type="button"
+                          onClick={onFocusLastFall}
+                          className="flex min-h-[28px] items-center gap-1 border border-red-400/45 bg-red-500/15 px-2 py-0.5 text-[10px] font-medium text-red-200 whitespace-nowrap hover:bg-red-500/25"
+                        >
+                          <Crosshair className="h-3 w-3 shrink-0" />
+                          <span>定位坠落点</span>
+                        </button>
                       )}
-                    </>
-                  ) : (
-                    <div className="space-y-0.5 text-slate-300">
-                      <div>{roadbookEstimate.verdictLabel}</div>
-                      {roadbookEstimate.freeSoloNote && (
-                        <div className="font-semibold text-amber-200">
-                          {roadbookEstimate.freeSoloNote}
-                        </div>
-                      )}
-                    </div>
-                  )}
+                  </div>
                 </div>
               )}
 
-              <div className="flex flex-wrap items-center gap-1">
+              {/* Saved Roadbook Archive Versions (Quick Switch & Compare) */}
+              {roadbookArchives.length > 0 && onLoadRoadbookSlot && (
+                <div className="flex flex-wrap items-center gap-1 border-t border-white/10 pt-1.5 text-[10px]">
+                  <span className="mr-0.5 inline-flex items-center gap-1 text-slate-400 whitespace-nowrap">
+                    <History className="h-3 w-3 shrink-0" />
+                    <span>存档</span>
+                  </span>
+                  {roadbookArchives.map((slot) => (
+                    <button
+                      key={slot.id}
+                      type="button"
+                      onClick={() => onLoadRoadbookSlot(slot.id)}
+                      className="min-h-[26px] border border-white/15 bg-white/5 px-2 py-0.5 text-[10px] font-medium text-slate-200 whitespace-nowrap font-mono-tabular hover:border-amber-400/50 hover:bg-white/15"
+                    >
+                      {slot.label} · {slot.pins.length}步
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              <div className="flex flex-wrap items-center gap-1 pt-0.5">
                 <button
                   type="button"
                   onClick={() => onJumpReadCamera('up')}
-                  className="flex min-h-[32px] items-center gap-1 border border-white/15 bg-white/10 px-2 py-1 text-[11px] font-medium text-slate-100 hover:bg-white/20"
+                  className="flex min-h-[32px] items-center gap-1 border border-white/15 bg-white/10 px-2 py-1 text-[11px] font-medium text-slate-100 whitespace-nowrap hover:bg-white/20"
                 >
-                  <ArrowUp className="h-3 w-3" />
+                  <ArrowUp className="h-3 w-3 shrink-0" />
                   <span>上看</span>
                 </button>
                 <button
                   type="button"
                   onClick={() => onJumpReadCamera('reset')}
-                  className="flex min-h-[32px] items-center gap-1 border border-white/15 bg-white/10 px-2 py-1 text-[11px] font-medium text-slate-100 hover:bg-white/20"
+                  className="flex min-h-[32px] items-center gap-1 border border-white/15 bg-white/10 px-2 py-1 text-[11px] font-medium text-slate-100 whitespace-nowrap hover:bg-white/20"
                 >
-                  <ArrowDownToLine className="h-3 w-3" />
+                  <ArrowDownToLine className="h-3 w-3 shrink-0" />
                   <span>回位</span>
                 </button>
                 <button
                   type="button"
                   disabled={betaPinsCount === 0}
                   onClick={onUndoBetaPin}
-                  className="flex min-h-[32px] items-center gap-1 border border-white/15 bg-white/10 px-2 py-1 text-[11px] font-medium text-slate-100 hover:bg-white/20 disabled:opacity-40"
+                  className="flex min-h-[32px] items-center gap-1 border border-white/15 bg-white/10 px-2 py-1 text-[11px] font-medium text-slate-100 whitespace-nowrap hover:bg-white/20 disabled:opacity-40"
                 >
-                  <Undo2 className="h-3 w-3" />
+                  <Undo2 className="h-3 w-3 shrink-0" />
                   <span>撤销</span>
                 </button>
                 <button
                   type="button"
                   disabled={betaPinsCount === 0}
                   onClick={onClearBetaPins}
-                  className="flex min-h-[32px] items-center gap-1 border border-red-400/40 bg-red-500/15 px-2 py-1 text-[11px] font-medium text-red-200 hover:bg-red-500/30 disabled:opacity-40"
+                  className="flex min-h-[32px] items-center gap-1 border border-red-400/40 bg-red-500/15 px-2 py-1 text-[11px] font-medium text-red-200 whitespace-nowrap hover:bg-red-500/30 disabled:opacity-40"
                 >
-                  <Trash2 className="h-3 w-3" />
+                  <Trash2 className="h-3 w-3 shrink-0" />
                   <span>清空</span>
                 </button>
-                <button
-                  type="button"
-                  onClick={onAutoSuggestBetaPins}
-                  className="flex min-h-[32px] items-center gap-1 border border-amber-400/60 bg-amber-400/15 px-2 py-1 text-[11px] font-bold text-amber-200 hover:bg-amber-400/30"
-                >
-                  <Sparkles className="h-3 w-3" />
-                  <span>参考路书</span>
-                </button>
+                {hasUnsavedRoadbook && hasSavedRoadbook && onRevertRoadbook && (
+                  <button
+                    type="button"
+                    onClick={onRevertRoadbook}
+                    className="flex min-h-[32px] items-center gap-1 border border-white/20 bg-white/5 px-2 py-1 text-[11px] font-medium text-slate-200 whitespace-nowrap hover:bg-white/15"
+                  >
+                    <RotateCcw className="h-3 w-3 shrink-0" />
+                    <span>还原</span>
+                  </button>
+                )}
+                {onSaveRoadbook && (
+                  <button
+                    type="button"
+                    disabled={betaPinsCount === 0 && !hasUnsavedRoadbook}
+                    onClick={onSaveRoadbook}
+                    className={`flex min-h-[32px] items-center gap-1 border px-2.5 py-1 text-[11px] font-bold whitespace-nowrap transition-colors disabled:opacity-40 ${
+                      hasUnsavedRoadbook
+                        ? 'border-amber-400/80 bg-amber-400/20 text-amber-200 hover:bg-amber-400/35'
+                        : 'border-emerald-400/50 bg-emerald-500/15 text-emerald-200 hover:bg-emerald-500/25'
+                    }`}
+                  >
+                    <Save className="h-3 w-3 shrink-0" />
+                    <span>{hasUnsavedRoadbook ? '保存路书' : '已存档'}</span>
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={onToggleRouteRead}
-                  className="ml-auto flex min-h-[32px] items-center gap-1 border border-sky-300 bg-sky-500 px-3 py-1 text-[11px] font-bold text-slate-950 hover:bg-sky-400"
+                  className="ml-auto flex min-h-[32px] items-center gap-1 border border-[#F4F1EA] bg-[#F4F1EA] px-3 py-1 text-[11px] font-bold text-[#141820] whitespace-nowrap hover:bg-white"
                 >
                   <span>{isPreClimbReading ? '开始攀登' : '继续攀爬'}</span>
                 </button>
@@ -581,7 +766,7 @@ export function GameHUD({
             >
               三点稳固 · 单手甩臂回耐 (R)
             </button>
-          ) : hover?.hold && !climber.isFalling && !isDraggingLimb ? (
+          ) : showHoldHints && hover?.hold && !climber.isFalling && !isDraggingLimb ? (
             <div className="max-w-[90vw] truncate bg-[#141820]/82 px-2.5 py-0.5 text-[11px] text-slate-200">
               <span>{LIMB_ITEMS.find((l) => l.id === hover.suggestedLimb)?.label}</span>
               <span className="mx-1.5 text-slate-500">/</span>
@@ -601,30 +786,75 @@ export function GameHUD({
             <div className="bg-[#141820]/80 px-2.5 py-0.5 text-[11px] text-emerald-300">
               轻点身旁岩钉可回收
             </div>
-          ) : supportsRouteBook && nextBetaHoldHint && !climber.isFalling && !isDraggingLimb ? (
+          ) : supportsRouteBook && betaRemainingCount > 0 && !climber.isFalling && !isDraggingLimb ? (
             <div
-              className={`max-w-[90vw] truncate bg-[#141820]/80 px-2.5 py-0.5 text-[11px] ${
-                roadbookFlowActive ? 'text-sky-200' : 'text-amber-200'
+              className={`max-w-[90vw] truncate bg-[#141820]/80 px-2.5 py-0.5 text-[11px] font-mono-tabular ${
+                roadbookFlowActive ? 'text-sky-200' : 'text-[#F4F1EA]'
               }`}
             >
-              {roadbookFlowActive ? '路书节奏 · ' : '路书第1步 · '}{nextBetaHoldHint}（余 {betaPinsCount}）
+              {roadbookFlowActive ? '路书节奏' : '自定路书'} · 第 {betaCursorStep} 步（余 {betaRemainingCount}/{betaPinsCount}）
             </div>
           ) : null}
         </div>
 
         {/* Bottom Row: Frameless Percentage Progress (Bottom-Left) + Roadbook & Gear Controls (Bottom-Right) */}
         <div className="flex items-end justify-between gap-2">
-          {/* Bottom-Left: Frameless Climber Name & Pure Percentage Progress */}
+          {/* Bottom-Left: Frameless Climber Name, Pitch Section, Progress % & Minimalist Altitude Rail */}
           <div
             aria-label={`${climberName} 攀登进度 ${progressPct}%`}
             className="select-none pl-1 pb-0.5 leading-none"
           >
-            <div className="mb-0.5 max-w-[140px] truncate text-[11px] font-semibold tracking-wider text-amber-100/90 drop-shadow-[0_1px_4px_rgba(0,0,0,0.92)]">
-              {climberName}
+            <div className="mb-0.5 flex max-w-[190px] items-center gap-1 truncate text-[11px] font-semibold tracking-wider text-amber-100/90 drop-shadow-[0_1px_4px_rgba(0,0,0,0.92)]">
+              <span className="truncate">{climberName}</span>
+              {currentPitch && (
+                <>
+                  <span aria-hidden="true" className="text-slate-400/80">·</span>
+                  <span
+                    className={`truncate ${
+                      currentPitch.isCrux ? 'text-amber-300' : 'text-slate-200/85'
+                    }`}
+                  >
+                    {currentPitch.name}
+                  </span>
+                </>
+              )}
             </div>
-            <span className="font-display text-3xl font-extrabold tracking-tight text-[#F4F1EA] font-mono-tabular drop-shadow-[0_2px_6px_rgba(0,0,0,0.92)] sm:text-4xl">
-              {progressPct}%
-            </span>
+            <div className="flex items-baseline gap-1.5">
+              <span className="font-display text-3xl font-extrabold tracking-tight text-[#F4F1EA] font-mono-tabular drop-shadow-[0_2px_6px_rgba(0,0,0,0.92)] sm:text-4xl">
+                {progressPct}%
+              </span>
+              <span className="text-[10px] font-semibold text-slate-300/85 font-mono-tabular drop-shadow-[0_1px_3px_rgba(0,0,0,0.9)]">
+                {Math.round(stats.altitudeM)}m
+              </span>
+            </div>
+            {/* Slim Altitude Progress Rail with Crux (amber) & Bivouac (emerald) Ticks */}
+            <div className="relative mt-1 h-[3px] w-28 bg-white/20 shadow-[0_1px_4px_rgba(0,0,0,0.75)] sm:w-36">
+              {pitchSections
+                .filter((p) => p.isCrux)
+                .map((p) => (
+                  <div
+                    key={p.id}
+                    aria-hidden="true"
+                    className="absolute inset-y-0 bg-amber-400/45"
+                    style={{
+                      left: `${Math.round(p.minRatio * 100)}%`,
+                      width: `${Math.max(4, Math.round((Math.min(1, p.maxRatio) - p.minRatio) * 100))}%`,
+                    }}
+                  />
+                ))}
+              <div
+                className="relative h-full bg-[#F4F1EA] transition-[width] duration-200"
+                style={{ width: `${progressPct}%` }}
+              />
+              {bivouacRatios.map((r, idx) => (
+                <div
+                  key={`biv-${idx}`}
+                  aria-hidden="true"
+                  className="absolute top-1/2 h-2 w-[2px] -translate-y-1/2 bg-emerald-300"
+                  style={{ left: `${Math.round(Math.max(0.02, Math.min(0.98, r)) * 100)}%` }}
+                />
+              ))}
+            </div>
           </div>
 
           {/* Bottom-Right: Roadbook Toggle + Piton & Chalk Controls */}
