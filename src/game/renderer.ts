@@ -48,6 +48,15 @@ import {
 } from '../visual/scenePresentation';
 import { renderClimberCharacter } from '../visual/characterRenderer';
 import { drawWorldPropSprite, getDecodedWorldPropsPack } from '../visual/worldPropsArt';
+import { DecodedVfxPack, drawVfxSprite, getDecodedVfxPack } from '../visual/vfxArtAssets';
+import {
+  drawWeatherFrontTransitionSweep,
+  stepWeatherTransition,
+} from '../visual/weatherTransitions';
+import {
+  drawRouteAmbientScreenDetails,
+  drawRouteAmbientWorldDetails,
+} from '../visual/routeAmbientDetails';
 
 const INK = '#141820';
 
@@ -224,9 +233,10 @@ export function renderGameFrame(params: RenderParams) {
   const altRatio = Math.max(0, Math.min(1, -climber.torsoPos.y / mountainHeight));
   const inkScale = Math.max(1.05, Math.min(2.4, 1.75 / Math.sqrt(camera.zoom)));
 
-  // Visual presentation art pack (supports per-route overrides via AssetRegistry), Cairn world-props pack & smooth transition factors
+  // Visual presentation art pack (supports per-route overrides via AssetRegistry), world-props, swappable VFX & smooth weather blending
   const artPack = getDecodedArtPackForRoute(world.route);
   const worldPropsPack = getDecodedWorldPropsPack();
+  const vfxPack = getDecodedVfxPack(world.route.id);
   const atmosphereGrade = artPack.urls.atmosphereGrade;
   const routeReadFade = advanceRouteReadFade(isReadingRoute && phase === 'PLAYING', timeSec);
   const sceneAlpha = Math.max(0, 1 - routeReadFade);
@@ -234,6 +244,15 @@ export function renderGameFrame(params: RenderParams) {
     phase,
     summitProgress,
     trailPlaybackProgress
+  );
+  const blendedWeather = stepWeatherTransition(
+    weather,
+    phase === 'PLAYING' ? weatherIncident : null,
+    phase === 'PLAYING' ? microWindow : null,
+    windForce,
+    timeSec,
+    phase === 'SUMMIT',
+    summitProgress
   );
   const hasArtPackScene = Boolean(
     artPack.seamlessWallTile || artPack.wallImg || artPack.startImg || artPack.summitNearImg
@@ -536,7 +555,7 @@ export function renderGameFrame(params: RenderParams) {
 
   // 4A-4C. Full-Bleed Art-Pack Scene Plates (01-Start -> 02-Seamless Wall -> 03-Summit Near) or Procedural Fallback
   const renderedArtScene = hasArtPackScene
-    ? drawArtPackWorldScene(ctx, width, height, camera, world, artPack, sceneAlpha)
+    ? drawArtPackWorldScene(ctx, width, height, camera, world, artPack, sceneAlpha, timeSec)
     : false;
 
   // 4C-2. Optional Cairn-style cel-shaded cliff flora scattered sparsely in rock crevices (when cliffFlora PNG is provided)
@@ -2030,26 +2049,57 @@ export function renderGameFrame(params: RenderParams) {
     if (pinHolds.length > 0) {
       ctx.save();
       const clampedCursor = Math.max(0, Math.min(pinHolds.length, betaCursor));
+      const hasClimbProgress = clampedCursor > 0;
+      const allCompleted = hasClimbProgress && clampedCursor >= pinHolds.length;
+      const activeStepIdx = isReadingRoute
+        ? hasClimbProgress && !allCompleted
+          ? clampedCursor
+          : pinHolds.length - 1
+        : clampedCursor < pinHolds.length
+          ? clampedCursor
+          : -1;
 
-      // Draw clean monochrome parchment topo lines connecting player's pinned sequence
+      // Draw monochrome parchment topo lines with dimmed completed segments & crisp upcoming/active guidance
       for (let i = 0; i < pinHolds.length - 1; i++) {
         const a = pinHolds[i];
         const b = pinHolds[i + 1];
-        const isPast = !isReadingRoute && i < clampedCursor;
+        const isCompletedSeg = hasClimbProgress
+          ? allCompleted || i < clampedCursor - 1
+          : isReadingRoute && i < activeStepIdx - 1;
+        const isActiveTransitionSeg =
+          activeStepIdx > 0 && i === activeStepIdx - 1 && !(allCompleted && !isReadingRoute);
+
         ctx.save();
-        ctx.globalAlpha = isReadingRoute ? 0.84 : isPast ? 0.2 : 0.48;
-        ctx.strokeStyle = '#F4F1EA';
-        ctx.lineWidth = isReadingRoute ? 2.1 : 1.7;
-        ctx.setLineDash([6, 5]);
+        ctx.lineCap = 'round';
+        if (isCompletedSeg) {
+          // Dim completed path lines so the player effortlessly separates finished moves from next actions
+          ctx.globalAlpha = isReadingRoute ? 0.2 : 0.16;
+          ctx.strokeStyle = '#E7E2D6';
+          ctx.lineWidth = isReadingRoute ? 1.4 : 1.25;
+          ctx.setLineDash([4, 6]);
+        } else if (isActiveTransitionSeg) {
+          // Emphasize the immediate step transition leading into the current active marked hold
+          ctx.globalAlpha = isReadingRoute ? 0.92 : 0.76;
+          ctx.strokeStyle = '#FEF3C7';
+          ctx.lineWidth = isReadingRoute ? 2.5 : 2.1;
+          ctx.setLineDash([7, 5]);
+          ctx.lineDashOffset = -timeSec * 20;
+        } else {
+          ctx.globalAlpha = isReadingRoute ? 0.68 : 0.44;
+          ctx.strokeStyle = '#F4F1EA';
+          ctx.lineWidth = isReadingRoute ? 1.9 : 1.6;
+          ctx.setLineDash([6, 5]);
+        }
         ctx.beginPath();
         ctx.moveTo(a.x, a.y);
         ctx.lineTo(b.x, b.y);
         ctx.stroke();
         ctx.setLineDash([]);
+        ctx.lineDashOffset = 0;
         ctx.restore();
       }
 
-      // Neutral dashed preview line from last pin to hovered hold while editing Roadbook
+      // Animated dashed preview line from last pin to hovered hold while editing Roadbook
       if (
         isReadingRoute &&
         hover?.hold &&
@@ -2058,49 +2108,131 @@ export function renderGameFrame(params: RenderParams) {
       ) {
         const lastPin = pinHolds[pinHolds.length - 1];
         ctx.save();
-        ctx.globalAlpha = 0.58;
-        ctx.strokeStyle = '#F4F1EA';
-        ctx.lineWidth = 1.6;
-        ctx.setLineDash([4, 4]);
+        ctx.globalAlpha = 0.86;
+        ctx.strokeStyle = '#FEF3C7';
+        ctx.lineWidth = 2.0;
+        ctx.lineCap = 'round';
+        ctx.setLineDash([5, 5]);
+        ctx.lineDashOffset = -timeSec * 22;
         ctx.beginPath();
         ctx.moveTo(lastPin.x, lastPin.y);
         ctx.lineTo(hover.hold.x, hover.hold.y);
         ctx.stroke();
         ctx.setLineDash([]);
+        ctx.lineDashOffset = 0;
         ctx.restore();
       }
 
-      // Render crisp numbered topo pins (uniform parchment/ink styling)
+      // Render crisp numbered topo pins + pulsing highlight ripple animation on the active step hold
       pinHolds.forEach((h, idx) => {
-        const isCompleted = !isReadingRoute && idx < clampedCursor;
-        const isNextTarget = !isReadingRoute && idx === clampedCursor;
+        const isActiveStep = idx === activeStepIdx;
+        const isCompleted = hasClimbProgress
+          ? idx < clampedCursor && !(isReadingRoute && isActiveStep)
+          : isReadingRoute && idx < activeStepIdx;
 
-        if (isNextTarget) {
-          const pulse = 1 + Math.sin(timeSec * 3.8) * 0.1;
+        if (isActiveStep) {
+          const breathe = 0.5 + 0.5 * Math.sin(timeSec * 4.4);
+          const intensity = isReadingRoute ? 1.0 : 0.72;
+
           ctx.save();
-          ctx.globalAlpha = 0.65;
-          ctx.strokeStyle = '#F4F1EA';
-          ctx.lineWidth = 1.8;
+          // 1. Soft breathing radial halo behind the active step rim (keeps rock art center crisp)
+          const haloOuterR = h.radius + (isReadingRoute ? 22 : 16) + breathe * 5;
+          const haloGrad = ctx.createRadialGradient(
+            h.x,
+            h.y,
+            Math.max(2, h.radius * 0.45),
+            h.x,
+            h.y,
+            haloOuterR
+          );
+          haloGrad.addColorStop(0, `rgba(254, 243, 199, ${(0.08 * intensity).toFixed(3)})`);
+          haloGrad.addColorStop(
+            0.52,
+            `rgba(253, 230, 138, ${((0.24 + breathe * 0.14) * intensity).toFixed(3)})`
+          );
+          haloGrad.addColorStop(1, 'rgba(254, 243, 199, 0)');
+          ctx.fillStyle = haloGrad;
           ctx.beginPath();
-          ctx.arc(h.x, h.y, (h.radius + 6) * pulse, 0, Math.PI * 2);
+          ctx.arc(h.x, h.y, haloOuterR, 0, Math.PI * 2);
+          ctx.fill();
+
+          // 2. Dual staggered expanding concentric ripple waves
+          const rippleCount = isReadingRoute ? 2 : 1;
+          for (let w = 0; w < rippleCount; w++) {
+            const rawPhase = (timeSec * 0.85 + w * 0.5) % 1;
+            const eased = 1 - Math.pow(1 - rawPhase, 3);
+            const fadeIn = Math.min(1, rawPhase / 0.14);
+            const fadeOut = Math.pow(1 - rawPhase, 1.7);
+            const rippleAlpha = fadeIn * fadeOut * (isReadingRoute ? 0.82 : 0.55);
+            const rippleRadius = h.radius + 4 + eased * (isReadingRoute ? 28 : 18);
+
+            ctx.save();
+            ctx.globalAlpha = rippleAlpha;
+            ctx.strokeStyle = w === 0 ? '#FEF3C7' : '#FDE68A';
+            ctx.lineWidth = (2.6 - eased * 1.6) * (isReadingRoute ? 1 : 0.85);
+            ctx.beginPath();
+            ctx.arc(h.x, h.y, rippleRadius, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.restore();
+          }
+
+          // 3. High-contrast pulsing highlight ring hugging the hold silhouette
+          const coreRingR = h.radius + 4.5 + breathe * 3.0;
+          ctx.strokeStyle = `rgba(20, 24, 32, ${(0.5 * intensity).toFixed(2)})`;
+          ctx.lineWidth = isReadingRoute ? 4.2 : 3.4;
+          ctx.beginPath();
+          ctx.arc(h.x, h.y, coreRingR, 0, Math.PI * 2);
+          ctx.stroke();
+
+          ctx.strokeStyle = '#FEF3C7';
+          ctx.globalAlpha = (0.78 + breathe * 0.22) * intensity;
+          ctx.lineWidth = isReadingRoute ? 2.2 : 1.8;
+          ctx.beginPath();
+          ctx.arc(h.x, h.y, coreRingR, 0, Math.PI * 2);
           ctx.stroke();
           ctx.restore();
         }
 
         const px = h.x + h.radius + 4;
         const py = h.y - h.radius - 4;
+        const badgeR = isActiveStep ? 9.6 : isCompleted ? 7.2 : 8.2;
         ctx.save();
-        ctx.globalAlpha = isReadingRoute ? 0.96 : isCompleted ? 0.34 : isNextTarget ? 0.94 : 0.6;
-        ctx.fillStyle = isNextTarget ? '#FEF3C7' : '#F4F1EA';
+        ctx.globalAlpha = isActiveStep
+          ? 0.98
+          : isCompleted
+            ? isReadingRoute
+              ? hasClimbProgress
+                ? 0.28
+                : 0.44
+              : 0.26
+            : isReadingRoute
+              ? 0.84
+              : 0.58;
+
+        if (isActiveStep && isReadingRoute) {
+          const badgePulse = 0.5 + 0.5 * Math.sin(timeSec * 4.4);
+          ctx.save();
+          ctx.globalAlpha = 0.38 + badgePulse * 0.34;
+          ctx.strokeStyle = '#FDE68A';
+          ctx.lineWidth = 2.0;
+          ctx.beginPath();
+          ctx.arc(px, py, badgeR + 2.6 + badgePulse * 2.2, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.restore();
+        }
+
+        ctx.fillStyle = isActiveStep ? '#FEF3C7' : '#F4F1EA';
         ctx.strokeStyle = INK;
-        ctx.lineWidth = isNextTarget ? 2.1 : 1.8;
+        ctx.lineWidth = isActiveStep ? 2.2 : isCompleted ? 1.4 : 1.8;
         ctx.beginPath();
-        ctx.arc(px, py, isNextTarget ? 9 : 8.2, 0, Math.PI * 2);
+        ctx.arc(px, py, badgeR, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
 
         ctx.fillStyle = INK;
-        ctx.font = 'bold 9.5px "JetBrains Mono", monospace';
+        ctx.font = isActiveStep
+          ? 'bold 10px "JetBrains Mono", monospace'
+          : 'bold 9px "JetBrains Mono", monospace';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(String(idx + 1), px, py + 0.5);
@@ -2110,7 +2242,7 @@ export function renderGameFrame(params: RenderParams) {
     }
   }
 
-  // 4E-2. Dyno Hold-to-Lunge Charge Indicator (visible only after dwell debounce begins filling)
+  // 4E-2. Dyno Hold-to-Lunge Charge Indicator (supports swappable vfx.dynoRing sprite)
   if (dynoCharge && dynoCharge.progress > 0.01 && phase === 'PLAYING' && !climber.isFalling) {
     const startLimb = climber.limbs[dynoCharge.limbId];
     const target = dynoCharge.hold;
@@ -2124,11 +2256,26 @@ export function renderGameFrame(params: RenderParams) {
     ctx.stroke();
     ctx.setLineDash([]);
 
-    ctx.strokeStyle = 'rgba(20, 24, 32, 0.65)';
-    ctx.lineWidth = 5;
-    ctx.beginPath();
-    ctx.arc(target.x, target.y, target.radius + 9, 0, Math.PI * 2);
-    ctx.stroke();
+    const ringDia = (target.radius + 13) * 2 * (0.88 + dynoCharge.progress * 0.24);
+    const drewDynoSprite = drawVfxSprite(
+      ctx,
+      vfxPack,
+      'dynoRing',
+      target.x,
+      target.y,
+      ringDia,
+      ringDia,
+      timeSec * 2.4,
+      0.45 + dynoCharge.progress * 0.52
+    );
+
+    if (!drewDynoSprite) {
+      ctx.strokeStyle = 'rgba(20, 24, 32, 0.65)';
+      ctx.lineWidth = 5;
+      ctx.beginPath();
+      ctx.arc(target.x, target.y, target.radius + 9, 0, Math.PI * 2);
+      ctx.stroke();
+    }
 
     ctx.strokeStyle = dynoCharge.progress >= 0.95 ? '#34D399' : '#F59E0B';
     ctx.lineWidth = 3.2;
@@ -2707,7 +2854,7 @@ export function renderGameFrame(params: RenderParams) {
       ctx.stroke();
     }
 
-    // Active tumbling ice/rock boulders
+    // Active tumbling ice/rock boulders (supports swappable vfx.iceShard / vfx.rockDebris)
     for (const proj of weatherIncident.projectiles) {
       // Motion streak trail
       ctx.strokeStyle =
@@ -2719,25 +2866,38 @@ export function renderGameFrame(params: RenderParams) {
       ctx.lineTo(proj.x - proj.vx * 0.08, proj.y - proj.vy * 0.08);
       ctx.stroke();
 
-      ctx.save();
-      ctx.translate(proj.x, proj.y);
-      ctx.rotate(proj.rotation);
-      const pr = proj.radius;
-      const pts: Vec2[] = [
-        { x: -pr, y: -pr * 0.3 },
-        { x: -pr * 0.25, y: -pr },
-        { x: pr * 0.85, y: -pr * 0.55 },
-        { x: pr, y: pr * 0.35 },
-        { x: pr * 0.2, y: pr * 0.95 },
-        { x: -pr * 0.8, y: pr * 0.65 },
-      ];
-      tracePoly(ctx, pts);
-      ctx.fillStyle = proj.kind === 'ice' ? '#E0F2FE' : '#64748B';
-      ctx.fill();
-      ctx.strokeStyle = INK;
-      ctx.lineWidth = 2;
-      ctx.stroke();
-      ctx.restore();
+      const drewProj = drawVfxSprite(
+        ctx,
+        vfxPack,
+        proj.kind === 'ice' ? 'iceShard' : 'rockDebris',
+        proj.x,
+        proj.y,
+        proj.radius * (proj.kind === 'ice' ? 2.1 : 2.3),
+        proj.radius * (proj.kind === 'ice' ? 3.2 : 2.3),
+        proj.rotation,
+        1
+      );
+      if (!drewProj) {
+        ctx.save();
+        ctx.translate(proj.x, proj.y);
+        ctx.rotate(proj.rotation);
+        const pr = proj.radius;
+        const pts: Vec2[] = [
+          { x: -pr, y: -pr * 0.3 },
+          { x: -pr * 0.25, y: -pr },
+          { x: pr * 0.85, y: -pr * 0.55 },
+          { x: pr, y: pr * 0.35 },
+          { x: pr * 0.2, y: pr * 0.95 },
+          { x: -pr * 0.8, y: pr * 0.65 },
+        ];
+        tracePoly(ctx, pts);
+        ctx.fillStyle = proj.kind === 'ice' ? '#E0F2FE' : '#64748B';
+        ctx.fill();
+        ctx.strokeStyle = INK;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.restore();
+      }
     }
     ctx.restore();
   }
@@ -2785,39 +2945,84 @@ export function renderGameFrame(params: RenderParams) {
     ctx.restore();
   }
 
-  // 4K. World-Space Particles & Comic Rings (faded out during pure-holds route reading)
-  if (sceneAlpha > 0.02) {
-  for (const pt of particles) {
-    const alpha = Math.max(0, pt.life / pt.maxLife) * sceneAlpha;
-    ctx.save();
-    ctx.globalAlpha = alpha;
-    if (pt.kind === 'ring') {
-      const expand = (1 - alpha) * 26;
-      ctx.strokeStyle = pt.color;
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.arc(pt.x, pt.y, pt.size + expand, 0, Math.PI * 2);
-      ctx.stroke();
-    } else if (pt.kind === 'rain') {
-      ctx.strokeStyle = pt.color;
-      ctx.lineWidth = 1.6;
-      ctx.beginPath();
-      ctx.moveTo(pt.x, pt.y);
-      ctx.lineTo(pt.x + pt.vx * 0.032, pt.y + pt.vy * 0.032);
-      ctx.stroke();
-    } else {
-      ctx.fillStyle = pt.color;
-      ctx.beginPath();
-      ctx.arc(pt.x, pt.y, pt.size, 0, Math.PI * 2);
-      ctx.fill();
-      if (pt.outline) {
-        ctx.strokeStyle = INK;
-        ctx.lineWidth = 1;
-        ctx.stroke();
-      }
-    }
-    ctx.restore();
+  // 4J-B. Per-Route World-Space Ambient Motion Details (cliff-edge flora, eaves drips, waterfall mist, spindrift, banner plume)
+  if (sceneAlpha > 0.03 && wideDissolveAlpha < 0.96) {
+    drawRouteAmbientWorldDetails(
+      ctx,
+      world,
+      timeSec,
+      windForce,
+      altRatio,
+      vfxPack,
+      sceneAlpha * (1 - wideDissolveAlpha)
+    );
   }
+
+  // 4K. World-Space Particles & Comic Rings (supports swappable AssetRegistry vfx.* textures)
+  if (sceneAlpha > 0.02) {
+    for (const pt of particles) {
+      const lifeRatio = Math.max(0, pt.life / Math.max(0.01, pt.maxLife));
+      const alpha = lifeRatio * sceneAlpha;
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      if (pt.kind === 'ring') {
+        const expand = (1 - lifeRatio) * 26;
+        const rad = pt.size + expand;
+        const drew = drawVfxSprite(ctx, vfxPack, 'dynoRing', pt.x, pt.y, rad * 2.2, rad * 2.2, 0, 1);
+        if (!drew) {
+          ctx.strokeStyle = pt.color;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(pt.x, pt.y, rad, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      } else if (pt.kind === 'rain') {
+        const angle = Math.atan2(pt.vy, pt.vx) - Math.PI * 0.5;
+        const drew = drawVfxSprite(
+          ctx,
+          vfxPack,
+          'rainStreak',
+          pt.x,
+          pt.y,
+          Math.max(5, pt.size * 2.2),
+          Math.max(18, pt.size * 7),
+          angle,
+          1
+        );
+        if (!drew) {
+          ctx.strokeStyle = pt.color;
+          ctx.lineWidth = 1.6;
+          ctx.beginPath();
+          ctx.moveTo(pt.x, pt.y);
+          ctx.lineTo(pt.x + pt.vx * 0.032, pt.y + pt.vy * 0.032);
+          ctx.stroke();
+        }
+      } else {
+        const spriteKey =
+          pt.kind === 'chalk'
+            ? 'chalkPuff'
+            : pt.kind === 'spark'
+              ? 'sparkPiton'
+              : pt.kind === 'snow'
+                ? 'snowFlake'
+                : 'rockDebris';
+        const spriteSize = pt.kind === 'chalk' ? pt.size * 3.8 : pt.size * 2.8;
+        const rot = pt.kind === 'dust' || pt.kind === 'snow' ? (1 - lifeRatio) * 4.5 + pt.x * 0.05 : 0;
+        const drew = drawVfxSprite(ctx, vfxPack, spriteKey, pt.x, pt.y, spriteSize, spriteSize, rot, 1);
+        if (!drew) {
+          ctx.fillStyle = pt.color;
+          ctx.beginPath();
+          ctx.arc(pt.x, pt.y, pt.size, 0, Math.PI * 2);
+          ctx.fill();
+          if (pt.outline) {
+            ctx.strokeStyle = INK;
+            ctx.lineWidth = 1;
+            ctx.stroke();
+          }
+        }
+      }
+      ctx.restore();
+    }
   }
 
   // 4L. Volumetric Top-Down Summit Spotlight Beam & Golden Light Motes (fades cleanly as wide ending dissolves in)
@@ -2826,7 +3031,9 @@ export function renderGameFrame(params: RenderParams) {
     if (summitLedge) {
       const peakX = summitLedge.x;
       const peakY = summitLedge.y - 15;
-      const beamFade = Math.min(1, summitProgress * 6.5) * Math.max(0, 1 - wideDissolveAlpha * 1.25);
+      const beamFade =
+        Math.min(1, Math.max(0, (summitProgress - 0.05) / 0.16)) *
+        Math.max(0, 1 - wideDissolveAlpha * 1.15);
       const shimmer = 0.92 + 0.08 * Math.sin(timeSec * 2.4);
       const viewTopWorldY = camera.y - (height * 0.58) / Math.max(0.12, camera.zoom);
       const beamTopY = Math.min(peakY - 840, viewTopWorldY - 140);
@@ -2887,34 +3094,21 @@ export function renderGameFrame(params: RenderParams) {
 
   ctx.restore(); // End world-space transform
 
-  // 5. Dynamic Screen-Space Weather Fog, Mist Ribbons & Visibility Cone
-  const squallBoost =
-    phase === 'PLAYING' &&
-    weatherIncident?.type === 'whiteout_squall' &&
-    weatherIncident.phase === 'active'
-      ? 0.26
-      : 0;
-  const fogStrength =
-    (phase === 'SUMMIT'
-      ? weather.fogOpacity * Math.max(0, 1 - summitProgress * 1.8)
-      : Math.min(0.86, weather.fogOpacity + squallBoost)) *
-    sceneAlpha *
-    (1 - wideDissolveAlpha);
+  // 5. Smoothly Cross-Faded Screen-Space Weather Fog, Mist Ribbons & Visibility Cone
+  const weatherFxAlpha = sceneAlpha * (1 - wideDissolveAlpha);
+  const fogStrength = blendedWeather.fogOpacity * weatherFxAlpha;
 
-  if (fogStrength > 0.04) {
-    // Soft ambient tint (cool rain slate vs icy blizzard white vs golden-grey valley mist)
-    const fogTint =
-      weather.type === 'rain'
-        ? 'rgba(30, 44, 62,'
-        : weather.type === 'snowstorm' || squallBoost > 0
-          ? 'rgba(218, 232, 246,'
-          : 'rgba(215, 224, 235,';
+  if (fogStrength > 0.025) {
+    const fr = Math.round(blendedWeather.fogRgb[0]);
+    const fg = Math.round(blendedWeather.fogRgb[1]);
+    const fb = Math.round(blendedWeather.fogRgb[2]);
+    const fogTint = `rgba(${fr}, ${fg}, ${fb},`;
 
     // Compute climber's current screen position for visibility cone
     const climberScreenX = width * 0.5 + (climber.torsoPos.x - camera.x) * camera.zoom;
     const climberScreenY = height * 0.52 + (climber.torsoPos.y - camera.y) * camera.zoom;
     const maxDim = Math.max(width, height);
-    const visRadius = Math.max(0.28, weather.visibilityRadius - (squallBoost > 0 ? 0.14 : 0));
+    const visRadius = blendedWeather.visibilityRadius;
     const clearR = maxDim * visRadius * 0.34;
     const outerR = maxDim * visRadius * 0.92;
 
@@ -2934,82 +3128,140 @@ export function renderGameFrame(params: RenderParams) {
     ctx.fillStyle = visGrad;
     ctx.fillRect(0, 0, width, height);
 
-    // Drifting horizontal comic mist bands
-    const bandCount = weather.type === 'clear' ? 0 : 4;
-    for (let i = 0; i < bandCount; i++) {
-      const bandY = ((height * (0.2 + i * 0.22) + Math.sin(timeSec * 0.35 + i) * 28) % height);
-      const bandX = ((timeSec * (28 + i * 11) * (i % 2 === 0 ? 1 : -1)) % (width + 320)) - 160;
-      ctx.fillStyle = `${fogTint} ${(fogStrength * 0.22).toFixed(3)})`;
-      ctx.beginPath();
-      ctx.ellipse(bandX + width * 0.35, bandY, width * 0.42, 38 + i * 10, 0, 0, Math.PI * 2);
-      ctx.fill();
+    // Drifting horizontal mist veils smoothly scaled by non-clear weight (supports swappable vfx.mistVeil)
+    const mistBandWeight = Math.min(1, 1 - blendedWeather.weights.clear);
+    if (mistBandWeight > 0.03) {
+      for (let i = 0; i < 4; i++) {
+        const bandY = (height * (0.2 + i * 0.22) + Math.sin(timeSec * 0.35 + i) * 28) % height;
+        const bandX = ((timeSec * (28 + i * 11) * (i % 2 === 0 ? 1 : -1)) % (width + 320)) - 160;
+        const bandAlpha = fogStrength * 0.24 * mistBandWeight;
+        const drewVeil = drawVfxSprite(
+          ctx,
+          vfxPack,
+          'mistVeil',
+          bandX + width * 0.35,
+          bandY,
+          width * 0.88,
+          120 + i * 26,
+          0,
+          bandAlpha
+        );
+        if (!drewVeil) {
+          ctx.fillStyle = `${fogTint} ${bandAlpha.toFixed(3)})`;
+          ctx.beginPath();
+          ctx.ellipse(bandX + width * 0.35, bandY, width * 0.42, 38 + i * 10, 0, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
     }
     ctx.restore();
   }
 
-  // 5A. Weather-Specific Decorative Particle Effects (parallaxed, zero-allocation procedural layer)
-  const weatherFxAlpha = sceneAlpha * (1 - wideDissolveAlpha);
+  // 5A. Simultaneous Cross-Faded Weather Particle Layers (smooth transition across clear/mist/rain/snowstorm)
   if (weatherFxAlpha > 0.04) {
-    const effectiveWeatherType: ActiveWeather['type'] =
-      squallBoost > 0 ? 'snowstorm' : weather.type;
-    const effectiveIntensity = Math.min(
-      1.35,
-      Math.max(0.25, weather.intensity + squallBoost * 1.4)
-    );
-    drawWeatherDecorativeParticles(
+    const weatherTypes: readonly ActiveWeather['type'][] = ['clear', 'mist', 'rain', 'snowstorm'];
+    for (const wt of weatherTypes) {
+      const wWeight = blendedWeather.weights[wt];
+      if (wWeight <= 0.018) continue;
+      drawWeatherDecorativeParticles(
+        ctx,
+        width,
+        height,
+        camera,
+        timeSec,
+        windForce,
+        wt,
+        blendedWeather.intensity,
+        world.route.palette,
+        altRatio,
+        weatherFxAlpha * wWeight,
+        vfxPack
+      );
+    }
+  }
+
+  // 5A-2. Per-Route Parallax Ambient Motion Details (birds, leaves, aurora, stardust, dawn motes, sun shafts)
+  if (weatherFxAlpha > 0.04) {
+    drawRouteAmbientScreenDetails(
       ctx,
       width,
       height,
+      world,
       camera,
       timeSec,
       windForce,
-      effectiveWeatherType,
-      effectiveIntensity,
-      world.route.palette,
       altRatio,
+      blendedWeather,
+      vfxPack,
       weatherFxAlpha
     );
   }
 
-  // 5B. Master-Tier Crosswind Gust Screen-Space Sweeping Gale Streaks
-  if (
-    phase === 'PLAYING' &&
-    weatherIncident &&
-    weatherIncident.type === 'crosswind_gust' &&
-    sceneAlpha > 0.05
-  ) {
-    const isActive = weatherIncident.phase === 'active';
-    const dir = weatherIncident.direction;
-    const count = isActive ? 14 : 6;
+  // 5A-3. Atmospheric Weather-Front Roll-In Sweep during stage transitions
+  if (weatherFxAlpha > 0.04) {
+    drawWeatherFrontTransitionSweep(ctx, width, height, blendedWeather, vfxPack, weatherFxAlpha);
+  }
+
+  // 5B. Master-Tier Crosswind Gust Sweeping Gale Streaks (smoothly faded + supports swappable vfx.windStreak)
+  if (blendedWeather.crosswindBlend > 0.02 && weatherFxAlpha > 0.05) {
+    const isActive =
+      weatherIncident?.type === 'crosswind_gust' && weatherIncident.phase === 'active';
+    const dir = weatherIncident?.direction ?? (windForce >= 0 ? 1 : -1);
+    const count = isActive ? 14 : 7;
+    const galeAlpha = weatherFxAlpha * blendedWeather.crosswindBlend;
     ctx.save();
-    ctx.globalAlpha = sceneAlpha;
+    ctx.globalAlpha = galeAlpha;
     ctx.strokeStyle = isActive
-      ? 'rgba(224, 242, 254, 0.52)'
-      : 'rgba(251, 191, 36, 0.38)';
+      ? 'rgba(224, 242, 254, 0.56)'
+      : 'rgba(251, 191, 36, 0.42)';
     ctx.lineWidth = isActive ? 2.4 : 1.8;
     ctx.lineCap = 'round';
     for (let i = 0; i < count; i++) {
-      const speed = isActive ? 980 : 380;
+      const speed = isActive ? 980 : 420;
       const offset = ((timeSec * speed + i * 197) % (width + 260)) - 130;
       const sx = dir > 0 ? offset : width - offset;
       const sy = ((i * 73 + 60) % (height * 0.84)) + height * 0.08;
-      const len = isActive ? 90 + (i % 3) * 35 : 44;
-      ctx.beginPath();
-      ctx.moveTo(sx, sy);
-      ctx.lineTo(sx + dir * len, sy + 10);
-      ctx.stroke();
+      const len = isActive ? 96 + (i % 3) * 38 : 48;
+      const drewWind = drawVfxSprite(
+        ctx,
+        vfxPack,
+        'windStreak',
+        sx + dir * len * 0.5,
+        sy + 5,
+        len * 1.45,
+        24 + (i % 2) * 8,
+        dir * 0.08,
+        isActive ? 0.72 : 0.48,
+        dir,
+        1
+      );
+      if (!drewWind) {
+        ctx.beginPath();
+        ctx.moveTo(sx, sy);
+        ctx.lineTo(sx + dir * len, sy + 10);
+        ctx.stroke();
+      }
     }
     ctx.restore();
   }
 
-  // 5C. Dynamic Sunbreak Golden Light Shafts & Wind-Lull Stillness Shimmer
-  if (phase === 'PLAYING' && microWindow && sceneAlpha > 0.05) {
-    const progress = Math.max(0, Math.min(1, microWindow.timer / Math.max(0.1, microWindow.duration)));
-    const fadeEnvelope =
-      progress < 0.14 ? progress / 0.14 : progress > 0.84 ? (1 - progress) / 0.16 : 1;
-    if (microWindow.kind === 'sunbreak' && fadeEnvelope > 0.02) {
+  // 5C. Dynamic Sunbreak Golden Light Shafts (smoothly faded + supports swappable vfx.sunShaft)
+  if (blendedWeather.sunbreakBlend > 0.02 && weatherFxAlpha > 0.05) {
+    const sunAlpha = weatherFxAlpha * blendedWeather.sunbreakBlend * 0.28;
+    const drewShaft = drawVfxSprite(
+      ctx,
+      vfxPack,
+      'sunShaft',
+      width * 0.46,
+      -20,
+      width * 0.92,
+      height * 1.05,
+      0.18,
+      sunAlpha * 1.4
+    );
+    if (!drewShaft) {
       ctx.save();
-      ctx.globalAlpha = sceneAlpha * fadeEnvelope * 0.24;
+      ctx.globalAlpha = sunAlpha;
       const sunGrad = ctx.createLinearGradient(width * 0.18, 0, width * 0.82, height * 0.88);
       sunGrad.addColorStop(0, 'rgba(254, 243, 199, 0.95)');
       sunGrad.addColorStop(0.52, 'rgba(251, 191, 36, 0.35)');
@@ -3026,9 +3278,12 @@ export function renderGameFrame(params: RenderParams) {
     }
   }
 
-  // 6. Illustrated Storybook Panel Framing Vignette (softened during pure-holds route reading)
+  // 6. Illustrated Storybook Panel Framing Vignette (smoothly blended across weather states)
   const vigMult = atmosphereGrade?.vignetteStrength ?? 1;
   if (sceneAlpha > 0.05 && wideDissolveAlpha < 0.95 && vigMult > 0.01) {
+    const vr = Math.round(blendedWeather.vignetteRgb[0]);
+    const vg = Math.round(blendedWeather.vignetteRgb[1]);
+    const vb = Math.round(blendedWeather.vignetteRgb[2]);
     ctx.save();
     ctx.globalAlpha = sceneAlpha * (1 - wideDissolveAlpha) * Math.min(1.5, vigMult);
     const vigGrad = ctx.createRadialGradient(
@@ -3039,21 +3294,15 @@ export function renderGameFrame(params: RenderParams) {
       height * 0.5,
       Math.max(width, height) * 0.76
     );
-    vigGrad.addColorStop(0, 'rgba(15, 23, 42, 0)');
-    vigGrad.addColorStop(
-      1,
-      phase === 'SUMMIT'
-        ? 'rgba(19, 39, 66, 0.22)'
-        : weather.type === 'rain' || weather.type === 'snowstorm'
-          ? 'rgba(12, 19, 30, 0.34)'
-          : 'rgba(15, 20, 28, 0.22)'
-    );
+    vigGrad.addColorStop(0, `rgba(${vr}, ${vg}, ${vb}, 0)`);
+    vigGrad.addColorStop(1, `rgba(${vr}, ${vg}, ${vb}, ${blendedWeather.vignetteAlpha.toFixed(3)})`);
     ctx.fillStyle = vigGrad;
     ctx.fillRect(0, 0, width, height);
     ctx.restore();
   }
 
-  // 7. Summit Static Wide Mountain Painting Dissolve Overlay (04-广角结尾.png)
+  // 7. Summit Romantic Wide Mountain Painting Dissolve Overlay (pixel-locked to live world peak & optical zoom)
+  const summitLedgeForWide = world.ledges.find((l) => l.isSummit);
   drawSummitWideEndingOverlay(
     ctx,
     width,
@@ -3061,7 +3310,14 @@ export function renderGameFrame(params: RenderParams) {
     phase,
     summitProgress,
     trailPlaybackProgress,
-    artPack
+    artPack,
+    timeSec,
+    {
+      camera,
+      peakWorldX: summitLedgeForWide?.x ?? 0,
+      peakWorldY: (summitLedgeForWide?.y ?? -mountainHeight) - 15,
+      vfxPack,
+    }
   );
 }
 
@@ -3084,7 +3340,8 @@ function drawWeatherDecorativeParticles(
   intensity: number,
   palette: MountainWorld['route']['palette'],
   altRatio: number,
-  baseAlpha: number
+  baseAlpha: number,
+  vfxPack: DecodedVfxPack
 ) {
   ctx.save();
 
@@ -3092,7 +3349,7 @@ function drawWeatherDecorativeParticles(
   const spanH = height + 160;
 
   if (weatherType === 'clear') {
-    // Subtle floating sunlit alpine dust motes (or icy diamond-dust glints on glacial / high peaks)
+    // Subtle floating sunlit alpine dust motes (swappable via vfx.ambientDawnMote / vfx.ambientIceCrystal)
     const isDiamondDust = palette === 'glacial' || altRatio > 0.65;
     const count = isDiamondDust ? 20 : 16;
     for (let i = 0; i < count; i++) {
@@ -3119,22 +3376,35 @@ function drawWeatherDecorativeParticles(
       const r = (1.1 + fracB * 1.45) * (0.75 + depth * 0.45);
       const alpha = baseAlpha * (isDiamondDust ? 0.34 : 0.28) * twinkle;
 
-      ctx.fillStyle = isDiamondDust
-        ? `rgba(224, 242, 254, ${alpha.toFixed(3)})`
-        : `rgba(254, 243, 199, ${alpha.toFixed(3)})`;
-      ctx.beginPath();
-      ctx.arc(sx, sy, r, 0, Math.PI * 2);
-      ctx.fill();
-
-      if (isDiamondDust && twinkle > 0.85) {
-        ctx.strokeStyle = `rgba(240, 249, 255, ${(alpha * 0.75).toFixed(3)})`;
-        ctx.lineWidth = 0.8;
+      const drewMote = drawVfxSprite(
+        ctx,
+        vfxPack,
+        isDiamondDust ? 'ambientIceCrystal' : 'ambientDawnMote',
+        sx,
+        sy,
+        r * 5.2,
+        r * 5.2,
+        isDiamondDust ? timeSec * 0.6 + i : 0,
+        alpha
+      );
+      if (!drewMote) {
+        ctx.fillStyle = isDiamondDust
+          ? `rgba(224, 242, 254, ${alpha.toFixed(3)})`
+          : `rgba(254, 243, 199, ${alpha.toFixed(3)})`;
         ctx.beginPath();
-        ctx.moveTo(sx - r * 2.1, sy);
-        ctx.lineTo(sx + r * 2.1, sy);
-        ctx.moveTo(sx, sy - r * 2.1);
-        ctx.lineTo(sx, sy + r * 2.1);
-        ctx.stroke();
+        ctx.arc(sx, sy, r, 0, Math.PI * 2);
+        ctx.fill();
+
+        if (isDiamondDust && twinkle > 0.85) {
+          ctx.strokeStyle = `rgba(240, 249, 255, ${(alpha * 0.75).toFixed(3)})`;
+          ctx.lineWidth = 0.8;
+          ctx.beginPath();
+          ctx.moveTo(sx - r * 2.1, sy);
+          ctx.lineTo(sx + r * 2.1, sy);
+          ctx.moveTo(sx, sy - r * 2.1);
+          ctx.lineTo(sx, sy + r * 2.1);
+          ctx.stroke();
+        }
       }
     }
     ctx.restore();
@@ -3144,7 +3414,7 @@ function drawWeatherDecorativeParticles(
   if (weatherType === 'mist') {
     const mistStrength = Math.max(0.35, Math.min(1.15, intensity));
 
-    // Layer 1: Soft drifting vapor puffs that billow lazily across the rock face
+    // Layer 1: Soft drifting vapor puffs (swappable via vfx.mistVeil)
     const puffCount = Math.round(14 + mistStrength * 8);
     for (let i = 0; i < puffCount; i++) {
       const s1 = Math.sin(i * 19.19 + 0.3) * 14321.3;
@@ -3168,16 +3438,28 @@ function drawWeatherDecorativeParticles(
       const ry = rx * (0.44 + f1 * 0.18);
       const puffAlpha = baseAlpha * (0.045 + mistStrength * 0.055) * breath;
 
-      // Two concentric translucent ellipses for soft volumetric mist edge without expensive per-particle gradients
-      ctx.fillStyle = `rgba(226, 234, 244, ${(puffAlpha * 0.6).toFixed(3)})`;
-      ctx.beginPath();
-      ctx.ellipse(px, py, rx, ry, Math.sin(timeSec * 0.2 + i) * 0.18, 0, Math.PI * 2);
-      ctx.fill();
+      const drewPuff = drawVfxSprite(
+        ctx,
+        vfxPack,
+        'mistVeil',
+        px,
+        py,
+        rx * 2.3,
+        ry * 2.3,
+        Math.sin(timeSec * 0.2 + i) * 0.14,
+        puffAlpha * 1.45
+      );
+      if (!drewPuff) {
+        ctx.fillStyle = `rgba(226, 234, 244, ${(puffAlpha * 0.6).toFixed(3)})`;
+        ctx.beginPath();
+        ctx.ellipse(px, py, rx, ry, Math.sin(timeSec * 0.2 + i) * 0.18, 0, Math.PI * 2);
+        ctx.fill();
 
-      ctx.fillStyle = `rgba(241, 245, 249, ${(puffAlpha * 0.75).toFixed(3)})`;
-      ctx.beginPath();
-      ctx.ellipse(px + rx * 0.08, py - ry * 0.06, rx * 0.58, ry * 0.58, 0, 0, Math.PI * 2);
-      ctx.fill();
+        ctx.fillStyle = `rgba(241, 245, 249, ${(puffAlpha * 0.75).toFixed(3)})`;
+        ctx.beginPath();
+        ctx.ellipse(px + rx * 0.08, py - ry * 0.06, rx * 0.58, ry * 0.58, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
 
     // Layer 2: Fine suspended misty micro-droplets drifting in humid air
@@ -3218,8 +3500,9 @@ function drawWeatherDecorativeParticles(
     const streakCount = Math.round(28 + rainStrength * 22);
     const slantX = windForce * 88 - 28;
     const fallY = 460 + rainStrength * 140;
+    const slantAngle = Math.atan2(fallY, slantX) - Math.PI * 0.5;
 
-    // Layer 1: Multi-depth wind-slanted rain streaks
+    // Layer 1: Multi-depth wind-slanted rain streaks (swappable via vfx.rainStreak)
     ctx.lineCap = 'round';
     for (let i = 0; i < streakCount; i++) {
       const s1 = Math.sin(i * 31.71) * 29413.7;
@@ -3240,16 +3523,31 @@ function drawWeatherDecorativeParticles(
         ) - 80;
 
       const lenScale = (0.022 + f1 * 0.014) * depth;
+      const dx = slantX * lenScale;
+      const dy = fallY * lenScale;
       const alpha = baseAlpha * (0.16 + depth * 0.24) * Math.min(1, rainStrength);
-      ctx.strokeStyle = `rgba(203, 218, 236, ${alpha.toFixed(3)})`;
-      ctx.lineWidth = 0.9 + depth * 0.75;
-      ctx.beginPath();
-      ctx.moveTo(sx, sy);
-      ctx.lineTo(sx + slantX * lenScale, sy + fallY * lenScale);
-      ctx.stroke();
+      const drewStreak = drawVfxSprite(
+        ctx,
+        vfxPack,
+        'rainStreak',
+        sx + dx * 0.5,
+        sy + dy * 0.5,
+        (4.5 + depth * 3.5),
+        Math.hypot(dx, dy) * 1.35,
+        slantAngle,
+        alpha * 1.45
+      );
+      if (!drewStreak) {
+        ctx.strokeStyle = `rgba(203, 218, 236, ${alpha.toFixed(3)})`;
+        ctx.lineWidth = 0.9 + depth * 0.75;
+        ctx.beginPath();
+        ctx.moveTo(sx, sy);
+        ctx.lineTo(sx + dx, sy + dy);
+        ctx.stroke();
+      }
     }
 
-    // Layer 2: Damp spray & micro-splash droplets popping softly in the rain mist
+    // Layer 2: Damp spray & micro-splash droplets (swappable via vfx.rainSplash)
     const splashCount = Math.round(12 + rainStrength * 8);
     for (let i = 0; i < splashCount; i++) {
       const cycle = (timeSec * (1.2 + (i % 4) * 0.28) + i * 0.37) % 1;
@@ -3258,14 +3556,27 @@ function drawWeatherDecorativeParticles(
       const rySeed = Math.sin(stepIdx * 269.5 + i * 183.3) * 43758.5453;
       const sx = (rxSeed - Math.floor(rxSeed)) * width;
       const sy = (rySeed - Math.floor(rySeed)) * height;
-      const splashAlpha = baseAlpha * (1 - cycle) * 0.24 * Math.min(1, rainStrength);
+      const splashAlpha = baseAlpha * (1 - cycle) * 0.26 * Math.min(1, rainStrength);
       const rad = 1.5 + cycle * 7.5;
 
-      ctx.strokeStyle = `rgba(224, 242, 254, ${splashAlpha.toFixed(3)})`;
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.arc(sx, sy, rad, Math.PI * 1.15, Math.PI * 1.85);
-      ctx.stroke();
+      const drewSplash = drawVfxSprite(
+        ctx,
+        vfxPack,
+        'rainSplash',
+        sx,
+        sy,
+        rad * 2.6,
+        rad * 1.7,
+        0,
+        splashAlpha * 1.6
+      );
+      if (!drewSplash) {
+        ctx.strokeStyle = `rgba(224, 242, 254, ${splashAlpha.toFixed(3)})`;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(sx, sy, rad, Math.PI * 1.15, Math.PI * 1.85);
+        ctx.stroke();
+      }
     }
 
     ctx.restore();
@@ -3275,7 +3586,7 @@ function drawWeatherDecorativeParticles(
   // weatherType === 'snowstorm' (and active whiteout_squall)
   const stormStrength = Math.max(0.45, Math.min(1.35, intensity));
 
-  // Layer 1: Sweeping translucent spindrift snow-vortex ribbons
+  // Layer 1: Sweeping translucent spindrift snow-vortex ribbons (swappable via vfx.ambientSpindrift / vfx.windStreak)
   const swirlBands = Math.round(3 + stormStrength * 2.5);
   ctx.lineCap = 'round';
   for (let b = 0; b < swirlBands; b++) {
@@ -3291,20 +3602,35 @@ function drawWeatherDecorativeParticles(
     const curl = Math.sin(timeSec * 1.8 + b * 1.6) * 28;
     const alpha = baseAlpha * (0.08 + stormStrength * 0.08);
 
-    ctx.strokeStyle = `rgba(241, 248, 255, ${alpha.toFixed(3)})`;
-    ctx.lineWidth = 6 + (b % 2) * 5;
-    ctx.beginPath();
-    ctx.moveTo(baseX, baseY);
-    ctx.quadraticCurveTo(
-      baseX + dir * ribbonLen * 0.55,
-      baseY + curl,
-      baseX + dir * ribbonLen,
-      baseY - curl * 0.45 + 16
+    const drewRibbon = drawVfxSprite(
+      ctx,
+      vfxPack,
+      'ambientSpindrift',
+      baseX + dir * ribbonLen * 0.5,
+      baseY,
+      ribbonLen * 1.35,
+      48 + (b % 2) * 16,
+      dir * 0.06,
+      alpha * 2.2,
+      dir,
+      1
     );
-    ctx.stroke();
+    if (!drewRibbon) {
+      ctx.strokeStyle = `rgba(241, 248, 255, ${alpha.toFixed(3)})`;
+      ctx.lineWidth = 6 + (b % 2) * 5;
+      ctx.beginPath();
+      ctx.moveTo(baseX, baseY);
+      ctx.quadraticCurveTo(
+        baseX + dir * ribbonLen * 0.55,
+        baseY + curl,
+        baseX + dir * ribbonLen,
+        baseY - curl * 0.45 + 16
+      );
+      ctx.stroke();
+    }
   }
 
-  // Layer 2: Multi-depth swirling snowflakes with helical wind eddies
+  // Layer 2: Multi-depth swirling snowflakes with helical wind eddies (swappable via vfx.snowFlake)
   const flakeCount = Math.round(44 + stormStrength * 28);
   for (let i = 0; i < flakeCount; i++) {
     const s1 = Math.sin(i * 17.31 + 0.5) * 41231.7;
@@ -3312,12 +3638,11 @@ function drawWeatherDecorativeParticles(
     const s2 = Math.sin(i * 63.79 + 1.9) * 28417.3;
     const f2 = s2 - Math.floor(s2);
 
-    const layer = i % 3; // 0 = far fine snow, 1 = mid swirl, 2 = foreground fluffy flakes
+    const layer = i % 3;
     const depth = layer === 0 ? 0.42 : layer === 1 ? 0.78 : 1.18;
     const windDriftX = (windForce * 165 + (windForce >= 0 ? 48 : -48)) * depth;
     const fallSpeedY = (68 + f2 * 52 + stormStrength * 28) * depth;
 
-    // Helical vortex swirl displacement unique to each flake
     const swirlFreq = 1.45 + f1 * 1.9;
     const swirlPhase = timeSec * swirlFreq + i * 1.37;
     const swirlRadiusX = (14 + f2 * 24) * depth * Math.min(1.25, stormStrength);
@@ -3342,18 +3667,30 @@ function drawWeatherDecorativeParticles(
       (layer === 0 ? 0.34 : layer === 1 ? 0.56 : 0.72) *
       Math.min(1.1, 0.6 + stormStrength * 0.45);
 
-    // Soft frosted outer bloom for foreground swirling flakes
-    if (layer === 2) {
-      ctx.fillStyle = `rgba(224, 242, 254, ${(alpha * 0.3).toFixed(3)})`;
+    const drewFlake = drawVfxSprite(
+      ctx,
+      vfxPack,
+      'snowFlake',
+      sx,
+      sy,
+      r * 3.4,
+      r * 3.4,
+      swirlPhase * 0.5,
+      alpha
+    );
+    if (!drewFlake) {
+      if (layer === 2) {
+        ctx.fillStyle = `rgba(224, 242, 254, ${(alpha * 0.3).toFixed(3)})`;
+        ctx.beginPath();
+        ctx.arc(sx, sy, r * 2.05, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      ctx.fillStyle = `rgba(248, 250, 252, ${alpha.toFixed(3)})`;
       ctx.beginPath();
-      ctx.arc(sx, sy, r * 2.05, 0, Math.PI * 2);
+      ctx.arc(sx, sy, r, 0, Math.PI * 2);
       ctx.fill();
     }
-
-    ctx.fillStyle = `rgba(248, 250, 252, ${alpha.toFixed(3)})`;
-    ctx.beginPath();
-    ctx.arc(sx, sy, r, 0, Math.PI * 2);
-    ctx.fill();
   }
 
   ctx.restore();
@@ -3397,20 +3734,19 @@ function solveNaturalLimbIK(
   isHand: boolean,
   isLeft: boolean,
   torsoX: number,
-  dropKnee = 0
+  dropKnee = 0,
+  allowElasticStretch = true
 ): { joint: Vec2; end: Vec2 } {
-  // Elastic anatomical reach-preserving extension:
-  // When a hold sits slightly beyond nominal (len1 + len2), smoothly extend both limb segments
-  // proportionally instead of ripping the shoulder/hip off the torso or leaving a floating gap.
+  // Elastic anatomical reach-preserving extension (disabled during SUMMIT so limbs strictly keep rigid bone lengths)
   const rawDx = target.x - root.x;
   const rawDy = target.y - root.y;
   const rawDist = Math.hypot(rawDx, rawDy);
   const nominalMax = (len1 + len2) * 0.992;
   let effLen1 = len1;
   let effLen2 = len2;
-  if (rawDist > nominalMax && rawDist > 0.001) {
-    // Keep a tiny natural athletic bend (~173 deg) even at full extension
-    const scale = (rawDist / nominalMax) * 1.006;
+  if (allowElasticStretch && rawDist > nominalMax && rawDist > 0.001) {
+    // Cap elastic extension gently (<= 1.12x) to prevent grotesque rubber-limb stretching
+    const scale = Math.min(1.12, (rawDist / nominalMax) * 1.006);
     effLen1 = len1 * scale;
     effLen2 = len2 * scale;
   }
@@ -3656,11 +3992,11 @@ function drawClimber(
 
   const targetTwist =
     phase === 'SUMMIT'
-      ? 0.08
+      ? Math.max(-0.5, Math.min(0.5, climber.hipTwist ?? 0.08))
       : Math.max(-1, Math.min(1, (climber.hipTwist ?? 0) + (targetDropR - targetDropL) * 0.34));
   const targetWallHug =
     phase === 'SUMMIT'
-      ? 0.2
+      ? Math.max(0.06, Math.min(0.45, climber.wallHug ?? 0.14))
       : Math.max(0, Math.min(1, (climber.wallHug ?? 0.5) + Math.max(targetDropL, targetDropR) * 0.28));
   const targetWaistShiftX =
     phase === 'SUMMIT' ? 0 : rawPelvisX * 0.34 + (targetDropR - targetDropL) * 4.5;
@@ -3747,6 +4083,7 @@ function drawClimber(
   const hipMidX = (joints.leftHip.x + joints.rightHip.x) * 0.5;
   const shoulderMidX = (joints.leftShoulder.x + joints.rightShoulder.x) * 0.5;
 
+  const allowElasticLimbStretch = phase !== 'SUMMIT';
   const lhIK = solveNaturalLimbIK(
     joints.leftShoulder,
     lhPos,
@@ -3754,7 +4091,9 @@ function drawClimber(
     ARM_LOWER,
     true,
     true,
-    shoulderMidX
+    shoulderMidX,
+    0,
+    allowElasticLimbStretch
   );
   const rhIK = solveNaturalLimbIK(
     joints.rightShoulder,
@@ -3763,7 +4102,9 @@ function drawClimber(
     ARM_LOWER,
     true,
     false,
-    shoulderMidX
+    shoulderMidX,
+    0,
+    allowElasticLimbStretch
   );
   const lfIK = solveNaturalLimbIK(
     joints.leftHip,
@@ -3773,7 +4114,8 @@ function drawClimber(
     false,
     true,
     hipMidX,
-    visDropL
+    visDropL,
+    allowElasticLimbStretch
   );
   const rfIK = solveNaturalLimbIK(
     joints.rightHip,
@@ -3783,7 +4125,8 @@ function drawClimber(
     false,
     false,
     hipMidX,
-    visDropR
+    visDropR,
+    allowElasticLimbStretch
   );
 
   if (activeStrainFx) {

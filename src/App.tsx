@@ -44,6 +44,7 @@ import {
 import { renderGameFrame } from './game/renderer';
 import {
   ArtPackId,
+  getDecodedArtPackForRoute,
   HoldOverlayUrls,
   preloadArtPackForRoute,
   SpecialHoldUrls,
@@ -51,6 +52,13 @@ import {
 } from './visual/artPackAssets';
 import { AssetRegistry } from './visual/AssetRegistry';
 import { preloadCharacterArtPack } from './visual/characterArtAssets';
+import { resetWeatherTransition } from './visual/weatherTransitions';
+import {
+  applySummitClimberChoreography,
+  captureSummitPoseSnapshot,
+  computeSummitOpticalTargets,
+  SummitPoseSnapshot,
+} from './visual/summitSequence';
 import {
   ActiveWeather,
   AltitudeDifficultyBin,
@@ -225,7 +233,7 @@ export interface UiArtAssetMap {
   ratingStamps?: Partial<Record<OverallRatingGrade, string>>;
 }
 
-/** Weather, particle & climbing feedback VFX texture slots */
+/** Weather, transition, particle, climbing feedback & per-route ambient detail VFX texture slots */
 export type VfxSpriteKey =
   | 'chalkPuff'
   | 'sparkPiton'
@@ -235,7 +243,23 @@ export type VfxSpriteKey =
   | 'rainStreak'
   | 'mistVeil'
   | 'windStreak'
-  | 'dynoRing';
+  | 'dynoRing'
+  | 'sunShaft'
+  | 'rainSplash'
+  | 'weatherFrontCloud'
+  | 'ambientBird'
+  | 'ambientAutumnLeaf'
+  | 'ambientWaterfallMist'
+  | 'ambientCliffGrass'
+  | 'ambientWaterDrip'
+  | 'ambientCloudWisp'
+  | 'ambientStardust'
+  | 'ambientSandDust'
+  | 'ambientAuroraRibbon'
+  | 'ambientIceCrystal'
+  | 'ambientSpindrift'
+  | 'ambientBannerPlume'
+  | 'ambientDawnMote';
 
 export type VfxArtAssetMap = Partial<Record<VfxSpriteKey, string>>;
 
@@ -249,6 +273,8 @@ export interface RouteArtOverride {
     overlays?: Partial<HoldOverlayUrls>;
     special?: Partial<SpecialHoldUrls>;
   };
+  /** Optional per-route VFX & ambient detail texture overrides (e.g., route-specific bird/cloud/mist) */
+  vfx?: VfxArtAssetMap;
   atmosphere?: VisualAtmosphereGrade;
 }
 
@@ -920,6 +946,7 @@ export default function App() {
   const incidentAppliedWetRef = useRef(false);
   const tremorSoundAccRef = useRef(0);
   const ropeCatchTimeRef = useRef(0);
+  const lastRopeCatchDampingRef = useRef<number | null>(null);
 
   const stallTimerRef = useRef(0);
   const failSpotsByRouteRef = useRef<Record<string, number[]>>({});
@@ -933,6 +960,8 @@ export default function App() {
   const summitProgressRef = useRef(0);
   const summitStageRef = useRef<SummitSequenceStage>('PAN_REVEAL');
   const summitCamStartRef = useRef<{ x: number; y: number; zoom: number } | null>(null);
+  const summitPoseStartRef = useRef<SummitPoseSnapshot | null>(null);
+  const summitZoomSpeedRef = useRef(0);
   const fallStartYRef = useRef(0);
   const fallStartPosRef = useRef<Vec2>({ x: 0, y: 0 });
   const pointerDownPosRef = useRef<Vec2 | null>(null);
@@ -985,6 +1014,7 @@ export default function App() {
   const [statusBanner, setStatusBanner] = useState<string | null>(null);
   const [summitProgress, setSummitProgress] = useState(0);
   const [summitStage, setSummitStage] = useState<SummitSequenceStage>('PAN_REVEAL');
+  const [summitZoomSpeed, setSummitZoomSpeed] = useState(0);
   const [betaPins, setBetaPins] = useState<string[]>([]);
   const [betaCursor, setBetaCursor] = useState(0);
   const [roadbookRecord, setRoadbookRecord] = useState<RouteRoadbookRecord | null>(null);
@@ -1284,6 +1314,17 @@ export default function App() {
         }
       }
 
+      // Enforce physical inertial damping on any residual ropeCatch velocity when recording a fall
+      // so the climber never whips upward at arrest/settlement, decaying purely downward under gravity.
+      const activeRopeCatchDamping =
+        climber.ropeCatch?.inertiaDamping ?? lastRopeCatchDampingRef.current;
+      if (outcome === 'FALLEN') {
+        const dampingCoeff = Math.max(3.6, activeRopeCatchDamping ?? 4.8);
+        const residualDamp = Math.exp(-dampingCoeff * 0.16);
+        climber.torsoVel.x *= residualDamp;
+        climber.torsoVel.y = Math.max(0, climber.torsoVel.y * residualDamp);
+      }
+
       const review: RoadbookAttemptReview = {
         timestamp: now,
         outcome,
@@ -1301,6 +1342,10 @@ export default function App() {
         minHealth: Math.round(Math.min(attemptMinHealthRef.current, climber.health)),
         minStamina: Math.round(Math.min(attemptMinStaminaRef.current, climber.stamina)),
         healthDrops: attemptHealthDropsRef.current.slice(-32),
+        ropeCatchDamping:
+          activeRopeCatchDamping !== null
+            ? Number(activeRopeCatchDamping.toFixed(2))
+            : undefined,
       };
 
       const nextHotspots: RoadbookFallHotspot[] = [...(baseRecord.fallHotspots ?? [])];
@@ -1366,6 +1411,7 @@ export default function App() {
       const freshWorld = generateMountain(route);
       worldRef.current = freshWorld;
       weatherRef.current = getWeatherAtAltitude(freshWorld, 0, 0);
+      resetWeatherTransition(weatherRef.current);
       lastWeatherTypeRef.current = weatherRef.current.type;
       setNewlyUnlockedBadge(false);
       const map = new Map<string, Hold>();
@@ -1409,6 +1455,7 @@ export default function App() {
       attemptMinHealthRef.current = freshClimber.health;
       attemptMinStaminaRef.current = freshClimber.stamina;
       lastStaminaWarnPosRef.current = null;
+      lastRopeCatchDampingRef.current = null;
       attemptRecordedRef.current = false;
       const hasPrevAttempt = Boolean(loadedRecord?.lastAttempt);
       showAttemptReviewRef.current = hasPrevAttempt;
@@ -1422,8 +1469,11 @@ export default function App() {
       summitProgressRef.current = 0;
       summitStageRef.current = 'PAN_REVEAL';
       summitCamStartRef.current = null;
+      summitPoseStartRef.current = null;
+      summitZoomSpeedRef.current = 0;
       setSummitProgress(0);
       setSummitStage('PAN_REVEAL');
+      setSummitZoomSpeed(0);
       preloadArtPackForRoute(route);
 
       const enterRoadbookDirectly = Boolean(options?.skipIntro && supportsBook);
@@ -2291,16 +2341,19 @@ export default function App() {
       bannerTimerRef.current = null;
     }
     setStatusBanner(null);
-    // Snapshot live camera coordinates so the summit pan begins with zero jump
+    // Snapshot live camera coordinates and exact climbing pose so topping-out begins with zero jump
     summitCamStartRef.current = {
       x: cameraRef.current.x,
       y: cameraRef.current.y,
       zoom: cameraRef.current.zoom,
     };
+    summitPoseStartRef.current = captureSummitPoseSnapshot(climber);
+    summitZoomSpeedRef.current = 0;
     summitProgressRef.current = 0;
     summitStageRef.current = 'PAN_REVEAL';
     setSummitProgress(0);
     setSummitStage('PAN_REVEAL');
+    setSummitZoomSpeed(0);
     phaseRef.current = 'SUMMIT';
     setPhase('SUMMIT');
     const style = recordSummitSuccess(world.route, statsRef.current.fallsCaught);
@@ -2309,22 +2362,10 @@ export default function App() {
     );
 
     const peakTopY = summitLedge.y - 15;
-    climber.torsoPos = { x: summitLedge.x, y: peakTopY - 80 };
     climber.torsoVel = { x: 0, y: 0 };
-    climber.leanAngle = 0;
-    climber.lookAngle = -0.22;
-    climber.pelvisOffset = { x: 0, y: 0 };
-    climber.hipTwist = 0.08;
-    climber.wallHug = 0.2;
-    climber.limbs.leftFoot.pos = { x: summitLedge.x - 10, y: peakTopY - 2 };
-    climber.limbs.rightFoot.pos = { x: summitLedge.x + 11, y: peakTopY - 2 };
-    climber.limbs.leftHand.pos = { x: summitLedge.x - 18, y: peakTopY - 86 };
-    climber.limbs.rightHand.pos = { x: summitLedge.x + 18, y: peakTopY - 86 };
     climber.routeHistory.push({ x: summitLedge.x, y: peakTopY - 48 });
     recordCurrentAttempt('SUMMIT');
-    spawnParticles(summitLedge.x, peakTopY - 56, 22, 'spark', '#FDE68A', 96);
     soundEngine.playSummitChord();
-    soundEngine.playBreath(0.36, 'recovery', climberGenderRef.current);
     triggerHapticPreset('summit');
   }, [recordCurrentAttempt, recordSummitSuccess, spawnParticles]);
 
@@ -4514,15 +4555,22 @@ export default function App() {
                     // Strictly match actual catch distance so initial stretch is 0px (ZERO upward snap!)
                     const catchDist = dist(climber.torsoPos, catchingPiton);
                     const initialLen = Math.max(54, catchDist);
+                    const impactSpeed = Math.hypot(climber.torsoVel.x, climber.torsoVel.y);
+                    // High initial inertial damping absorbs fall shock cleanly without elastic upward recoil
+                    const initialInertiaDamping = Math.min(8.6, Math.max(5.0, 5.0 + impactSpeed * 0.01));
                     climber.ropeCatch = {
                       pitonId: catchingPiton.id,
                       anchor: { x: catchingPiton.x, y: catchingPiton.y },
                       ropeLen: initialLen,
+                      baseRopeLen: initialLen,
+                      inertiaDamping: initialInertiaDamping,
+                      minArrestY: climber.torsoPos.y,
                     };
+                    lastRopeCatchDampingRef.current = initialInertiaDamping;
                     ropeCatchTimeRef.current = 0;
-                    // Absorb sudden arrest energy smoothly so climber transitions into a heavy pendulum
-                    climber.torsoVel.y = Math.min(130, Math.max(12, climber.torsoVel.y * 0.45));
-                    climber.torsoVel.x = Math.max(-75, Math.min(75, climber.torsoVel.x * 0.45));
+                    // Absorb sudden arrest energy strictly downward so climber enters a heavy damped pendulum
+                    climber.torsoVel.y = Math.min(92, Math.max(8, climber.torsoVel.y * 0.34));
+                    climber.torsoVel.x = Math.max(-56, Math.min(56, climber.torsoVel.x * 0.38));
                     const prevCatchHealth = climber.health;
                     climber.health = Math.max(0, climber.health - Math.min(22, 6 + fallDist * 0.04));
                     const catchHealthLost = Math.round(prevCatchHealth - climber.health);
@@ -4605,74 +4653,90 @@ export default function App() {
                 }
               }
 
-              // 2. Physically constrained inextensible pendulum rope arrest (ZERO elastic slingshot or snap!)
+              // 2. Pure gravity-downward damped pendulum arrest (ZERO upward whip or elastic recoil!)
               if (climber.isFalling && climber.ropeCatch) {
                 const rc = climber.ropeCatch;
                 ropeCatchTimeRef.current += fallStepDt;
 
-                const curSpdBefore = Math.hypot(climber.torsoVel.x, climber.torsoVel.y);
-                // Gently ease slack only at low speed so rope never yanks climber upward
-                if (rc.ropeLen > 86 && curSpdBefore < 95) {
-                  rc.ropeLen = Math.max(86, rc.ropeLen - 14 * fallStepDt);
-                }
+                // Relax physical inertial damping coefficient from high shock-arrest (~5.0..8.6)
+                // into steady heavy gravity-pendulum decay (~3.6) so swing settles organically.
+                const targetPendulumDamp = 3.6;
+                rc.inertiaDamping +=
+                  (targetPendulumDamp - rc.inertiaDamping) * Math.min(1, fallStepDt * 4.2);
+                lastRopeCatchDampingRef.current = rc.inertiaDamping;
 
+                const prevArrestY = Math.max(climber.torsoPos.y, rc.minArrestY ?? climber.torsoPos.y);
                 const dx = rc.anchor.x - climber.torsoPos.x;
                 const dy = rc.anchor.y - climber.torsoPos.y;
                 const d = Math.hypot(dx, dy) || 1;
+
                 if (d > rc.ropeLen) {
                   const nx = dx / d; // points from climber toward piton anchor
                   const ny = dy / d;
-                  const stretch = d - rc.ropeLen;
-                  // Bounded nonlinear position projection (<= 4.5px per substep -> zero sudden upward snap)
-                  const rawProj = stretch * (0.42 / (1 + stretch * 0.055));
-                  const proj = Math.min(4.5, rawProj);
-                  climber.torsoPos.x += nx * proj;
-                  climber.torsoPos.y += ny * proj;
+                  // Perpendicular pendulum swing tangent (chosen with positive horizontal X)
+                  const tx = -ny;
+                  const ty = nx;
 
-                  // Nonlinear collision restitution: high-speed arrest collapses cleanly to zero bounce
-                  const vRad = climber.torsoVel.x * nx + climber.torsoVel.y * ny;
-                  if (vRad < 0) {
-                    const arrestRestitution = computeNonlinearRestitution(-vRad, stretch, 0.04);
-                    const cancelFactor = Math.min(1, 1 - arrestRestitution * 0.25);
-                    climber.torsoVel.x -= nx * vRad * cancelFactor;
-                    climber.torsoVel.y -= ny * vRad * cancelFactor;
+                  // Allow subtle downward dynamic nylon elongation (up to +12px) to absorb shock,
+                  // never winching or snapping the climber upward.
+                  const maxDynamicLen = (rc.baseRopeLen ?? rc.ropeLen) + 12;
+                  if (rc.ropeLen < maxDynamicLen) {
+                    const give = Math.min(d - rc.ropeLen, 36 * fallStepDt);
+                    rc.ropeLen = Math.min(maxDynamicLen, rc.ropeLen + give);
                   }
-                  // Bleed off inbound velocity nonlinearly so rope never catapults climber above piton
-                  if (vRad > 14) {
-                    const retainRatio = computeNonlinearRestitution(vRad, stretch, 0.22);
-                    const excessIn = (vRad - 14) * (1 - retainRatio);
-                    climber.torsoVel.x -= nx * excessIn;
-                    climber.torsoVel.y -= ny * excessIn;
+
+                  const stretch = Math.max(0, d - rc.ropeLen);
+                  if (stretch > 0.001) {
+                    const proj = Math.min(4.0, stretch * 0.52);
+                    climber.torsoPos.x += nx * proj;
+                    // Strictly prevent position projection from ever lifting torso upward against gravity
+                    climber.torsoPos.y = Math.max(prevArrestY, climber.torsoPos.y + ny * proj);
                   }
+
+                  // Purely inelastic radial arrest (zero bounce toward piton) + inertial damping on pendulum tangent
+                  const vTan = climber.torsoVel.x * tx + climber.torsoVel.y * ty;
+                  const tanDamp = Math.exp(-rc.inertiaDamping * fallStepDt);
+                  const dampedTan = vTan * tanDamp;
+
+                  // Reconstruct velocity from damped tangent only (radial component strictly 0)
+                  climber.torsoVel.x = tx * dampedTan;
+                  // Pure gravity-downward decay: clamp vertical velocity >= 0 so arc never whips upward
+                  climber.torsoVel.y = Math.max(0, Math.min(165, ty * dampedTan));
+                } else {
+                  // Slightly slack inside arc: apply inertial horizontal drag & smooth downward gravity settle
+                  const slackDampX = Math.exp(-(rc.inertiaDamping * 0.68) * fallStepDt);
+                  const slackDampY = Math.exp(-2.2 * fallStepDt);
+                  climber.torsoVel.x *= slackDampX;
+                  climber.torsoVel.y = Math.max(0, Math.min(175, climber.torsoVel.y * slackDampY));
                 }
 
-                // Frame-rate-independent pendulum damping + strict speed & upward-velocity cap
-                const damp = Math.exp(-3.8 * fallStepDt);
-                climber.torsoVel.x *= damp;
-                climber.torsoVel.y *= damp;
-                climber.torsoVel.y = Math.max(-18, Math.min(200, climber.torsoVel.y));
+                // Track lowest settled Y so subsequent constraints never bounce the climber upward
+                rc.minArrestY = Math.max(prevArrestY, climber.torsoPos.y);
+
+                // Bound total swing speed while keeping motion strictly downward-weighted
                 const spd = Math.hypot(climber.torsoVel.x, climber.torsoVel.y);
-                if (spd > 190) {
-                  const s = 190 / spd;
+                if (spd > 175) {
+                  const s = 175 / spd;
                   climber.torsoVel.x *= s;
                   climber.torsoVel.y *= s;
                 }
-                // Never allow rope swing to shoot above the piton anchor
                 if (climber.torsoPos.y < rc.anchor.y + 30) {
                   climber.torsoPos.y = rc.anchor.y + 30;
                   climber.torsoVel.y = Math.max(0, climber.torsoVel.y);
                 }
-                climber.leanAngle = Math.max(-0.4, Math.min(0.4, -climber.torsoVel.x * 0.002));
+
+                // Smoothly damped pendulum body tilt (no sudden rotational whip)
+                const targetLean = Math.max(-0.28, Math.min(0.28, -climber.torsoVel.x * 0.0022));
+                climber.leanAngle += (targetLean - climber.leanAngle) * Math.min(1, fallStepDt * 8.5);
 
                 const settledSpeed = Math.hypot(climber.torsoVel.x, climber.torsoVel.y);
                 if (
                   (ropeCatchTimeRef.current >= 0.45 &&
-                    settledSpeed < 30 &&
+                    settledSpeed < 24 &&
                     climber.torsoPos.y >= rc.anchor.y + 36) ||
-                  ropeCatchTimeRef.current >= 1.7
+                  ropeCatchTimeRef.current >= 1.65
                 ) {
                   climber.isFalling = false;
-                  climber.ropeCatch = null;
                   climber.torsoVel = { x: 0, y: 0 };
                   climber.leanAngle = 0;
                   ropeCatchTimeRef.current = 0;
@@ -4681,9 +4745,11 @@ export default function App() {
                     const fallDiag = `${lastSlipNoteRef.current ?? '多次冲坠损耗体力'}，最终伤重不支`;
                     setFallDiagnosis(fallDiag);
                     recordCurrentAttempt('FALLEN', fallDiag);
+                    climber.ropeCatch = null;
                     phaseRef.current = 'FALLEN';
                     setPhase('FALLEN');
                   } else {
+                    climber.ropeCatch = null;
                     // Pick mutually reachable recovery holds around actual hanging spot (no cross-wall teleport!)
                     const hangHandTargetY = climber.torsoPos.y - 44;
                     const allCandidates = world.holds
@@ -4749,11 +4815,20 @@ export default function App() {
             }
 
             if (climber.isFalling) {
+              const isRopeHung = Boolean(climber.ropeCatch);
+              const swingLagX = isRopeHung
+                ? Math.max(-12, Math.min(12, -climber.torsoVel.x * 0.09))
+                : 0;
+              const limbFollow = Math.min(1, dt * (isRopeHung ? 8.5 : 12));
               (['leftHand', 'rightHand', 'leftFoot', 'rightFoot'] as LimbId[]).forEach((id) => {
                 const l = climber.limbs[id];
                 l.holdId = null;
-                l.pos.x += (climber.torsoPos.x + (l.isLeft ? -18 : 18) - l.pos.x) * Math.min(1, dt * 12);
-                l.pos.y += (climber.torsoPos.y + (l.isHand ? -26 : 32) - l.pos.y) * Math.min(1, dt * 12);
+                const targetX = climber.torsoPos.x + (l.isLeft ? -17 : 17) + swingLagX;
+                const targetY =
+                  climber.torsoPos.y +
+                  (l.isHand ? (isRopeHung ? -16 : -26) : isRopeHung ? 38 : 32);
+                l.pos.x += (targetX - l.pos.x) * limbFollow;
+                l.pos.y += (targetY - l.pos.y) * limbFollow;
               });
             }
           }
@@ -4781,37 +4856,37 @@ export default function App() {
           cam.targetZoom = responsiveZoom * readZoomMult;
         }
       } else if (curPhase === 'SUMMIT') {
-        summitProgressRef.current = Math.min(1, summitProgressRef.current + dt * 0.14);
+        summitProgressRef.current = Math.min(1, summitProgressRef.current + dt * 0.125);
         const sp = summitProgressRef.current;
         const summitLedge = world.ledges.find((l) => l.isSummit);
         const peakX = summitLedge?.x ?? 0;
         const peakTopY = (summitLedge?.y ?? -mountainHeight) - 15;
 
-        // Animate triumphant standing celebration directly on the highest summit point
-        const riseRaw = Math.min(1, sp / 0.14);
-        const smoothRise = riseRaw * riseRaw * riseRaw * (riseRaw * (riseRaw * 6 - 15) + 10);
-        const cheerWave = Math.sin(timeSec * 2.4) * 2.2;
-        const swayX = Math.sin(timeSec * 1.25) * 1.3;
-        climber.torsoPos = { x: peakX + swayX * 0.35, y: peakTopY - 80 };
-        climber.leanAngle = Math.sin(timeSec * 1.25) * 0.025;
-        climber.lookAngle = -0.22 + Math.sin(timeSec * 1.7) * 0.035;
-        climber.hipTwist = 0.06;
-        climber.wallHug = 0.2;
-        climber.pelvisOffset = { x: swayX * 0.35, y: 0 };
-        climber.limbs.leftFoot.pos = { x: peakX - 10, y: peakTopY - 2 };
-        climber.limbs.rightFoot.pos = { x: peakX + 11, y: peakTopY - 2 };
-        climber.limbs.leftHand.pos = {
-          x: peakX - (18 + 8 * smoothRise) + swayX * 0.5,
-          y: peakTopY - (86 + 38 * smoothRise) + cheerWave * 0.5,
-        };
-        climber.limbs.rightHand.pos = {
-          x: peakX + (18 + 9 * smoothRise) + swayX * 0.5,
-          y: peakTopY - (86 + 42 * smoothRise) - cheerWave * 0.5,
-        };
+        // 4-Beat Natural Alpine Topping-Out & Standing Triumph Choreography (zero teleport)
+        applySummitClimberChoreography(
+          climber,
+          summitPoseStartRef.current,
+          peakX,
+          peakTopY,
+          sp,
+          timeSec,
+          windForce,
+          {
+            onMantleFootPlant: (fx, fy) => {
+              spawnParticles(fx, fy, 10, 'chalk', '#F8FAFC', 46);
+            },
+            onStandBreath: () => {
+              soundEngine.playBreath(0.38, 'recovery', climberGenderRef.current);
+            },
+            onTriumphPeak: (tx, ty) => {
+              spawnParticles(tx, ty, 20, 'spark', '#FDE68A', 92);
+            },
+          }
+        );
 
-        // Stage 1 (PAN_REVEAL): Smooth crest beat followed by panoramic pan & exponential optical pull-back
-        // unveiling the full mountain silhouette before transitioning to the inspirational quote.
-        const responsiveSummitZoom = Math.min(1.04, Math.max(0.68, width / 440));
+        // Stage 1 (PAN_REVEAL): Unified Continuous Optical Camera Pull-Back
+        // Locks the live 2.5D summit crest directly onto wideEnding's (wideFocalX, wideFocalY)
+        // with identical logarithmic zoom velocity so the pull-back reads as one unbroken lens.
         const fitHeightZoom = (height * 0.72) / (mountainHeight + 240);
         const fitWidthZoom = (width * 0.72) / 560;
         const fullMountainZoom = Math.max(0.14, Math.min(fitHeightZoom, fitWidthZoom, 0.48));
@@ -4824,35 +4899,22 @@ export default function App() {
         } else {
           const snap = summitCamStartRef.current ?? {
             x: peakX,
-            y: peakTopY - 56,
-            zoom: Math.min(0.96, responsiveSummitZoom * 0.92),
+            y: peakTopY - 52,
+            zoom: Math.min(1.02, Math.max(0.72, width / 420)),
           };
-          const crestTargetX = peakX;
-          const crestTargetY = peakTopY - 56;
-          const crestTargetZoom = Math.min(0.96, responsiveSummitZoom * 0.92);
-
-          // Beat A (0.00 -> 0.14): Gentle framing glide onto the climber standing on the summit crest
-          const crestRaw = Math.max(0, Math.min(1, sp / 0.14));
-          const crestU = crestRaw * crestRaw * crestRaw * (crestRaw * (crestRaw * 6 - 15) + 10);
-          const framedX = snap.x + (crestTargetX - snap.x) * crestU;
-          const framedY = snap.y + (crestTargetY - snap.y) * crestU;
-          const framedZoom = snap.zoom * Math.pow(crestTargetZoom / Math.max(0.1, snap.zoom), crestU);
-
-          // Beat B (0.14 -> 0.86): Continuous quintic panoramic pan + exponential zoom-out
-          // revealing the full mountain face & silhouette before settling cleanly.
-          const panRaw = Math.max(0, Math.min(1, (sp - 0.14) / 0.72));
-          const panU = panRaw * panRaw * panRaw * (panRaw * (panRaw * 6 - 15) + 10);
-
-          const panoramicZoom = Math.max(
-            fullMountainZoom,
-            Math.min(crestTargetZoom * 0.48, Math.max(0.24, responsiveSummitZoom * 0.36))
+          const summitArtPack = getDecodedArtPackForRoute(world.route);
+          const optical = computeSummitOpticalTargets(
+            width,
+            height,
+            peakX,
+            peakTopY,
+            sp,
+            snap,
+            summitArtPack
           );
-          const panoramicY = Math.max(crestTargetY + 140, -mountainHeight * 0.46);
-          const panoramicArcX = Math.sin(panU * Math.PI) * (-peakX * 0.18);
-
-          cam.targetX = framedX * (1 - panU) + panoramicArcX;
-          cam.targetY = framedY + (panoramicY - framedY) * panU;
-          cam.targetZoom = framedZoom * Math.pow(panoramicZoom / Math.max(0.1, framedZoom), panU);
+          cam.targetX = optical.targetX;
+          cam.targetY = optical.targetY;
+          cam.targetZoom = optical.targetZoom;
         }
 
         if (isPlayingTrailRef.current && trailPlaybackProgressRef.current !== null) {
@@ -4872,38 +4934,42 @@ export default function App() {
         cam.targetZoom = previewZoom;
       }
 
-      const summitPullBlend =
-        curPhase === 'SUMMIT'
-          ? Math.max(0, Math.min(1, (summitProgressRef.current - 0.14) / 0.36))
-          : 0;
-      const camLerp =
-        curPhase === 'SUMMIT'
-          ? isPlayingTrailRef.current
+      const prevCamZoom = cam.zoom;
+      if (curPhase === 'SUMMIT' && !isPlayingTrailRef.current) {
+        // Critically-damped tight tracking onto the C² quintic optical pull-back curve (zero lag mismatch)
+        const followAlpha = 1 - Math.exp(-9.5 * dt);
+        cam.x += (cam.targetX - cam.x) * followAlpha;
+        cam.y += (cam.targetY - cam.y) * followAlpha;
+        cam.zoom += (cam.targetZoom - cam.zoom) * followAlpha;
+        const instantLogZoomSpeed =
+          Math.abs(Math.log(Math.max(0.05, cam.zoom) / Math.max(0.05, prevCamZoom))) /
+          Math.max(0.001, dt);
+        summitZoomSpeedRef.current +=
+          (instantLogZoomSpeed - summitZoomSpeedRef.current) * (1 - Math.exp(-8.5 * dt));
+      } else {
+        const camLerp =
+          curPhase === 'SUMMIT'
             ? 2.2
-            : 2.8 - summitPullBlend * 0.55
-          : isDraggingPeekRef.current
-            ? 14
-            : 4.6;
-      const zoomLerp =
-        curPhase === 'SUMMIT'
-          ? isPlayingTrailRef.current
-            ? 2.0
-            : 2.6 - summitPullBlend * 0.55
-          : 4.2;
-      cam.x += (cam.targetX - cam.x) * Math.min(1, dt * camLerp);
-      cam.y += (cam.targetY - cam.y) * Math.min(1, dt * camLerp);
-      cam.zoom += (cam.targetZoom - cam.zoom) * Math.min(1, dt * zoomLerp);
+            : isDraggingPeekRef.current
+              ? 14
+              : 4.6;
+        const zoomLerp = curPhase === 'SUMMIT' ? 2.0 : 4.2;
+        cam.x += (cam.targetX - cam.x) * Math.min(1, dt * camLerp);
+        cam.y += (cam.targetY - cam.y) * Math.min(1, dt * camLerp);
+        cam.zoom += (cam.targetZoom - cam.zoom) * Math.min(1, dt * zoomLerp);
+        summitZoomSpeedRef.current *= Math.exp(-10 * dt);
+      }
       cam.shake = Math.max(0, cam.shake - dt * 28);
 
-      // Promote Summit sequence PAN_REVEAL -> PIONEER_REVEAL (Act 1) strictly after the panoramic pan
-      // has completed and the camera has settled onto the full mountain silhouette.
+      // Promote Summit sequence PAN_REVEAL -> PIONEER_REVEAL (Act 1) strictly after the optical pull-back
+      // has settled cleanly onto the full romantic mountain vista.
       if (curPhase === 'SUMMIT' && summitStageRef.current === 'PAN_REVEAL') {
         const sp = summitProgressRef.current;
         const cameraSettled =
-          Math.abs(cam.targetX - cam.x) < 16 &&
-          Math.abs(cam.targetY - cam.y) < 18 &&
-          Math.abs(cam.targetZoom - cam.zoom) < 0.02;
-        if ((sp >= 0.86 && cameraSettled) || sp >= 0.94) {
+          Math.abs(cam.targetX - cam.x) < 12 &&
+          Math.abs(cam.targetY - cam.y) < 14 &&
+          Math.abs(cam.targetZoom - cam.zoom) < 0.015;
+        if ((sp >= 0.9 && cameraSettled) || sp >= 0.96) {
           summitStageRef.current = 'PIONEER_REVEAL';
           setSummitStage('PIONEER_REVEAL');
         }
@@ -5014,10 +5080,12 @@ export default function App() {
       }
 
       hudSyncAcc += dt;
-      if (hudSyncAcc >= 0.07) {
+      const hudSyncInterval = curPhase === 'SUMMIT' ? 0.033 : 0.07;
+      if (hudSyncAcc >= hudSyncInterval) {
         hudSyncAcc = 0;
         if (curPhase === 'SUMMIT') {
           setSummitProgress(summitProgressRef.current);
+          setSummitZoomSpeed(summitZoomSpeedRef.current);
         }
         setHudTick((t) => (t + 1) % 100000);
       }
@@ -5399,6 +5467,7 @@ export default function App() {
           climbStyle={achievedStyle}
           summitProgress={summitProgress}
           summitStage={summitStage}
+          cameraZoomSpeed={summitZoomSpeed}
           onAdvanceSummitStage={handleAdvanceSummitStage}
           hasCheckpoint={hasCheckpoint}
           newlyUnlockedBadge={newlyUnlockedBadge}
@@ -5418,8 +5487,11 @@ export default function App() {
             summitProgressRef.current = 0;
             summitStageRef.current = 'PAN_REVEAL';
             summitCamStartRef.current = null;
+            summitPoseStartRef.current = null;
+            summitZoomSpeedRef.current = 0;
             setSummitProgress(0);
             setSummitStage('PAN_REVEAL');
+            setSummitZoomSpeed(0);
             setIsPlayingTrail(false);
             setStatusBanner(null);
             dynoFullNotifiedRef.current = false;

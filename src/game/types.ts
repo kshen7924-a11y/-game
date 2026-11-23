@@ -330,6 +330,12 @@ export interface RopeCatchState {
   pitonId: string;
   anchor: Vec2;
   ropeLen: number;
+  /** Physical inertial damping coefficient (1/s) suppressing upward whip during arrest & pendulum decay */
+  inertiaDamping: number;
+  /** Initial taut rope length at catch instant (supports slight downward dynamic stretch, never upward winch) */
+  baseRopeLen?: number;
+  /** Lowest world Y reached under gravity arrest so position constraints never snap torso upward */
+  minArrestY?: number;
 }
 
 export interface DynoFlightState {
@@ -561,6 +567,7 @@ export interface RoadbookAttemptReview {
   minHealth?: number;
   minStamina?: number;
   healthDrops?: RoadbookHealthDropRecord[];
+  ropeCatchDamping?: number;
 }
 
 export interface RoadbookFallHotspot {

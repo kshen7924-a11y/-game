@@ -22,6 +22,8 @@ interface SummitOverlayProps {
   climbStyle: ClimbStyle;
   summitProgress: number;
   summitStage?: SummitSequenceStage;
+  /** Instantaneous smoothed logarithmic camera zoom-out speed (rad/s) for dynamic depth-of-field blur */
+  cameraZoomSpeed?: number;
   onAdvanceSummitStage?: () => void;
   hasCheckpoint: boolean;
   newlyUnlockedBadge: boolean;
@@ -218,6 +220,7 @@ export function SummitOverlay({
   climbStyle,
   summitProgress,
   summitStage,
+  cameraZoomSpeed,
   onAdvanceSummitStage,
   hasCheckpoint,
   newlyUnlockedBadge,
@@ -343,46 +346,134 @@ export function SummitOverlay({
         : '完攀登顶';
 
   if (phase === 'SUMMIT') {
+    // Dynamic Layered Blur Depth-of-Field Mask driven by live camera zoom velocity across PAN_REVEAL -> PIONEER_REVEAL
+    const showLayeredDofBlur =
+      !isPlayingTrail &&
+      !hideForView &&
+      (resolvedStage === 'PAN_REVEAL' || resolvedStage === 'PIONEER_REVEAL');
+
+    // Normalized camera zoom-out velocity (0..1); gracefully falls back to analytical quintic speed bell if omitted
+    const pullWindow = Math.max(0, Math.min(1, (summitProgress - 0.24) / 0.66));
+    const fallbackSpeedNorm = Math.pow(Math.sin(pullWindow * Math.PI), 1.35);
+    const liveSpeedNorm =
+      typeof cameraZoomSpeed === 'number'
+        ? Math.max(0, Math.min(1, cameraZoomSpeed / 0.26))
+        : fallbackSpeedNorm;
+    const zoomSpeedNorm = resolvedStage === 'PAN_REVEAL' ? liveSpeedNorm : 0;
+
+    // Rack-focus transition envelope: smoothly shifts optical focus from distant peak to Act 1 foreground card
+    const rackFocusT =
+      resolvedStage === 'PIONEER_REVEAL'
+        ? stageEntered
+          ? 1
+          : 0.72
+        : Math.max(0, Math.min(1, (summitProgress - 0.8) / 0.14));
+
+    const outerBlurPx = zoomSpeedNorm * 9.2 + rackFocusT * 2.8;
+    const midBlurPx = zoomSpeedNorm * 4.2 + rackFocusT * 3.4;
+    const outerOpacity = Math.min(1, zoomSpeedNorm * 0.96 + rackFocusT * 0.72);
+    const midOpacity = Math.min(1, zoomSpeedNorm * 0.76 + rackFocusT * 0.68);
+    const radialScale = 1 + zoomSpeedNorm * 0.036;
+
+    const layeredBlurMask = showLayeredDofBlur && (outerOpacity > 0.015 || midOpacity > 0.015) ? (
+      <div
+        aria-hidden="true"
+        className="pointer-events-none fixed inset-0 z-[15] overflow-hidden"
+      >
+        {/* Layer 1: Outer Peripheral Kinetic Depth-of-Field Blur Ring (keeps summit crest crisp in center) */}
+        <div
+          className="absolute inset-0 transition-[opacity,transform] duration-200 ease-out"
+          style={{
+            opacity: outerOpacity,
+            transform: `scale(${radialScale.toFixed(4)})`,
+            backdropFilter: `blur(${outerBlurPx.toFixed(2)}px)`,
+            WebkitBackdropFilter: `blur(${outerBlurPx.toFixed(2)}px)`,
+            maskImage:
+              'radial-gradient(ellipse 56% 48% at 50% 40%, transparent 24%, rgba(0, 0, 0, 0.5) 64%, black 100%)',
+            WebkitMaskImage:
+              'radial-gradient(ellipse 56% 48% at 50% 40%, transparent 24%, rgba(0, 0, 0, 0.5) 64%, black 100%)',
+            willChange: 'opacity, transform, backdrop-filter',
+          }}
+        />
+        {/* Layer 2: Mid-Field Stepped Optical Bokeh & Rack-Focus Shift into Act 1 */}
+        <div
+          className="absolute inset-0 transition-opacity duration-500 ease-out"
+          style={{
+            opacity: midOpacity,
+            backdropFilter: `blur(${midBlurPx.toFixed(2)}px)`,
+            WebkitBackdropFilter: `blur(${midBlurPx.toFixed(2)}px)`,
+            maskImage:
+              resolvedStage === 'PIONEER_REVEAL'
+                ? 'radial-gradient(ellipse 76% 68% at 50% 34%, rgba(0, 0, 0, 0.22) 0%, rgba(0, 0, 0, 0.65) 58%, black 100%)'
+                : 'radial-gradient(ellipse 46% 38% at 50% 40%, transparent 16%, rgba(0, 0, 0, 0.42) 68%, black 100%)',
+            WebkitMaskImage:
+              resolvedStage === 'PIONEER_REVEAL'
+                ? 'radial-gradient(ellipse 76% 68% at 50% 34%, rgba(0, 0, 0, 0.22) 0%, rgba(0, 0, 0, 0.65) 58%, black 100%)'
+                : 'radial-gradient(ellipse 46% 38% at 50% 40%, transparent 16%, rgba(0, 0, 0, 0.42) 68%, black 100%)',
+            willChange: 'opacity, backdrop-filter',
+          }}
+        />
+        {/* Layer 3: Subtle Anamorphic Depth-Separation Breathing Vignette */}
+        <div
+          className="absolute inset-0 transition-opacity duration-500 ease-out"
+          style={{
+            opacity: Math.min(0.65, zoomSpeedNorm * 0.34 + rackFocusT * 0.32),
+            background:
+              'radial-gradient(ellipse 68% 60% at 50% 40%, transparent 32%, rgba(9, 13, 22, 0.42) 100%)',
+          }}
+        />
+      </div>
+    ) : null;
+
     // Stage 1 (PAN_REVEAL): Unobstructed panoramic camera pan revealing the full mountain silhouette
     if (resolvedStage === 'PAN_REVEAL') {
-      // Whisper-light arrival caption only during the initial summit crest beat, fading out
-      // completely before the wide mountain silhouette unfolds.
+      // Whisper-light arrival caption fades in as the climber stands upright on the crest
+      // and fades out smoothly as the continuous optical pull-back unveils the full mountain.
       const introAlpha =
-        summitProgress < 0.05
-          ? summitProgress / 0.05
-          : summitProgress < 0.18
-            ? 1
-            : Math.max(0, 1 - (summitProgress - 0.18) / 0.12);
-      if (introAlpha <= 0.01) return null;
+        summitProgress < 0.13
+          ? 0
+          : summitProgress < 0.21
+            ? (summitProgress - 0.13) / 0.08
+            : summitProgress < 0.34
+              ? 1
+              : Math.max(0, 1 - (summitProgress - 0.34) / 0.1);
+      if (introAlpha <= 0.01 && !layeredBlurMask) return null;
       return (
-        <div
-          className="pointer-events-none fixed inset-x-0 bottom-10 z-20 flex justify-center px-6 transition-opacity duration-300"
-          style={{ opacity: introAlpha }}
-        >
-          <div className="text-center">
-            <div className="text-[11px] tracking-[0.28em] text-amber-100/90 drop-shadow-[0_1px_6px_rgba(0,0,0,0.85)]">
-              {climberName} · 已登峰顶
+        <>
+          {layeredBlurMask}
+          {introAlpha > 0.01 && (
+            <div
+              className="pointer-events-none fixed inset-x-0 bottom-10 z-20 flex justify-center px-6 transition-opacity duration-300"
+              style={{ opacity: introAlpha }}
+            >
+              <div className="text-center">
+                <div className="text-[11px] tracking-[0.28em] text-amber-100/90 drop-shadow-[0_1px_6px_rgba(0,0,0,0.85)]">
+                  {climberName} · 已登峰顶
+                </div>
+                <div className="font-display mt-1 text-lg font-bold tracking-[0.14em] text-white drop-shadow-[0_2px_10px_rgba(0,0,0,0.9)]">
+                  {route.name}
+                </div>
+              </div>
             </div>
-            <div className="font-display mt-1 text-lg font-bold tracking-[0.14em] text-white drop-shadow-[0_2px_10px_rgba(0,0,0,0.9)]">
-              {route.name}
-            </div>
-          </div>
-        </div>
+          )}
+        </>
       );
     }
 
     // Act 1 (PIONEER_REVEAL): Real-world first ascensionist biography & historical achievement
     if (resolvedStage === 'PIONEER_REVEAL') {
       return (
-        <button
-          type="button"
-          onClick={handleConfirmStage}
-          aria-label="轻触屏幕继续查看攀登评级"
-          className={`fixed inset-0 z-20 flex flex-col items-center justify-between bg-gradient-to-b from-[#0B0F17]/72 via-[#0B0F17]/54 to-[#0B0F17]/86 px-6 py-10 text-center transition-opacity duration-700 ease-out focus:outline-none sm:py-14 ${
-            canAdvanceStage ? 'cursor-pointer' : 'cursor-default'
-          }`}
-          style={{ opacity: stageEntered ? 1 : 0 }}
-        >
+        <>
+          {layeredBlurMask}
+          <button
+            type="button"
+            onClick={handleConfirmStage}
+            aria-label="轻触屏幕继续查看攀登评级"
+            className={`fixed inset-0 z-20 flex flex-col items-center justify-between bg-gradient-to-b from-[#0B0F17]/56 via-[#0B0F17]/30 to-[#0B0F17]/72 px-6 py-10 text-center transition-opacity duration-700 ease-out focus:outline-none sm:py-14 ${
+              canAdvanceStage ? 'cursor-pointer' : 'cursor-default'
+            }`}
+            style={{ opacity: stageEntered ? 1 : 0 }}
+          >
           {/* Top Route Context */}
           <div className="flex flex-col items-center gap-1.5 pt-2">
             <div className="text-[11px] font-medium tracking-[0.26em] text-amber-200/85">
@@ -441,7 +532,8 @@ export function SummitOverlay({
           >
             轻触屏幕，查看攀登评级
           </div>
-        </button>
+          </button>
+        </>
       );
     }
 
@@ -456,7 +548,7 @@ export function SummitOverlay({
           type="button"
           onClick={handleConfirmStage}
           aria-label="轻触屏幕点亮徽章并查看复盘"
-          className={`fixed inset-0 z-20 flex flex-col items-center justify-between bg-gradient-to-b from-[#0B0F17]/68 via-[#0B0F17]/50 to-[#0B0F17]/84 px-6 py-10 text-center transition-opacity duration-700 ease-out focus:outline-none sm:py-14 ${
+          className={`fixed inset-0 z-20 flex flex-col items-center justify-between bg-gradient-to-b from-[#0B0F17]/56 via-[#0B0F17]/32 to-[#0B0F17]/72 px-6 py-10 text-center transition-opacity duration-700 ease-out focus:outline-none sm:py-14 ${
             canAdvanceStage ? 'cursor-pointer' : 'cursor-default'
           }`}
           style={{ opacity: stageEntered ? 1 : 0 }}
@@ -556,14 +648,14 @@ export function SummitOverlay({
 
     if (hideForView) {
       return (
-        <div className="fixed bottom-5 right-5 z-20 flex items-center gap-2">
+        <div className="fixed bottom-[max(1rem,env(safe-area-inset-bottom))] right-[max(1rem,env(safe-area-inset-right))] z-20 flex items-center gap-2">
           <button
             type="button"
             onClick={onToggleTrailPlayback}
             className="flex min-h-[44px] items-center gap-1.5 border-2 border-[#141820] bg-[#EA580C] px-4 py-2 text-xs font-bold text-white shadow-[3px_3px_0px_#141820] whitespace-nowrap shrink-0"
           >
             {isPlayingTrail ? <Square className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
-            <span>{isPlayingTrail ? '停止回放' : '轨迹回放'}</span>
+            <span>{isPlayingTrail ? '返回全景' : '轨迹回放'}</span>
           </button>
           <button
             type="button"
@@ -724,11 +816,17 @@ export function SummitOverlay({
                 挑战下一线 · {nextRoute.name}
               </button>
             )}
-            <div
-              className={`grid gap-2 ${
-                supportsRouteBook && onReviewRoadbook ? 'grid-cols-4' : 'grid-cols-3'
-              }`}
-            >
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setHideForView(true);
+                  if (isPlayingTrail) onToggleTrailPlayback();
+                }}
+                className="min-h-[42px] border-2 border-[#141820] bg-[#141820] px-2 py-2 text-xs font-bold text-[#F4F1EA] whitespace-nowrap hover:bg-slate-800"
+              >
+                欣赏全景
+              </button>
               <button
                 type="button"
                 onClick={() => {
@@ -739,11 +837,17 @@ export function SummitOverlay({
               >
                 轨迹回放
               </button>
+            </div>
+            <div
+              className={`grid gap-2 ${
+                supportsRouteBook && onReviewRoadbook ? 'grid-cols-3' : 'grid-cols-2'
+              }`}
+            >
               {supportsRouteBook && onReviewRoadbook && (
                 <button
                   type="button"
                   onClick={onReviewRoadbook}
-                  className="min-h-[42px] border-2 border-[#141820] bg-[#141820] px-2 py-2 text-xs font-bold text-[#F4F1EA] whitespace-nowrap hover:bg-slate-800"
+                  className="min-h-[40px] border-2 border-[#141820] bg-white px-2 py-2 text-xs font-semibold text-[#141820] whitespace-nowrap hover:bg-slate-100"
                 >
                   复盘路书
                 </button>
@@ -751,14 +855,14 @@ export function SummitOverlay({
               <button
                 type="button"
                 onClick={onRestart}
-                className="min-h-[42px] border-2 border-[#141820] bg-white px-2 py-2 text-xs font-semibold text-[#141820] whitespace-nowrap hover:bg-slate-100"
+                className="min-h-[40px] border-2 border-[#141820] bg-white px-2 py-2 text-xs font-semibold text-[#141820] whitespace-nowrap hover:bg-slate-100"
               >
                 重攀
               </button>
               <button
                 type="button"
                 onClick={onBackToMenu}
-                className="min-h-[42px] border-2 border-[#141820] bg-[#EAE6DC] px-2 py-2 text-xs font-semibold text-[#141820] whitespace-nowrap hover:bg-slate-200"
+                className="min-h-[40px] border-2 border-[#141820] bg-[#EAE6DC] px-2 py-2 text-xs font-semibold text-[#141820] whitespace-nowrap hover:bg-slate-200"
               >
                 选线
               </button>
@@ -985,7 +1089,7 @@ export function SummitOverlay({
 
           {/* Root Cause Diagnosis */}
           {fallDiagnosis && (
-            <div className="mt-3 border-l-4 border-red-600 bg-red-50 px-3 py-2 text-xs leading-relaxed text-red-950">
+            <div className="mt-3 border border-red-300 bg-red-50 px-3 py-2 text-xs leading-relaxed text-red-950">
               <div className="font-bold text-red-800">直接诱因</div>
               <p className="mt-0.5 font-medium">{fallDiagnosis}</p>
             </div>

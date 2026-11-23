@@ -48,6 +48,7 @@ import type {
   SpecialHoldUrls,
   VisualAtmosphereGrade,
 } from './artPackAssets';
+import { ROUTE_ART_THEMES } from './routeArtThemes';
 
 // ============================================================================
 // Built-in Default Art Pack Imports (Only module allowed to import raw PNGs)
@@ -209,7 +210,19 @@ export function createDefaultArtAssetManifest(): ArtAssetManifest {
         special: {},
       },
     },
-    routeOverrides: {},
+    routeOverrides: (Object.keys(ROUTE_ART_THEMES) as RouteId[]).reduce(
+      (acc, rId) => {
+        const theme = ROUTE_ART_THEMES[rId];
+        acc[rId] = {
+          walls: {
+            wideEnding: theme.wideEndingUrl,
+          },
+          atmosphere: { ...theme.atmosphere },
+        };
+        return acc;
+      },
+      {} as Partial<Record<RouteId, RouteArtOverride>>
+    ),
     badges: {},
     worldProps: {},
     ui: {
@@ -274,6 +287,7 @@ function cloneRouteOverride(override: RouteArtOverride): RouteArtOverride {
           },
         }
       : {}),
+    ...(override.vfx ? { vfx: { ...override.vfx } } : {}),
     ...(override.atmosphere ? { atmosphere: { ...override.atmosphere } } : {}),
   };
 }
@@ -481,6 +495,7 @@ class AssetRegistryStore {
       (Object.keys(patch.routeOverrides) as RouteId[]).forEach((routeId) => {
         const ovPatch = patch.routeOverrides?.[routeId];
         if (!ovPatch) return;
+        if (ovPatch.vfx) changedVfx = true;
         const prev = this.manifest.routeOverrides[routeId] ?? {};
         this.manifest.routeOverrides[routeId] = {
           walls: ovPatch.walls ? { ...(prev.walls ?? {}), ...ovPatch.walls } : prev.walls,
@@ -498,6 +513,7 @@ class AssetRegistryStore {
                 },
               }
             : prev.holds,
+          vfx: ovPatch.vfx ? { ...(prev.vfx ?? {}), ...ovPatch.vfx } : prev.vfx,
           atmosphere: ovPatch.atmosphere
             ? { ...(prev.atmosphere ?? {}), ...ovPatch.atmosphere }
             : prev.atmosphere,
@@ -678,6 +694,7 @@ class AssetRegistryStore {
           (ORDERED_HOLD_KEYS.some((k) => Boolean(ov.holds?.[k])) ||
             (ov.holds.overlays && Object.values(ov.holds.overlays).some(Boolean)) ||
             (ov.holds.special && Object.values(ov.holds.special).some(Boolean)))) ||
+        (ov.vfx && Object.values(ov.vfx).some(Boolean)) ||
         ov.atmosphere
     );
   }
@@ -848,12 +865,15 @@ class AssetRegistryStore {
   // Weather, Particle & Climbing Feedback VFX Textures
   // --------------------------------------------------------------------------
 
-  getVfxAssetMap(): VfxArtAssetMap {
-    return this.manifest.vfx;
+  getVfxAssetMap(routeId?: RouteId): VfxArtAssetMap {
+    const base = this.manifest.vfx;
+    const ovVfx = routeId ? this.manifest.routeOverrides[routeId]?.vfx : undefined;
+    if (!ovVfx) return base;
+    return { ...base, ...ovVfx };
   }
 
-  getVfxAssetPath(key: VfxSpriteKey): string | undefined {
-    return this.manifest.vfx[key];
+  getVfxAssetPath(key: VfxSpriteKey, routeId?: RouteId): string | undefined {
+    return this.getVfxAssetMap(routeId)[key];
   }
 }
 

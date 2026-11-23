@@ -1,5 +1,11 @@
 import { RouteConfig, RouteId } from '../game/types';
 import { AssetRegistry } from './AssetRegistry';
+import {
+  buildRouteThemedHoldCanvas,
+  buildRouteThemedWallTile,
+  getRouteArtTheme,
+  RouteArtTheme,
+} from './routeArtThemes';
 
 export type ArtPackId =
   | 'snow-ridge-granite'
@@ -105,6 +111,8 @@ export interface ArtPackUrls {
 
 export interface DecodedArtPack {
   id: ArtPackId;
+  routeId?: RouteId;
+  routeTheme?: RouteArtTheme;
   urls: ArtPackUrls;
   startImg: HTMLImageElement | null;
   wallImg: HTMLImageElement | null;
@@ -112,6 +120,8 @@ export interface DecodedArtPack {
   summitNearImg: HTMLImageElement | null;
   wideEndingImg: HTMLImageElement | null;
   holdImgs: (HTMLImageElement | null)[];
+  /** Pre-baked route-mineral tinted hold canvases aligned 1:1 with holdImgs[0..9] */
+  routeHoldCanvases: (HTMLCanvasElement | null)[];
   holdOverlayImgs: Partial<Record<keyof HoldOverlayUrls, HTMLImageElement | null>>;
   specialHoldImgs: Partial<Record<keyof SpecialHoldUrls, HTMLImageElement | null>>;
   /** Cached offscreen seamless vertical-looping wall tile (built once on decode) */
@@ -204,6 +214,18 @@ export function resolveArtPackUrls(packId: ArtPackId, routeId?: RouteId): ArtPac
   const specialHolds = AssetRegistry.getSpecialHoldPaths(packId, routeId);
   const atmosphereGrade = AssetRegistry.getAtmosphereGrade(packId, routeId);
   const meta = ART_PACK_METADATA[packId] ?? ART_PACK_METADATA['snow-ridge-granite'];
+  const routeTheme = routeId ? getRouteArtTheme(routeId) : undefined;
+  const resolvedMetrics: ArtPackMetrics = routeTheme
+    ? {
+        ...meta.metrics,
+        wideFocalX: routeTheme.wideFocalX,
+        wideFocalY: routeTheme.wideFocalY,
+        wideDissolveStartScale: routeTheme.wideDissolveStartScale,
+        summitSkyTopColor: routeTheme.skyTopColor,
+        fallbackWallColor: routeTheme.wallFallbackColor,
+        plinthShadowColor: routeTheme.wallShadowColor,
+      }
+    : meta.metrics;
 
   return {
     id: packId,
@@ -217,7 +239,7 @@ export function resolveArtPackUrls(packId: ArtPackId, routeId?: RouteId): ArtPac
     holdOverlays,
     specialHolds,
     atmosphereGrade,
-    metrics: meta.metrics,
+    metrics: resolvedMetrics,
   };
 }
 
@@ -366,12 +388,12 @@ function buildSeamlessWallTile(wallImg: HTMLImageElement): HTMLCanvasElement | n
  * apply a SINGLE full-canvas gradient with a SINGLE fillRect(0, 0, w, h) — never two fillRects!
  */
 function buildFeatheredPlate(
-  img: HTMLImageElement,
+  img: HTMLImageElement | HTMLCanvasElement,
   topFeatherRatio: number,
   bottomFeatherRatio: number
 ): HTMLCanvasElement | null {
-  const w = img.naturalWidth;
-  const h = img.naturalHeight;
+  const w = img instanceof HTMLCanvasElement ? img.width : img.naturalWidth;
+  const h = img instanceof HTMLCanvasElement ? img.height : img.naturalHeight;
   if (w <= 0 || h <= 0) return null;
 
   const canvas = createOffscreenCanvas(w, h);
@@ -438,7 +460,8 @@ function loadAndDecodeImage(
 }
 
 export function getDecodedArtPack(packId: ArtPackId, routeId?: RouteId): DecodedArtPack {
-  const activeRouteId = routeId && AssetRegistry.hasRouteOverride(routeId) ? routeId : undefined;
+  const activeRouteId = routeId;
+  const routeTheme = activeRouteId ? getRouteArtTheme(activeRouteId) : undefined;
   const cacheKey = activeRouteId ? `${packId}::${activeRouteId}` : packId;
   let pack = packCache.get(cacheKey);
   if (!pack) {
@@ -448,6 +471,8 @@ export function getDecodedArtPack(packId: ArtPackId, routeId?: RouteId): Decoded
     const detailCount = urls.wallDetailOverlay ? 1 : 0;
     pack = {
       id: packId,
+      routeId: activeRouteId,
+      routeTheme,
       urls,
       startImg: null,
       wallImg: null,
@@ -455,6 +480,7 @@ export function getDecodedArtPack(packId: ArtPackId, routeId?: RouteId): Decoded
       summitNearImg: null,
       wideEndingImg: null,
       holdImgs: new Array<HTMLImageElement | null>(10).fill(null),
+      routeHoldCanvases: new Array<HTMLCanvasElement | null>(10).fill(null),
       holdOverlayImgs: {},
       specialHoldImgs: {},
       seamlessWallTile: null,
@@ -474,7 +500,11 @@ export function getDecodedArtPack(packId: ArtPackId, routeId?: RouteId): Decoded
 
     loadAndDecodeImage(urls.wall, (img) => {
       targetPack.wallImg = img;
-      targetPack.seamlessWallTile = buildSeamlessWallTile(img);
+      const baseTile = buildSeamlessWallTile(img);
+      targetPack.seamlessWallTile =
+        baseTile && targetPack.routeTheme
+          ? buildRouteThemedWallTile(baseTile, targetPack.routeTheme)
+          : baseTile;
       targetPack.readyCount += 1;
     });
 
@@ -487,8 +517,17 @@ export function getDecodedArtPack(packId: ArtPackId, routeId?: RouteId): Decoded
 
     loadAndDecodeImage(urls.start, (img) => {
       targetPack.startImg = img;
-      // Feather top 18% smoothly into 02-wall and bottom 5% into shadowed lower rock plinth
-      targetPack.startPlateFeathered = buildFeatheredPlate(img, 0.18, 0.05);
+      // Theme opaque start plate first, THEN feather top 18% & bottom 5% so edges blend invisibly into the climbing wall
+      let startSource: HTMLImageElement | HTMLCanvasElement = img;
+      if (targetPack.routeTheme) {
+        const opaqueStart = createOffscreenCanvas(img.naturalWidth, img.naturalHeight);
+        const octx = opaqueStart?.getContext('2d');
+        if (opaqueStart && octx) {
+          octx.drawImage(img, 0, 0);
+          startSource = buildRouteThemedWallTile(opaqueStart, targetPack.routeTheme);
+        }
+      }
+      targetPack.startPlateFeathered = buildFeatheredPlate(startSource, 0.18, 0.05);
       targetPack.readyCount += 1;
     });
 
@@ -508,6 +547,9 @@ export function getDecodedArtPack(packId: ArtPackId, routeId?: RouteId): Decoded
     urls.holds.forEach((holdUrl, idx) => {
       loadAndDecodeImage(holdUrl, (img) => {
         targetPack.holdImgs[idx] = img;
+        targetPack.routeHoldCanvases[idx] = targetPack.routeTheme
+          ? buildRouteThemedHoldCanvas(img, targetPack.routeTheme)
+          : null;
         targetPack.readyCount += 1;
       });
     });

@@ -183,8 +183,18 @@ export function drawArtPackHold(opts: HoldSpriteRenderContext): boolean {
             ? pack.specialHoldImgs.tremor
             : null;
 
-  const img = specialImg ?? pack.holdImgs[spriteIdx];
-  if (!img || img.naturalWidth <= 0 || img.naturalHeight <= 0) {
+  const rawImg = specialImg ?? pack.holdImgs[spriteIdx];
+  const themedCanvas = !specialImg ? pack.routeHoldCanvases[spriteIdx] : null;
+  const imgSource: HTMLImageElement | HTMLCanvasElement | null = themedCanvas ?? rawImg;
+  const srcW =
+    imgSource instanceof HTMLCanvasElement
+      ? imgSource.width
+      : imgSource?.naturalWidth ?? 0;
+  const srcH =
+    imgSource instanceof HTMLCanvasElement
+      ? imgSource.height
+      : imgSource?.naturalHeight ?? 0;
+  if (!imgSource || srcW <= 0 || srcH <= 0) {
     return false;
   }
 
@@ -194,7 +204,7 @@ export function drawArtPackHold(opts: HoldSpriteRenderContext): boolean {
   // Subtle deterministic organic size variation (+/- 6%) strictly around contact anchor (0, 0)
   const scaleVar = 0.94 + ((hashHoldId(hold.id) >>> 4) % 13) * 0.01;
   const drawW = r * spec.radiusToWidth * scaleVar;
-  const drawH = drawW * (img.naturalHeight / img.naturalWidth);
+  const drawH = drawW * (srcH / srcW);
   const offsetX = -spec.anchorX * drawW;
   const offsetY = -spec.anchorY * drawH;
   const rotation = computeHoldVisualRotation(hold, spriteIdx) + jitterAngle;
@@ -253,7 +263,7 @@ export function drawArtPackHold(opts: HoldSpriteRenderContext): boolean {
   if (flipX < 0) {
     ctx.scale(-1, 1);
   }
-  ctx.drawImage(img, offsetX, offsetY, drawW, drawH);
+  ctx.drawImage(imgSource, offsetX, offsetY, drawW, drawH);
 
   // 2B. Cairn-style Tactile Hold State Overlays (chalk smudges, rain wetness, 3-stage rock fractures)
   const overlaySize = r * 2.25;

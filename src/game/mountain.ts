@@ -195,7 +195,7 @@ export const ROUTES: RouteConfig[] = [
     hasTutorial: true,
     palette: 'granite',
     seed: 105401,
-    summitImage: '/src/assets/images/summit_art_granite_1795063543562.jpg',
+    summitImage: '/src/assets/images/summit_swan_slab_1795325497025.jpg',
     weatherStages: [
       {
         minRatio: 0,
@@ -228,7 +228,7 @@ export const ROUTES: RouteConfig[] = [
     hasTutorial: true,
     palette: 'granite',
     seed: 105602,
-    summitImage: '/src/assets/images/summit_art_granite_1795063543562.jpg',
+    summitImage: '/src/assets/images/summit_whitehorse_ledge_1795325496686.jpg',
     weatherStages: [
       {
         minRatio: 0,
@@ -271,7 +271,7 @@ export const ROUTES: RouteConfig[] = [
     hasTutorial: false,
     palette: 'granite',
     seed: 155703,
-    summitImage: '/src/assets/images/summit_art_granite_1795063543562.jpg',
+    summitImage: '/src/assets/images/summit_royal_arches_1795325497432.jpg',
     weatherStages: [
       {
         minRatio: 0,
@@ -314,7 +314,7 @@ export const ROUTES: RouteConfig[] = [
     hasTutorial: false,
     palette: 'ridge',
     seed: 185804,
-    summitImage: '/src/assets/images/summit_art_ridge_1795063543509.jpg',
+    summitImage: '/src/assets/images/summit_high_exposure_1795325496909.jpg',
     weatherStages: [
       {
         minRatio: 0,
@@ -367,7 +367,7 @@ export const ROUTES: RouteConfig[] = [
     hasTutorial: false,
     palette: 'ridge',
     seed: 205905,
-    summitImage: '/src/assets/images/summit_art_ridge_1795063543509.jpg',
+    summitImage: '/src/assets/images/summit_snake_dike_1795325496743.jpg',
     weatherStages: [
       {
         minRatio: 0,
@@ -420,7 +420,7 @@ export const ROUTES: RouteConfig[] = [
     hasTutorial: false,
     palette: 'slate',
     seed: 351006,
-    summitImage: '/src/assets/images/summit_art_stormbreak_1795063543184.jpg',
+    summitImage: '/src/assets/images/summit_moonlight_buttress_1795325496172.jpg',
     weatherStages: [
       {
         minRatio: 0,
@@ -473,7 +473,7 @@ export const ROUTES: RouteConfig[] = [
     hasTutorial: false,
     palette: 'slate',
     seed: 381007,
-    summitImage: '/src/assets/images/summit_art_stormbreak_1795063543184.jpg',
+    summitImage: '/src/assets/images/summit_devils_tower_1795325496204.jpg',
     weatherStages: [
       {
         minRatio: 0,
@@ -526,7 +526,7 @@ export const ROUTES: RouteConfig[] = [
     hasTutorial: false,
     palette: 'slate',
     seed: 411108,
-    summitImage: '/src/assets/images/summit_art_stormbreak_1795063543184.jpg',
+    summitImage: '/src/assets/images/summit_lotus_tower_1795325496483.jpg',
     weatherStages: [
       {
         minRatio: 0,
@@ -579,7 +579,7 @@ export const ROUTES: RouteConfig[] = [
     hasTutorial: false,
     palette: 'glacial',
     seed: 451209,
-    summitImage: '/src/assets/images/summit_art_glacial_1795063544662.jpg',
+    summitImage: '/src/assets/images/summit_eiger_north_1795325496714.jpg',
     weatherStages: [
       {
         minRatio: 0,
@@ -632,7 +632,7 @@ export const ROUTES: RouteConfig[] = [
     hasTutorial: false,
     palette: 'glacial',
     seed: 512810,
-    summitImage: '/src/assets/images/summit_art_glacial_1795063544662.jpg',
+    summitImage: '/src/assets/images/summit_matterhorn_north_1795325496381.jpg',
     weatherStages: [
       {
         minRatio: 0,
@@ -685,7 +685,7 @@ export const ROUTES: RouteConfig[] = [
     hasTutorial: false,
     palette: 'glacial',
     seed: 513311,
-    summitImage: '/src/assets/images/summit_art_glacial_1795063544662.jpg',
+    summitImage: '/src/assets/images/summit_dawn_wall_1795325496641.jpg',
     weatherStages: [
       {
         minRatio: 0,
